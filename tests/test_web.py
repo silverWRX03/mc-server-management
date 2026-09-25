@@ -10,6 +10,7 @@ import pytest
 
 from mcsm.config import ModSpec
 from mcsm.daemon import Daemon
+from mcsm.players import offline_uuid
 
 from test_manager import manager, update
 
@@ -195,3 +196,28 @@ def test_manual_upload_only_accepts_expected_files(running):
     assert status == 200, body
     assert (cfg.manual_dir / "blocked.jar").read_bytes() == b"jar bytes"
     assert d.last_check["manual"] == []
+
+
+def test_web_players_page(running):
+    d, c, cfg = running
+    login(c)
+    d._on_line("[12:00:00] [Server thread/INFO]: Steve joined the game")
+    d._on_line("[12:00:01] [Server thread/INFO]: <Steve> Alex joined the game")  # chat can't fake a join
+    status, body, _ = c.get("/api/players")
+    assert status == 200 and body["online"] == ["Steve"] and body["running"]
+
+    status, body, _ = c.post("/api/players/action", {"action": "op", "name": "Steve"})
+    assert status == 200 and body["message"] == "sent: op Steve"
+    lines = c.get("/api/console?since=0")[1]["lines"]
+    assert any(line["user"] and line["text"] == "> op Steve" for line in lines)
+    assert c.post("/api/players/action", {"action": "op", "name": "a b"})[0] == 400
+
+    # Stopped: edits the files instead (the test config runs with online-mode on, so seed usercache).
+    assert c.post("/api/server/stop")[0] == 200
+    wait_for(lambda: c.get("/api/status")[1]["state"] == "stopped" and not c.get("/api/status")[1]["job"])
+    (cfg.server.dir / "usercache.json").write_text(json.dumps([{"name": "Alex", "uuid": offline_uuid("Alex")}]))
+    status, body, _ = c.post("/api/players/action", {"action": "ban", "name": "Alex", "reason": "griefing"})
+    assert status == 200, body
+    bans = c.get("/api/players")[1]["bans"]
+    assert bans[0]["name"] == "Alex" and bans[0]["reason"] == "griefing"
+    assert c.post("/api/players/action", {"action": "kick", "name": "Alex"})[0] == 400

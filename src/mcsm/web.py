@@ -33,6 +33,7 @@ from .http import sha1_file
 from .java import JavaError
 from .mods import ModError
 from .mods.modrinth import ModrinthProvider
+from .players import PlayerError, Players
 from .properties import read_properties
 
 log = logging.getLogger(__name__)
@@ -216,7 +217,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             return self._json(200, handler(q, body))
         except ApiError as e:
             self._json(e.status, {"error": str(e)})
-        except (ConfigError, ModError, JavaError, RuntimeError, ValueError, OSError) as e:
+        except (ConfigError, ModError, JavaError, PlayerError, RuntimeError, ValueError, OSError) as e:
             self._json(400, {"error": str(e)})
         except Exception as e:  # pragma: no cover - last resort
             log.exception("web request failed")
@@ -250,6 +251,8 @@ class Api:
         get("/api/backups", self.backups)
         post("/api/backups/create", self.create_backup)
         post("/api/backups/restore", self.restore_backup)
+        get("/api/players", self.players)
+        post("/api/players/action", self.player_action)
         get("/api/java", self.java)
         post("/api/java/install", self.java_install)
         post("/api/java/use", self.java_use)
@@ -416,6 +419,23 @@ class Api:
         if not target:
             return []
         return self.m.planner().plan_for(target).mods
+
+    # ------------------------------------------------------------- players
+    def _players(self) -> Players:
+        running = self.d.state == "running"
+        return Players(self.m.server_dir, self.m.http, self.d.send_command if running else None)
+
+    def players(self, q, b) -> dict:
+        return self._players().summary(self.d.players)
+
+    def player_action(self, q, b) -> dict:
+        if self.d.state == "starting" or (self.d.state == "stopped" and self.d.job):
+            # Editing the JSON files now could race with the server starting up.
+            raise ApiError(409, "the server is starting; try again in a moment")
+        action = str(b.get("action", ""))
+        message = self._players().act(action, str(b.get("name", "")), b.get("reason"))
+        log.info("players: %s", message)
+        return {"ok": True, "message": message}
 
     # ------------------------------------------------------------- backups
     def backups(self, q, b) -> dict:

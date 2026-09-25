@@ -18,6 +18,7 @@ from .mods import ModError, providers_for
 from .http import HttpClient, HttpError
 from .java import JavaError
 from .java import JavaManager
+from .players import ACTIONS, PlayerError, Players
 from .properties import read_properties, write_properties
 from .rcon import Rcon, RconError
 
@@ -374,6 +375,45 @@ def cmd_java(args) -> int:
     return 0
 
 
+def cmd_player(args) -> int:
+    m = _manager(args)
+    running = bool(running_pid(m)) or _server_port_open(m)
+    rcon = None
+
+    def send(command: str) -> None:
+        reply = rcon.command(command)
+        if reply:
+            print(reply)
+    if running:
+        try:
+            rcon = Rcon.from_server_dir(m.server_dir).__enter__()
+        except (RconError, OSError) as e:
+            print(f"the server is running but mcsm can't reach its console: {e}\n"
+                  "enable RCON in server.properties, or use the web UI's Players page")
+            return 1
+    try:
+        players = Players(m.server_dir, m.http, send if running else None)
+        if args.action == "list":
+            s = players.summary()
+            ops = ", ".join(f"{o['name']} (level {o['level']})" for o in s["ops"])
+            print(f"operators:  {ops or '-'}")
+            print(f"whitelist:  {'on' if s['whitelist_enabled'] else 'off'} - "
+                  f"{', '.join(w['name'] for w in s['whitelist']) or 'nobody'}")
+            print(f"banned:     {', '.join(b['name'] for b in s['bans']) or '-'}")
+            print(f"banned IPs: {', '.join(b['ip'] for b in s['ip_bans']) or '-'}")
+            if running:
+                print(rcon.command("list"))
+            return 0
+        print(players.act(args.action, args.name or "", args.reason))
+        return 0
+    except PlayerError as e:
+        print(f"error: {e}")
+        return 1
+    finally:
+        if rcon:
+            rcon.__exit__(None, None, None)
+
+
 def cmd_cmd(args) -> int:
     m = _manager(args)
     try:
@@ -511,6 +551,12 @@ def build_parser() -> argparse.ArgumentParser:
     j = jsub.add_parser("use", help='force a Java major version, or "auto" to follow Minecraft')
     j.add_argument("version")
     s.set_defaults(fn=cmd_java)
+
+    s = sub.add_parser("player", help="kick, ban/pardon, op/deop and whitelist players")
+    s.add_argument("action", choices=["list", *ACTIONS], help="what to do")
+    s.add_argument("name", nargs="?", help="player name (or IP address for ban-ip/pardon-ip)")
+    s.add_argument("--reason", help="shown to the player when kicked or banned")
+    s.set_defaults(fn=cmd_player)
 
     s = sub.add_parser("cmd", help="send a console command over RCON")
     s.add_argument("command", nargs="+")

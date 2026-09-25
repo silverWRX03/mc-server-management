@@ -160,6 +160,7 @@ views.dashboard = () => {
     fill(players, 
       h("div", { class: "stat" }, `${s.players.length}`, h("span", { class: "muted small" }, ` / ${s.max_players}`)),
       s.players.length ? h("ul", { class: "list" }, s.players.map((p) => h("li", {}, p))) : h("p", { class: "empty" }, "Nobody online"),
+      h("a", { href: "#players", class: "btn ghost" }, "Manage players →"),
     );
     const u = s.update;
     fill(update, 
@@ -305,6 +306,92 @@ views.updates = () => {
   fill($("#main"), h("h2", { class: "view-title" }, "Updates"), body);
   load();
   return { onJobDone: load };
+};
+
+views.players = () => {
+  const body = h("div");
+  const name = h("input", { placeholder: "Player name", autocomplete: "off", maxlength: 16 });
+  const reason = h("input", { placeholder: "Reason (optional, shown when kicked/banned)", maxlength: 200 });
+  let data = null;
+
+  const CONFIRM = {
+    kick: (n) => `Kick ${n}?`, ban: (n) => `Ban ${n}? They won't be able to join until pardoned.`,
+    "ban-ip": (n) => `Ban the IP address of ${n}? Everyone on that connection will be blocked.`,
+    op: (n) => `Make ${n} an operator? Operators can run any command, including /stop and /op.`,
+  };
+  const run = async (action, target, why) => {
+    if (CONFIRM[action] && !confirm(CONFIRM[action](target))) return;
+    const r = await act(() => api("/api/players/action", { method: "POST", body: { action, name: target, reason: why || reason.value } }));
+    if (r) { toast(r.message); setTimeout(load, 800); }
+  };
+  const btn = (label, action, target, cls = "") => h("button", { class: `btn small ${cls}`, onclick: () => run(action, target) }, label);
+
+  const load = async () => {
+    const r = await api("/api/players").catch(() => null);
+    if (!r) return;
+    data = r;
+    const lc = (list) => new Set(list.map((x) => (x.name || "").toLowerCase()));
+    const ops = lc(r.ops), wl = lc(r.whitelist), banned = lc(r.bans);
+    const actionsFor = (n) => {
+      const k = n.toLowerCase();
+      return h("div", { class: "row" },
+        r.running && r.online.includes(n) ? btn("Kick", "kick", n) : null,
+        ops.has(k) ? btn("De-op", "deop", n) : btn("Op", "op", n),
+        r.whitelist_enabled || wl.has(k) ? (wl.has(k) ? btn("Un-whitelist", "whitelist-remove", n) : btn("Whitelist", "whitelist-add", n)) : null,
+        banned.has(k) ? btn("Pardon", "pardon", n) : btn("Ban", "ban", n, "danger"),
+        r.running && r.online.includes(n) ? btn("Ban IP", "ban-ip", n, "danger") : null);
+    };
+    const tags = (n) => {
+      const k = n.toLowerCase();
+      return [ops.has(k) ? h("span", { class: "tag ok" }, "op") : null, wl.has(k) ? h("span", { class: "tag" }, "whitelisted") : null,
+              banned.has(k) ? h("span", { class: "tag bad" }, "banned") : null];
+    };
+    const playerList = (names, empty) => names.length
+      ? h("ul", { class: "list" }, names.map((n) => h("li", {}, h("div", { class: "grow" }, h("strong", {}, n), tags(n)), actionsFor(n))))
+      : h("p", { class: "empty" }, empty);
+
+    const onlineSet = new Set(r.online.map((n) => n.toLowerCase()));
+    const known = r.known.map((k) => k.name).filter((n) => n && !onlineSet.has(n.toLowerCase()));
+
+    fill(body,
+      r.running ? null : h("div", { class: "notice" }, "The server is stopped. Changes are written to its player files and apply when it starts. Kicking needs the server running."),
+      !r.online_mode ? h("div", { class: "notice warn" }, "online-mode is off: anyone can join with any name, so bans and the whitelist only match names, not accounts.") : null,
+      h("div", { class: "grid mt" },
+        card(`Online now (${r.online.length})`, playerList(r.online, r.running ? "Nobody online" : "Server is stopped")),
+        card(`Operators (${r.ops.length})`, r.ops.length ? h("ul", { class: "list" }, r.ops.map((o) => h("li", {},
+          h("div", { class: "grow" }, h("strong", {}, o.name), h("span", { class: "tag" }, `level ${o.level}`)), btn("De-op", "deop", o.name)))) : h("p", { class: "empty" }, "No operators"))),
+      h("div", { class: "grid mt" },
+        card("Whitelist",
+          h("div", { class: "row mb" },
+            h("span", { class: "grow" }, "Whitelist is ", h("strong", {}, r.whitelist_enabled ? "on" : "off"),
+              h("span", { class: "muted small" }, r.whitelist_enabled ? ": only listed players can join" : ": anyone can join")),
+            h("button", { class: "btn small", onclick: () => run(r.whitelist_enabled ? "whitelist-off" : "whitelist-on", "") }, r.whitelist_enabled ? "Turn off" : "Turn on")),
+          r.whitelist.length ? h("ul", { class: "list" }, r.whitelist.map((w) => h("li", {}, h("div", { class: "grow" }, w.name), btn("Remove", "whitelist-remove", w.name))))
+            : h("p", { class: "empty" }, "Nobody whitelisted")),
+        card("Banned",
+          r.bans.length || r.ip_bans.length ? h("ul", { class: "list" },
+            r.bans.map((b) => h("li", {}, h("div", { class: "grow" }, h("strong", {}, b.name),
+              h("div", { class: "muted small" }, [b.reason, b.created && `since ${b.created}`].filter(Boolean).join(" · "))), btn("Pardon", "pardon", b.name))),
+            r.ip_bans.map((b) => h("li", {}, h("div", { class: "grow" }, h("code", {}, b.ip),
+              h("div", { class: "muted small" }, [b.reason, b.created && `since ${b.created}`].filter(Boolean).join(" · "))), btn("Pardon", "pardon-ip", b.ip))))
+            : h("p", { class: "empty" }, "Nobody banned"))),
+      h("div", { class: "mt" }, card("Players who have joined before", playerList(known, "Nobody else has joined yet"))),
+    );
+  };
+
+  // Built once, outside the refreshed area, so typing isn't interrupted.
+  const manage = card("Add or manage a player",
+        h("div", { class: "row" }, name, reason),
+        h("div", { class: "row mt-s" },
+          ...[["Op", "op"], ["De-op", "deop"], ["Whitelist", "whitelist-add"], ["Un-whitelist", "whitelist-remove"], ["Kick", "kick"], ["Pardon", "pardon"]]
+            .map(([label, action]) => h("button", { class: "btn", onclick: () => name.value.trim() && run(action, name.value.trim()) }, label)),
+          h("button", { class: "btn danger", onclick: () => name.value.trim() && run("ban", name.value.trim()) }, "Ban"),
+          h("button", { class: "btn danger", title: "Enter an IP address, or the name of an online player",
+                        onclick: () => name.value.trim() && run("ban-ip", name.value.trim()) }, "Ban IP")));
+  fill($("#main"), h("h2", { class: "view-title" }, "Players"), manage, h("div", { class: "mt" }, body));
+  load();
+  every(5000, load);
+  return {};
 };
 
 views.mods = () => {

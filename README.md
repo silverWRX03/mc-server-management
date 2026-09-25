@@ -48,7 +48,9 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Handles blocked CurseForge downloads.** When an author disallows third-party
   downloads, mcsm gives you the direct link to the file, then picks up and hash-checks
   the file once you drop it in `manual-downloads/`.
-- **Web control panel:** dashboard, live console, one-click updates, mod search,
+- **Player management:** kick, ban/pardon by name or IP, op/de-op and the whitelist,
+  from the web UI or `mcsm player`, whether the server is running or stopped.
+- **Web control panel:** dashboard, live console, players, one-click updates, mod search,
   uploads for blocked downloads, backups, Java and settings.
 - **Discord notifications** for upgrades, blocked releases, crashes and rollbacks.
 - **Leaves your files alone.** Only files mcsm installed (tracked in `mcsm.lock.json`)
@@ -125,6 +127,7 @@ Then open <http://localhost:8765>.
 |---|---|
 | **Dashboard** | server state, uptime, versions, who's online, update status, live activity feed |
 | **Console** | live server log (warnings and errors highlighted), send commands with history |
+| **Players** | who's online; kick, ban/pardon (by name or IP), op/de-op, whitelist on/off and add/remove; everyone who has joined before |
 | **Updates** | check now, see exactly what would change, which mods block newer versions, apply with one click |
 | **Mods** | search Modrinth for server-compatible mods and add them, add CurseForge mods, mark mods required/optional, remove them |
 | **Backups** | back up now (with a proper `save-all`), restore any backup |
@@ -143,6 +146,32 @@ changes need a CSRF header. The page runs under a strict Content Security Policy
 with no third-party scripts. The console gives full operator control of your
 server, so to reach it from elsewhere, put it behind an HTTPS reverse proxy (Caddy,
 nginx) or a VPN such as Tailscale rather than exposing the port directly.
+
+## Managing players
+
+From the web UI's **Players** page, or the command line:
+
+```sh
+mcsm player list
+mcsm player op Steve
+mcsm player deop Steve
+mcsm player kick Griefer --reason "cool it"
+mcsm player ban Griefer --reason "griefing spawn"
+mcsm player pardon Griefer
+mcsm player ban-ip 203.0.113.9
+mcsm player whitelist-on
+mcsm player whitelist-add Alex
+```
+
+While the server runs, these are sent as the normal console commands (from the
+command line this goes over RCON; the web UI doesn't need it). While it's stopped,
+mcsm edits `ops.json`, `banned-players.json`, `banned-ips.json`, `whitelist.json`
+and `server.properties` directly, and the changes apply when the server starts. For
+that it looks up player UUIDs from `usercache.json` or Mojang, or computes the
+offline UUID when `online-mode=false`. Kicking, and IP-banning by player name, need
+the server running.
+
+![Players page](docs/web-players.png)
 
 ## Mods that block third-party downloads
 
