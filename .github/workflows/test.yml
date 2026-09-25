@@ -1,0 +1,55 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  # Catch packaging problems before release time: build the executable and run it.
+  package:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build (Linux, portable)
+        if: runner.os == 'Linux'
+        run: packaging/build_linux.sh
+      - name: Build
+        if: runner.os != 'Linux'
+        run: |
+          pip install "pyinstaller>=6,<7"
+          pyinstaller --noconfirm packaging/mcsm.spec
+      - name: Check it runs on an old Linux (CentOS 7, glibc 2.17)
+        if: runner.os == 'Linux'
+        run: packaging/check_linux_compat.sh dist/mcsm
+      - name: Smoke test
+        shell: bash
+        run: python packaging/smoke_test.py dist/mcsm$([ -f dist/mcsm.exe ] && echo .exe)

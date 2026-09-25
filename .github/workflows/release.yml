@@ -1,0 +1,119 @@
+# Builds the downloadable executables and publishes a GitHub release.
+#
+# To release: set __version__ in src/mcsm/__init__.py (e.g. "0.2.0"), commit, then
+#   git tag v0.2.0 && git push origin v0.2.0
+# Installed copies of mcsm find the new release and offer to update.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the tag matches the version
+        run: |
+          version=$(python -c "import sys; sys.path.insert(0, 'src'); import mcsm; print(mcsm.__version__)")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match __version__ $version"; exit 1
+          fi
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: mcsm-windows-x64.exe
+          - os: macos-latest          # Apple silicon
+            asset: mcsm-macos-arm64
+          # Linux builds use a portable Python (packaging/build_linux.sh), so they run
+          # on glibc 2.17+ (CentOS 7 onwards) whatever the runner's own version.
+          - os: ubuntu-latest
+            asset: mcsm-linux-x64
+          - os: ubuntu-24.04-arm
+            asset: mcsm-linux-arm64   # e.g. Raspberry Pi 4/5 (64-bit OS)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build (Linux, portable)
+        if: runner.os == 'Linux'
+        run: packaging/build_linux.sh
+      - name: Build
+        if: runner.os != 'Linux'
+        run: |
+          pip install "pyinstaller>=6,<7"
+          pyinstaller --noconfirm packaging/mcsm.spec
+      - name: Check it runs on an old Linux (CentOS 7, glibc 2.17)
+        if: runner.os == 'Linux'
+        run: packaging/check_linux_compat.sh dist/mcsm
+      - name: Name the executable
+        shell: bash
+        run: |
+          if [ -f dist/mcsm.exe ]; then mv dist/mcsm.exe "dist/${{ matrix.asset }}"; else mv dist/mcsm "dist/${{ matrix.asset }}"; fi
+      - name: Smoke test
+        run: python packaging/smoke_test.py "dist/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the Python package (for pip/pipx)
+        run: |
+          pip install build
+          python -m build --outdir release
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Checksums
+        working-directory: release
+        run: |
+          chmod +x mcsm-linux-* mcsm-macos-* || true
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          body: |
+            ## Download
+
+            | Your computer | File |
+            |---|---|
+            | Windows 10/11 (64-bit) | `mcsm-windows-x64.exe` |
+            | Mac with Apple silicon (M1 or newer) | `mcsm-macos-arm64` |
+            | Linux (64-bit Intel/AMD) | `mcsm-linux-x64` |
+            | Linux on ARM (e.g. Raspberry Pi 4/5, 64-bit OS) | `mcsm-linux-arm64` |
+            | Anything else, with Python 3.11+ | `pipx install` the `.whl` file |
+
+            No Python needed for the executables. See the README's "Download and run" section.
+            `SHA256SUMS.txt` lets you verify your download; mcsm's built-in updater checks it automatically.

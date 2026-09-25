@@ -1,0 +1,14 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# local server state when developing in the repo root
+/server/
+/backups/
+/.mcsm/
+/mcsm.toml
+/mcsm.lock.json
+/.build-venv/
