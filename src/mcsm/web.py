@@ -1,20 +1,24 @@
 """The web UI: a small JSON API plus a static single-page app, served from ``mcsm run --web``.
 
 Security model: listen on localhost by default; every API call (except login)
-needs a session cookie obtained with the password; the cookie is HttpOnly and
-SameSite=Strict, and state-changing requests must also carry an ``X-MCSM``
-header, which cross-site pages cannot add without a CORS preflight we never allow.
-Put it behind an HTTPS reverse proxy before exposing it beyond your machine.
+needs a session cookie obtained with the password or PIN (see webauth.py); the
+cookie is HttpOnly and SameSite=Strict, and state-changing requests must also carry
+an ``X-MCSM`` header, which cross-site pages cannot add without a CORS preflight we
+never allow. Requests must name this machine in their Host header, so a web page
+can't reach the panel through DNS rebinding. "No password" only works for browsers
+on this computer. Put it behind an HTTPS reverse proxy before exposing it beyond
+your machine.
 """
 
 from __future__ import annotations
 
-import hmac
+import ipaddress
 import json
 import logging
 import re
 import secrets
 import shutil
+import socket
 import socketserver
 import tempfile
 import threading
@@ -27,7 +31,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, backup, config as configmod, licenses, notice
+from . import __version__, backup, config as configmod, licenses, notice, setup as setupmod, webauth
 from .config import ConfigError, ModSpec
 from .daemon import Daemon
 from .http import sha1_file
@@ -56,7 +60,7 @@ SECURITY_HEADERS = {
 
 
 # Reachable before the first-run notice has been accepted.
-NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses"}
+NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses", "/api/auth/change"}
 
 
 class ApiError(Exception):
@@ -65,19 +69,32 @@ class ApiError(Exception):
         self.status = status
 
 
-def load_password(daemon: Daemon) -> tuple[str, bool]:
-    """The configured password, or a generated one kept in .mcsm/web-password."""
-    cfg = daemon.m.config
-    if cfg.web.password:
-        return cfg.web.password, False
-    path = cfg.state_dir / "web-password"
-    if path.exists():
-        return path.read_text().strip(), True
-    password = secrets.token_urlsafe(12)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(password + "\n")
-    path.chmod(0o600)
-    return password, True
+def host_allowed(host_header: str | None, extra: list[str]) -> bool:
+    """Whether a request's Host header names this machine (guards against DNS rebinding)."""
+    if not host_header:
+        return True  # HTTP/1.0 clients; browsers always send one
+    host = host_header.strip().lower()
+    if host.startswith("["):
+        host = host[1:host.find("]")] if "]" in host else host
+    else:
+        host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    host = host.rstrip(".")
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    if host == "localhost" or host.endswith((".localhost", ".local")) or host in extra:
+        return True
+    name = socket.gethostname().lower()
+    return host in (name, name.split(".")[0])
+
+
+def is_loopback(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address.split("%")[0]).is_loopback
+    except ValueError:
+        return False
 
 
 class WebUI:
@@ -86,13 +103,23 @@ class WebUI:
         cfg = daemon.m.config.web
         self.host = host or cfg.host
         self.port = cfg.port if port is None else port
-        self.password, generated = load_password(daemon)
-        self.generated = generated
+        self._store = webauth.AuthStore(daemon.m.config)
         self.sessions: dict[str, float] = {}
         self.failures: dict[str, list[float]] = {}
         self.lock = threading.Lock()
         self.httpd: ThreadingHTTPServer | None = None
         self.api = Api(self)
+
+    @property
+    def auth(self) -> webauth.Auth:
+        if self._store.config is not self.d.m.config:  # the config was reloaded
+            self._store = webauth.AuthStore(self.d.m.config)
+        return self._store.get()
+
+    @property
+    def store(self) -> webauth.AuthStore:
+        self.auth  # noqa: B018 - refresh after a config reload
+        return self._store
 
     @property
     def url(self) -> str:
@@ -107,9 +134,7 @@ class WebUI:
         self.httpd = _Server((self.host, self.port), Handler)
         self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True, name="web").start()
-        where = f"password in {self.d.m.config.state_dir / 'web-password'}" if self.generated \
-            else "password from [web] in mcsm.toml"
-        log.info("web UI at %s (%s)", self.url, where)
+        log.info("web UI at %s - password: %s", self.url, webauth.describe(self.auth))
 
     def stop(self) -> None:
         if self.httpd:
@@ -119,20 +144,39 @@ class WebUI:
     # ------------------------------------------------------------ sessions
     def login(self, password: str, client: str) -> str:
         now = time.time()
+        auth = self.auth
         with self.lock:
             recent = [t for t in self.failures.get(client, []) if now - t < 300]
             if len(recent) >= 5:
                 raise ApiError(429, "too many attempts; wait a few minutes")
-            if not hmac.compare_digest(password.encode(), self.password.encode()):
+        if auth.mode == "none" or not auth.check(password):  # "none" never needs (or accepts) a login
+            with self.lock:
                 self.failures[client] = recent + [now]
-                raise ApiError(401, "wrong password")
+            raise ApiError(401, "wrong PIN" if auth.mode == "pin" else "wrong password")
+        with self.lock:
             self.failures.pop(client, None)
-            token = secrets.token_urlsafe(32)
-            self.sessions = {t: exp for t, exp in self.sessions.items() if exp > now}
-            self.sessions[token] = now + SESSION_TTL
-            return token
+            return self._new_session(now)
 
-    def valid(self, token: str | None) -> bool:
+    def _new_session(self, now: float) -> str:
+        token = secrets.token_urlsafe(32)
+        self.sessions = {t: exp for t, exp in self.sessions.items() if exp > now}
+        self.sessions[token] = now + SESSION_TTL
+        return token
+
+    def change(self, mode: str, secret: str, local: bool) -> str:
+        """Change how the panel is protected; signs out everyone else and returns a new session."""
+        if mode == "none" and not local:
+            raise ApiError(400, "\"No password\" only works on the server's own computer; "
+                                "turn it on from there (or pick a PIN)")
+        self.store.set(mode, secret)
+        log.info("web UI sign-in changed to %s", {"none": "no password"}.get(mode, mode))
+        with self.lock:
+            self.sessions.clear()
+            return self._new_session(time.time())
+
+    def valid(self, token: str | None, local: bool = False) -> bool:
+        if local and self.auth.mode == "none":
+            return True
         if not token:
             return False
         with self.lock:
@@ -192,8 +236,25 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise ApiError(400, "expected a JSON object")
         return data
 
+    def _cookie(self, token: str) -> str:
+        return f"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
+
+    def _local(self) -> bool:
+        """A browser on this computer, talking to us directly (not through a proxy)."""
+        return is_loopback(self.client_address[0]) and not (
+            self.headers.get("X-Forwarded-For") or self.headers.get("Forwarded") or self.headers.get("X-Real-IP"))
+
+    def _host_ok(self) -> bool:
+        if host_allowed(self.headers.get("Host"), self.web.d.m.config.web.allowed_hosts):
+            return True
+        self._send(421, b"This address isn't allowed. If you reach mcsm through a reverse proxy or a custom "
+                        b"host name, add it to [web] allowed_hosts in mcsm.toml.\n", "text/plain; charset=utf-8")
+        return False
+
     # ------------------------------------------------------------ routing
     def do_GET(self):
+        if not self._host_ok():
+            return
         path, _, qs = self.path.partition("?")
         if path in STATIC:
             name, ctype = STATIC[path]
@@ -202,6 +263,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._dispatch("GET", path, urllib.parse.parse_qs(qs))
 
     def do_POST(self):
+        if not self._host_ok():
+            return
         path, _, qs = self.path.partition("?")
         self._dispatch("POST", path, urllib.parse.parse_qs(qs))
 
@@ -211,13 +274,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not found")
             if method == "POST" and self.headers.get("X-MCSM") != "1":
                 raise ApiError(403, "missing X-MCSM header")
+            local = self._local()
+            if path == "/api/auth" and method == "GET":
+                return self._json(200, {**self.web.auth.info(), "local": local})
             if path == "/api/login" and method == "POST":
                 token = self.web.login(str(self._body().get("password", "")), self.client_address[0])
-                cookie = (f"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; "
-                          f"Max-Age={SESSION_TTL}")
-                return self._json(200, {"ok": True}, {"Set-Cookie": cookie})
-            if not self.web.valid(self._token()):
+                return self._json(200, {"ok": True}, {"Set-Cookie": self._cookie(token)})
+            if not self.web.valid(self._token(), local):
                 raise ApiError(401, "login required")
+            if path == "/api/auth/change" and method == "POST":
+                b = self._body()
+                token = self.web.change(str(b.get("mode", "")), str(b.get("secret", "")), local)
+                return self._json(200, {"ok": True, **self.web.auth.info()}, {"Set-Cookie": self._cookie(token)})
             if path == "/api/logout":
                 self.web.logout(self._token())
                 return self._json(200, {"ok": True},
@@ -265,6 +333,8 @@ class Api:
         post("/api/updates/check", lambda q, b: self._job("update check", self.d.check_only, b.get("target")))
         post("/api/updates/apply", lambda q, b: self._job(
             "update", self.d.check_for_updates, True, b.get("target") or None))
+        get("/api/setup", self.setup_options)
+        post("/api/setup", self.setup_apply)
         get("/api/mods", self.mods)
         get("/api/mods/search", self.search)
         post("/api/mods/add", self.add_mod)
@@ -318,7 +388,9 @@ class Api:
             "auto_upgrade": m.config.updates.auto_upgrade,
             "update": self._update_summary(),
             "notice_accepted": notice.accepted(m.config.root),
+            "setup_pending": d.setup_pending,
             "self_update": d.self_update,
+            "auth": self.web.auth.info(),
         }
 
     def accept_notice(self, q, b) -> dict:
@@ -361,6 +433,34 @@ class Api:
         self.d.send_command(command)
         return {"ok": True}
 
+    # --------------------------------------------------------------- setup
+    def setup_options(self, q, b) -> dict:
+        versions, error = [], None
+        try:
+            versions = list(reversed(self.m.mojang.releases()))[:40]
+        except Exception as e:  # offline: "latest" still works once the network is back
+            error = f"couldn't load the list of Minecraft versions: {e}"
+        total = setupmod.total_ram_gb()
+        return {
+            "pending": self.d.setup_pending,
+            "loaders": [{"name": n, "label": label, "description": desc, "mods": mods}
+                        for n, label, desc, mods in setupmod.LOADER_INFO],
+            "versions": versions,
+            "versions_error": error,
+            "total_ram_gb": round(total, 1) if total else None,
+            "memory_gb": setupmod.suggested_memory_gb(total),
+            "difficulties": setupmod.DIFFICULTIES,
+            "gamemodes": setupmod.GAMEMODES,
+            "server_dir": str(self.m.server_dir),
+            "network_access": self.m.config.web.host in ("0.0.0.0", "::"),
+        }
+
+    def setup_apply(self, q, b) -> dict:
+        if not self.d.setup_pending:
+            raise ApiError(409, "this server is already set up")
+        spec = setupmod.SetupSpec.from_dict(b)
+        return self._job("set up server", self.d.run_setup, spec)
+
     # ---------------------------------------------------------------- mods
     def mods(self, q, b) -> dict:
         lk = self.m.lock
@@ -381,7 +481,11 @@ class Api:
         query = q.get("q", "").strip()
         if not query:
             return {"results": []}
-        results = self._modrinth().search(query, self.m.loader.mod_loaders)
+        loader_name = q.get("loader") or self.m.config.server.loader
+        from .loaders import LOADERS
+        if loader_name not in LOADERS:
+            raise ApiError(400, "unknown loader")
+        results = self._modrinth().search(query, LOADERS[loader_name].mod_loaders)
         listed = {s.id for s in self.m.config.mods if s.source == "modrinth"}
         for r in results:
             r["listed"] = r["id"] in listed or r["slug"] in listed

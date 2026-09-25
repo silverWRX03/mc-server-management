@@ -12,6 +12,7 @@ import webbrowser
 from pathlib import Path
 
 from . import __version__, backup, config as configmod, licenses, lock as lockmod, notice, selfupdate
+from . import setup as setupmod
 from .config import ConfigError, ModSpec
 from .daemon import Daemon, request_path, request_stop, running_pid, self_update_request_path
 from .manager import Manager, UpgradeError
@@ -242,7 +243,7 @@ def cmd_update(args) -> int:
     if _server_port_open(m):
         print("the server port is in use - stop the server first (or let `mcsm run` manage it)")
         return 1
-    decision, changes = m.check(args.to)
+    decision, changes = m.check(args.to, retry_failed=True)
     _print_decision(m, decision, changes)
     if not decision.plan or not changes or changes.empty or args.dry_run:
         return 0 if decision.plan else 1
@@ -312,7 +313,8 @@ def _wizard(root: Path) -> bool:
     ns = argparse.Namespace(
         root=root, dir=root, loader=loader, minecraft=minecraft, mod=mods, optional_mod=[], curseforge=[],
         memory=memory, java=None, port=25565, motd="A Minecraft server managed by mcsm", max_players=20,
-        difficulty="normal", gamemode="survival", seed=None, rcon=False, accept_eula=True, force=False, quiet=True)
+        difficulty="normal", gamemode="survival", seed=None, rcon=False, accept_eula=True,
+        force=setupmod.is_pending(root), quiet=True)  # replace a placeholder left by `mcsm start`
     if cmd_create(ns) != 0:
         return False
     if remote:
@@ -338,17 +340,34 @@ def lan_ip() -> str | None:
         return None
 
 
+def cmd_setup(args) -> int:
+    """Set up a new server by answering questions in the terminal (the web UI does the same)."""
+    root = args.root if (args.root / configmod.CONFIG_NAME).exists() else default_home()
+    if lockmod.load(root).installed:
+        print(f"a server is already set up in {root}")
+        return 1
+    if not interactive():
+        print("`mcsm setup` asks questions, so it needs a terminal; `mcsm start` sets up in the browser instead")
+        return 1
+    if not _wizard(root):
+        return 1
+    setupmod.clear_pending(root)
+    print("done - start it with `mcsm start`")
+    return 0
+
+
 def cmd_start(args) -> int:
     """The double-click entry point: set up a server if needed, run it, and open the web UI."""
-    from .web import load_password
+    from . import webauth
 
     root = args.root if (args.root / configmod.CONFIG_NAME).exists() else default_home()
-    if not (root / configmod.CONFIG_NAME).exists():
-        if not interactive():
-            print(f"no server set up in {root}; run `mcsm start` in a terminal to set one up")
-            return 1
-        if not _wizard(root):
-            return 1
+    first_run = not (root / configmod.CONFIG_NAME).exists()
+    if first_run:
+        # Set up in the browser: a placeholder config now, the real choices on the setup page.
+        scaffold(root, "fabric", "latest")
+        if not has_display():  # headless: the setup page must be reachable from another device
+            configmod.set_value(root / configmod.CONFIG_NAME, "web", "host", '"0.0.0.0"')
+        setupmod.mark_pending(root)
     m = Manager(configmod.load(root))
     if args.web_host:
         m.config.web.host = args.web_host
@@ -364,14 +383,15 @@ def cmd_start(args) -> int:
         return 0
     d = Daemon(m)
     d.open_browser = browser
-    password, _ = load_password(d)
-    lines = [f"  Server folder:  {root}", f"  Control panel:  http://localhost:{port}/"]
+    sign_in = webauth.describe(webauth.AuthStore(m.config).get())
+    lines = (["  Welcome to mcsm! Finish setting up your server in the browser."] if setupmod.is_pending(root) else [])
+    lines += [f"  Server folder:  {root}", f"  Control panel:  http://localhost:{port}/"]
     if m.config.web.host in ("0.0.0.0", "::") and (ip := lan_ip()):
         lines.append(f"  From other devices on your network:  http://{ip}:{port}/")
     elif not has_display():
         lines.append(f"  From your own PC, tunnel over SSH:  ssh -L {port}:localhost:{port} "
                      f"{getpass.getuser()}@<this server>  then open http://localhost:{port}/")
-    lines += [f"  Password:       {password}", "",
+    lines += [f"  Password:       {sign_in}", "",
               "  Keep this window open while the server runs, and press Ctrl+C to stop it.",
               "  (On Linux, `mcsm service install` keeps it running in the background instead.)"
               if sys.platform.startswith("linux") else ""]
@@ -380,18 +400,36 @@ def cmd_start(args) -> int:
 
 
 def cmd_web_password(args) -> int:
+    from . import webauth
+
     cfg = configmod.load(args.root)
+    store = webauth.AuthStore(cfg)
     if cfg.web.password:
-        print("the password is set in mcsm.toml under [web] password")
-        return 0
-    path = cfg.state_dir / "web-password"
-    if args.reset or not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(secrets.token_urlsafe(12) + "\n")
-        path.chmod(0o600)
-        if running_pid(Manager(cfg)):
-            print("note: restart `mcsm run` for the new password to take effect")
-    print(path.read_text().strip())
+        print("the web UI password is set in mcsm.toml under [web] password; change it there")
+        return 0 if not (args.reset or args.set or args.pin or args.none) else 1
+    try:
+        if args.reset:
+            store.reset()
+            print(f"the web UI password is back to {webauth.DEFAULT_PASSWORD}; "
+                  "you'll be asked to choose a new one when you sign in")
+        elif args.set or args.pin:
+            mode, what = ("pin", "PIN") if args.pin else ("password", "password")
+            secret = getpass.getpass(f"New {what}: ")
+            webauth.validate(mode, secret)
+            if getpass.getpass(f"Type the {what} again: ") != secret:
+                print(f"the two {what}s don't match; nothing changed")
+                return 1
+            store.set(mode, secret)
+            print(f"{what} changed")
+        elif args.none:
+            store.set("none")
+            print("no password: the control panel opens without signing in, but only on this computer")
+        else:
+            print(f"web UI sign-in: {webauth.describe(store.get())}")
+            print("change it with --set (password), --pin, --none, or --reset (back to PASSWORD)")
+    except ConfigError as e:
+        print(f"error: {e}")
+        return 1
     return 0
 
 
@@ -595,7 +633,7 @@ def cmd_service(args) -> int:
                 return 1
             for line in service.install(cfg.root):
                 print(line)
-            print(f"control panel: http://localhost:{cfg.web.port}/  (password: `mcsm web-password`)")
+            print(f"control panel: http://localhost:{cfg.web.port}/  (first sign-in: PASSWORD)")
         elif args.action == "uninstall":
             print(service.uninstall(cfg.root))
         else:
@@ -673,6 +711,8 @@ def _notice_ok(args) -> bool:
     root = root.resolve() if (root / configmod.CONFIG_NAME).exists() else None
     if args.command in NOTICE_EXEMPT or notice.accepted(root):
         return True
+    if args.command == "start":
+        return True  # the web UI shows the notice before anything is set up or downloaded
     if args.accept_notice:
         notice.accept(root, by="cli")
         return True
@@ -718,6 +758,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--web-host", help='web UI address; "0.0.0.0" to allow other devices on your network')
     s.add_argument("--web-port", type=int, help="web UI port (default 8765)")
     s.set_defaults(fn=cmd_start)
+
+    s = sub.add_parser("setup", help="set up a new server by answering questions in the terminal")
+    s.set_defaults(fn=cmd_setup)
 
     s = sub.add_parser("init", help="create mcsm.toml")
     s.add_argument("--loader", choices=configmod.LOADERS, default="fabric")
@@ -781,8 +824,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--web-host", help="web UI address (default 127.0.0.1)")
     s.set_defaults(fn=cmd_run)
 
-    s = sub.add_parser("web-password", help="print (or --reset) the generated web UI password")
-    s.add_argument("--reset", action="store_true")
+    s = sub.add_parser("web-password", help="show or change how the web UI is protected")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--set", action="store_true", help="choose a new password")
+    g.add_argument("--pin", action="store_true", help="use a 4-8 digit PIN instead")
+    g.add_argument("--none", action="store_true", help="no password (only from this computer)")
+    g.add_argument("--reset", action="store_true", help="go back to the default password, PASSWORD")
     s.set_defaults(fn=cmd_web_password)
 
     s = sub.add_parser("stop", help="stop a server started with `mcsm run`")

@@ -12,10 +12,12 @@
     <form id="login-form" class="login-card">
       <div class="brand big"><span class="logo"></span>mcsm</div>
       <p class="muted">Forever server control panel</p>
-      <label>Password<input id="login-password" type="password" autocomplete="current-password" autofocus></label>
-      <button class="btn primary" type="submit">Sign in</button>
-      <p id="login-error" class="error"></p>
-      <p class="muted small">The password is in <code>.mcsm/web-password</code>, or <code>[web] password</code> in mcsm.toml.</p>
+      <div id="login-fields" class="login-fields">
+        <label><span id="login-label">Password</span><input id="login-password" type="password" autocomplete="current-password" autofocus></label>
+        <button class="btn primary" type="submit">Sign in</button>
+        <p id="login-error" class="error"></p>
+      </div>
+      <p id="login-hint" class="muted small"></p>
     </form>
   </div>
 

@@ -72,6 +72,7 @@ def test_install_upgrade_and_rollback(make_config, http, modrinth):
     decision, changes = m.check()
     assert decision.plan.minecraft == "1.21.2"
     assert changes.empty
+    assert m.check(retry_failed=True)[0].plan.minecraft == "1.21.3"  # but a manual update retries
 
 
 def test_download_failure_leaves_server_untouched(make_config, http, modrinth):

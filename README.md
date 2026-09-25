@@ -128,10 +128,24 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
 
 ### What happens when you run it
 
-1. It shows [what mcsm does and doesn't do](#what-mcsm-does-and-doesnt-do) and asks you to accept.
-2. A few questions set up your server: loader, Minecraft version, memory, mods, and Mojang's EULA.
-3. It downloads and builds everything, starts the server, and opens the control panel in
-   your browser. The password is shown in the window.
+1. Your browser opens mcsm's control panel. Sign in with `PASSWORD`; you're then asked
+   to choose your own password, a PIN, or no password (this computer only).
+2. It shows [what mcsm does and doesn't do](#what-mcsm-does-and-doesnt-do) and asks you to accept.
+3. The **setup page** asks for:
+   - the server type: Fabric, NeoForge, Forge, Quilt or vanilla;
+   - the Minecraft version: "newest" for a server that keeps upgrading itself, or a
+     specific version to stay on;
+   - mods, found with a Modrinth search, each marked required or optional;
+   - the server name, players, difficulty, game mode and memory;
+   - the Minecraft EULA.
+4. **Create my server** downloads Java, the mod loader, Minecraft and your mods, starts
+   the server, and takes you to the dashboard. If a choice can't work, for example a
+   mod that doesn't support the chosen version, the page says why so you can change it
+   and try again.
+
+![Setup page](docs/web-setup.png)
+
+Prefer the terminal? `mcsm setup` asks the same questions there.
 
 Next time, run it the same way: it goes straight to starting your server. Keep the
 window open while the server runs, and press Ctrl+C to stop it cleanly.
@@ -238,7 +252,7 @@ delete the old jar, or leave it unmanaged if the mod never needs updating.
 
 ```sh
 mcsm run --web          # or set [web] enabled = true in mcsm.toml
-mcsm web-password       # prints the generated login password
+mcsm web-password       # shows how the panel is protected (--set, --pin, --none, --reset)
 ```
 
 Then open <http://localhost:8765>.
@@ -262,9 +276,19 @@ CurseForge's checksum before it's accepted.
 
 ![Updates page](docs/web-updates.png)
 
+**Signing in.** The first password is `PASSWORD`, and the panel asks you to change
+it right after you sign in. You can pick a password, a 4–8 digit PIN, or no password.
+No password only works in a browser on the server's own computer; other devices
+can't use the panel at all until you set a password or PIN again. Change it later
+under Settings → Sign-in. Forgot it? Run `mcsm web-password --reset` on the server
+to go back to `PASSWORD`. To fix the password in the config instead, set
+`[web] password` in mcsm.toml. Passwords and PINs are stored only as salted hashes.
+
 **Security.** By default it only listens on `127.0.0.1`. Every request needs a
-password login (rate limited; sessions are HttpOnly, SameSite=Strict cookies), and
-changes need a CSRF header. The page runs under a strict Content Security Policy
+login (rate limited; sessions are HttpOnly, SameSite=Strict cookies), and
+changes need a CSRF header. Requests must address this machine by IP, `localhost`,
+a `.local` name, or its host name, which blocks DNS-rebinding attacks. If you use a
+reverse proxy with its own domain, add that domain to `[web] allowed_hosts`. The page runs under a strict Content Security Policy
 with no third-party scripts. The console gives full operator control of your
 server, so to reach it from elsewhere, put it behind an HTTPS reverse proxy (Caddy,
 nginx) or a VPN such as Tailscale rather than exposing the port directly.

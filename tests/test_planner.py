@@ -117,7 +117,16 @@ def test_failed_plan_is_not_retried(make_config, http, modrinth):
     p = planner(cfg, http)
     first = p.decide().plan
     p.lock.failed_plans[first.fingerprint] = "crashed"
-    assert p.decide().plan.minecraft == "1.21.3"
+    decision = p.decide()
+    assert decision.plan.minecraft == "1.21.3"
+    assert "update manually" in decision.blocked[0].blockers[0].reason
+    # Asking for it (a manual update) tries it again.
+    assert p.decide(retry_failed=True).plan.minecraft == first.minecraft
+    # With nothing installed yet, a failure never blocks the first install.
+    p.lock = Lock()
+    fresh = p.decide().plan
+    p.lock.failed_plans[fresh.fingerprint] = "crashed"
+    assert p.decide().plan.fingerprint == fresh.fingerprint
 
 
 def test_changes_diff(make_config, http, modrinth):

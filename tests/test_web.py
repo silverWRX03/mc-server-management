@@ -36,7 +36,11 @@ class Client:
                 ctype = r.headers.get("Content-Type", "")
                 return r.status, json.loads(raw_body) if "json" in ctype else raw_body.decode(), r.headers
         except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read() or b"{}"), e.headers
+            raw_body = e.read() or b"{}"
+            try:
+                return e.code, json.loads(raw_body), e.headers
+            except ValueError:
+                return e.code, raw_body.decode(), e.headers
 
     def get(self, path):
         return self.call("GET", path)
@@ -56,13 +60,23 @@ def wait_for(fn, timeout=20):
 
 @pytest.fixture
 def running(make_config, http, modrinth):
+    yield from _running(make_config, http, modrinth, "hunter2hunter2")
+
+
+@pytest.fixture
+def running_default(make_config, http, modrinth):
+    """No password in mcsm.toml: sign-in is chosen in the web UI."""
+    yield from _running(make_config, http, modrinth, "")
+
+
+def _running(make_config, http, modrinth, password):
     modrinth.project("AAA", "goodmod", "Good Mod")
     modrinth.version("AAA", "1.0", ["1.21.1"])
     modrinth.project("BBB", "othermod", "Other Mod")
     modrinth.version("BBB", "1.0", ["1.21.1"])
     cfg = make_config([ModSpec("modrinth", "goodmod")])
     cfg.web.port = 0
-    cfg.web.password = "hunter2hunter2"
+    cfg.web.password = password
     m = manager(cfg, http, ["1.21.1"])
     assert update(m).ok
     d = Daemon(m, tick=0.1)
@@ -221,3 +235,50 @@ def test_web_players_page(running):
     bans = c.get("/api/players")[1]["bans"]
     assert bans[0]["name"] == "Alex" and bans[0]["reason"] == "griefing"
     assert c.post("/api/players/action", {"action": "kick", "name": "Alex"})[0] == 400
+
+
+def test_default_password_and_changing_it(running_default):
+    d, c, cfg = running_default
+    assert c.get("/api/auth")[1] == {"mode": "password", "default": True, "managed": False, "local": True}
+    assert c.post("/api/login", {"password": "password"})[0] == 401  # case matters
+    assert c.post("/api/login", {"password": "PASSWORD"})[0] == 200
+    assert c.get("/api/status")[1]["auth"]["default"] is True  # the UI asks to change it
+
+    other = Client(c.base)
+    assert other.post("/api/login", {"password": "PASSWORD"})[0] == 200
+    assert c.post("/api/auth/change", {"mode": "password", "secret": "PASSWORD"})[0] == 400
+    assert c.post("/api/auth/change", {"mode": "pin", "secret": "12ab"})[0] == 400
+    status, body, _ = c.post("/api/auth/change", {"mode": "pin", "secret": "4821"})
+    assert status == 200 and body["mode"] == "pin" and not body["default"]
+    assert c.get("/api/status")[0] == 200       # this browser stays signed in
+    assert other.get("/api/status")[0] == 401   # everyone else is signed out
+    assert other.post("/api/login", {"password": "PASSWORD"})[0] == 401
+    assert other.post("/api/login", {"password": "4821"})[0] == 200
+    stored = (cfg.state_dir / "web-auth.json").read_text()
+    assert "4821" not in stored and "PASSWORD" not in stored  # only a salted hash
+
+    # No password: this computer gets in without signing in...
+    assert c.post("/api/auth/change", {"mode": "none"})[0] == 200
+    assert Client(c.base).get("/api/status")[0] == 200
+    assert Client(c.base).post("/api/login", {"password": ""})[0] == 401
+    # ...but anything arriving through a proxy doesn't count as this computer.
+    assert Client(c.base).call("GET", "/api/status", headers={"X-Forwarded-For": "203.0.113.9"})[0] == 401
+    assert c.call("POST", "/api/auth/change", {"mode": "none"}, headers={"X-Forwarded-For": "203.0.113.9"})[0] == 400
+
+    # `mcsm web-password --reset` while running goes back to PASSWORD.
+    from mcsm import webauth
+    webauth.AuthStore(cfg).reset()
+    fresh = Client(c.base)
+    assert fresh.get("/api/status")[0] == 401
+    assert fresh.post("/api/login", {"password": "PASSWORD"})[0] == 200
+
+
+def test_foreign_host_names_are_refused(running_default):
+    d, c, cfg = running_default
+    port = c.base.rsplit(":", 1)[1]
+    assert c.call("GET", "/api/auth", headers={"Host": f"evil.example:{port}"})[0] == 421
+    assert c.call("GET", "/", headers={"Host": "evil.example"})[0] == 421
+    for ok in (f"localhost:{port}", f"127.0.0.1:{port}", f"[::1]:{port}", "192.168.1.20", "mypc.local"):
+        assert c.call("GET", "/api/auth", headers={"Host": ok})[0] == 200, ok
+    cfg.web.allowed_hosts.append("mc.example.com")
+    assert c.call("GET", "/api/auth", headers={"Host": "mc.example.com"})[0] == 200
