@@ -261,7 +261,7 @@ Then open <http://localhost:8765>.
 
 | Page | What you can do |
 |---|---|
-| **Dashboard** | server state, uptime, versions, who's online, update status, live activity feed |
+| **Dashboard** | CPU and memory bars; who's online, with head icons and one-click message / op / kick / ban; the server console with a command box; server state, update status, live activity feed |
 | **Console** | live server log (warnings and errors highlighted), send commands with history |
 | **Players** | who's online; kick, ban/pardon (by name or IP), op/de-op, whitelist on/off and add/remove; everyone who has joined before |
 | **Updates** | check now, see exactly what would change, which mods block newer versions, apply with one click |

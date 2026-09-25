@@ -288,15 +288,163 @@ $("#btn-restart").addEventListener("click", () => act(() => api("/api/server/res
 // -------------------------------------------------------------------- views
 const views = {};
 
+// A live server console: output plus a command box. Used on the Console page and the dashboard.
+function consolePanel({ compact = false } = {}) {
+  const out = h("div", { class: "console" + (compact ? " compact" : "") });
+  const input = h("input", { placeholder: "Type a server command, e.g. say hello  (↑/↓ for history)", autocomplete: "off",
+    "aria-label": "Server command" });
+  const history = []; let hi = 0; let seq = 0;
+
+  const cls = (line) => line.user ? "l-user" : /\/(ERROR|FATAL)\]|Exception/.test(line.text) ? "l-error" : /\/WARN\]/.test(line.text) ? "l-warn" : "";
+  const poll = async () => {
+    const r = await api(`/api/console?since=${seq}`).catch(() => null);
+    if (!r || !r.lines.length) return;
+    const stick = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+    seq = r.last;
+    const frag = document.createDocumentFragment();
+    for (const l of r.lines) frag.append(h("div", { class: cls(l) }, l.text));
+    out.append(frag);
+    while (out.childElementCount > (compact ? 500 : 3000)) out.firstChild.remove();
+    if (stick) out.scrollTop = out.scrollHeight;
+  };
+  const send = async () => {
+    const command = input.value.trim();
+    if (!command) return;
+    history.push(command); hi = history.length;
+    input.value = "";
+    await act(() => api("/api/command", { method: "POST", body: { command } }));
+    poll();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send();
+    else if (e.key === "ArrowUp" && hi > 0) { input.value = history[--hi]; e.preventDefault(); }
+    else if (e.key === "ArrowDown") { hi = Math.min(history.length, hi + 1); input.value = history[hi] || ""; }
+  });
+  const el = h("div", { class: compact ? "console-panel" : "console-wrap" },
+    out, h("div", { class: "console-input" }, input, h("button", { class: "btn primary", onclick: send }, "Send")));
+  return { el, input, poll };
+}
+
+// A player's face, cut from their skin (served by mcsm), or a lettered tile if there's none.
+const skinFails = new Set();
+function playerHead(name, size = 32) {
+  const c = h("canvas", { width: size, height: size, class: "head", "aria-hidden": "true" });
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  const tile = () => {
+    let hash = 0;
+    for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    ctx.fillStyle = `hsl(${hash % 360} 45% 38%)`;
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${Math.round(size * 0.55)}px system-ui, sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(name.charAt(0).toUpperCase(), size / 2, size / 2 + 1);
+  };
+  if (skinFails.has(name)) { tile(); return c; }
+  const img = new Image();
+  img.addEventListener("load", () => {
+    ctx.drawImage(img, 8, 8, 8, 8, 0, 0, size, size);        // face
+    if (img.height >= 64) ctx.drawImage(img, 40, 8, 8, 8, 0, 0, size, size);  // hat layer
+  });
+  img.addEventListener("error", () => { skinFails.add(name); tile(); });
+  img.src = `/api/players/skin?name=${encodeURIComponent(name)}`;
+  return c;
+}
+
+function meter(label) {
+  const value = h("strong", {});
+  const fillBar = h("div", { class: "bar-fill" });
+  const note = h("div", { class: "muted small" });
+  const el = h("div", { class: "card meter" },
+    h("div", { class: "meter-head" }, h("span", {}, label), value), h("div", { class: "bar" }, fillBar), note);
+  return {
+    el,
+    set(pct, text, sub) {
+      value.textContent = text;
+      note.textContent = sub || "";
+      const p = pct === null || pct === undefined ? 0 : Math.max(0, Math.min(100, pct));
+      fillBar.style.width = p + "%";  // CSSOM, allowed by the CSP (unlike style attributes)
+      fillBar.className = "bar-fill" + (p >= 90 ? " bad" : p >= 75 ? " warn" : "");
+    },
+  };
+}
+
 views.dashboard = () => {
   const statusBody = h("dl", { class: "kv" });
-  const players = h("div");
   const update = h("div");
   const events = h("div", { class: "events" });
+  const online = h("div", { class: "online" });
+  const onlineCount = h("span", { class: "muted" });
+  const playerCard = h("div", { class: "card" }, h("h3", {}, "Online now ", onlineCount), online);
+  const cpu = meter("CPU"), mem = meter("Memory");
+  const con = consolePanel({ compact: true });
   let evSeq = 0;
+  let selected = null;      // player whose actions are open
+  let ops = new Set();
+  let shown = "";           // online list last rendered, to keep head icons from flickering
+
+  const gb = (n) => n < 1024 ** 3 ? Math.round(n / 1024 ** 2) + " MB" : (n / 1024 ** 3).toFixed(n >= 10 * 1024 ** 3 ? 0 : 1) + " GB";
+  const renderMeters = (s) => {
+    const r = s.resources;
+    if (!r) {
+      const idle = s.state === "starting" ? "starting…" : "server stopped";
+      cpu.set(0, "—", idle); mem.set(0, "—", idle);
+      return;
+    }
+    cpu.set(r.cpu_percent, r.cpu_percent === null ? "…" : `${Math.round(r.cpu_percent)}%`,
+      `of ${r.cpus} CPU core${r.cpus === 1 ? "" : "s"}`);
+    mem.set(100 * r.memory_bytes / r.memory_max_bytes, `${gb(r.memory_bytes)} / ${gb(r.memory_max_bytes)}`,
+      "used / allowed" + (r.system_memory_bytes ? ` · this computer has ${gb(r.system_memory_bytes)}` : ""));
+  };
+
+  const run = async (action, name) => {
+    const CONFIRM = { kick: `Kick ${name}?`, ban: `Ban ${name}? They won't be able to join until pardoned.`,
+      op: `Make ${name} an operator? Operators can run any command, including /stop and /op.` };
+    if (CONFIRM[action] && !confirm(CONFIRM[action])) return;
+    const r = await act(() => api("/api/players/action", { method: "POST", body: { action, name } }));
+    if (r) { toast(r.message); setTimeout(loadPlayers, 800); }
+  };
+  const message = async (name) => {
+    const text = prompt(`Message to ${name}:`);
+    if (!text || !text.trim()) return;
+    await act(() => api("/api/command", { method: "POST", body: { command: `tell ${name} ${text.trim().replace(/\s+/g, " ")}` } }), `Sent to ${name}`);
+    con.poll();
+  };
+  const renderOnline = (names, max, force = false) => {
+    onlineCount.textContent = `${names.length} / ${max}`;
+    const key = names.join(",") + "|" + selected + "|" + [...ops].join(",");
+    if (key === shown && !force) return;
+    shown = key;
+    if (selected && !names.includes(selected)) selected = null;
+    if (!names.length) { fill(online, h("p", { class: "empty" }, "Nobody online right now.")); return; }
+    fill(online,
+      h("div", { class: "chips" }, names.map((n) => h("button", {
+        type: "button", class: "chip" + (n === selected ? " selected" : ""), title: `Manage ${n}`,
+        "aria-expanded": n === selected ? "true" : "false",
+        onclick: () => { selected = selected === n ? null : n; renderOnline(names, max, true); },
+      }, playerHead(n, 28), h("span", {}, n), ops.has(n.toLowerCase()) ? h("span", { class: "badge" }, "op") : null))),
+      selected ? h("div", { class: "row mt-s player-actions" },
+        h("strong", { class: "grow" }, selected),
+        h("button", { class: "btn small", onclick: () => message(selected) }, "Message"),
+        ops.has(selected.toLowerCase())
+          ? h("button", { class: "btn small", onclick: () => run("deop", selected) }, "Remove op")
+          : h("button", { class: "btn small", onclick: () => run("op", selected) }, "Make op"),
+        h("button", { class: "btn small", onclick: () => run("kick", selected) }, "Kick"),
+        h("button", { class: "btn small danger", onclick: () => run("ban", selected) }, "Ban"),
+        h("a", { class: "btn small ghost", href: "#players" }, "More…")) : null);
+  };
+  const loadPlayers = async () => {
+    const r = await api("/api/players").catch(() => null);
+    if (!r) return;
+    ops = new Set(r.ops.map((o) => (o.name || "").toLowerCase()));
+    if (status) renderOnline(status.players, status.max_players);
+  };
 
   const render = (s) => {
-    fill(statusBody, 
+    renderMeters(s);
+    renderOnline(s.players, s.max_players);
+    fill(statusBody,
       h("dt", {}, "State"), h("dd", {}, h("span", { class: "pill " + s.state }, s.state)),
       h("dt", {}, "Uptime"), h("dd", {}, s.uptime ? fmtDuration(s.uptime) : "—"),
       h("dt", {}, "Minecraft"), h("dd", {}, s.minecraft || "not installed"),
@@ -305,13 +453,8 @@ views.dashboard = () => {
       h("dt", {}, "Mods"), h("dd", {}, String(s.mods)),
       h("dt", {}, "Port"), h("dd", {}, s.port),
     );
-    fill(players, 
-      h("div", { class: "stat" }, `${s.players.length}`, h("span", { class: "muted small" }, ` / ${s.max_players}`)),
-      s.players.length ? h("ul", { class: "list" }, s.players.map((p) => h("li", {}, p))) : h("p", { class: "empty" }, "Nobody online"),
-      h("a", { href: "#players", class: "btn ghost" }, "Manage players →"),
-    );
     const u = s.update;
-    fill(update, 
+    fill(update,
       !u ? h("p", { class: "empty" }, "Not checked yet.")
         : u.up_to_date && u.latest !== s.minecraft
           ? h("div", { class: "notice warn" }, `On the newest version your mods support. Minecraft ${u.latest} is out; waiting on mods (see Updates).`)
@@ -336,51 +479,26 @@ views.dashboard = () => {
     while (events.childElementCount > 200) events.lastChild.remove();
   };
 
-  fill($("#main"), 
+  fill($("#main"),
     h("h2", { class: "view-title" }, "Dashboard"),
-    h("div", { class: "grid" }, card("Server", statusBody), card("Players", players), card("Updates", update)),
+    h("div", { class: "meters" }, cpu.el, mem.el),
+    h("div", { class: "mt" }, playerCard),
+    h("div", { class: "card mt" }, h("h3", {}, "Console"), con.el),
+    h("div", { class: "grid mt" }, card("Server", statusBody), card("Updates", update)),
     h("div", { class: "card mt" }, h("h3", {}, "Activity"), events),
   );
   if (status) render(status);
   every(3000, pollEvents);
+  every(1000, con.poll);
+  every(5000, loadPlayers);
   return { onStatus: render };
 };
 
 views.console = () => {
-  const out = h("div", { class: "console" });
-  const input = h("input", { placeholder: "Type a command, e.g. say hello  (↑/↓ for history)", autocomplete: "off" });
-  const history = []; let hi = 0; let seq = 0;
-
-  const cls = (line) => line.user ? "l-user" : /\/(ERROR|FATAL)\]|Exception/.test(line.text) ? "l-error" : /\/WARN\]/.test(line.text) ? "l-warn" : "";
-  const poll = async () => {
-    const r = await api(`/api/console?since=${seq}`).catch(() => null);
-    if (!r || !r.lines.length) return;
-    const stick = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
-    seq = r.last;
-    const frag = document.createDocumentFragment();
-    for (const l of r.lines) frag.append(h("div", { class: cls(l) }, l.text));
-    out.append(frag);
-    while (out.childElementCount > 3000) out.firstChild.remove();
-    if (stick) out.scrollTop = out.scrollHeight;
-  };
-  const send = async () => {
-    const command = input.value.trim();
-    if (!command) return;
-    history.push(command); hi = history.length;
-    input.value = "";
-    await act(() => api("/api/command", { method: "POST", body: { command } }));
-    poll();
-  };
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") send();
-    else if (e.key === "ArrowUp" && hi > 0) { input.value = history[--hi]; e.preventDefault(); }
-    else if (e.key === "ArrowDown") { hi = Math.min(history.length, hi + 1); input.value = history[hi] || ""; }
-  });
-
-  fill($("#main"), h("div", { class: "console-wrap" },
-    out, h("div", { class: "console-input" }, input, h("button", { class: "btn primary", onclick: send }, "Send"))));
-  input.focus();
-  every(1000, poll);
+  const con = consolePanel();
+  fill($("#main"), con.el);
+  con.input.focus();
+  every(1000, con.poll);
   return {};
 };
 

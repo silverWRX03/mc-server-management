@@ -247,3 +247,50 @@ def test_http_waits_out_rate_limits(monkeypatch):
     replies[:] = [urllib.error.HTTPError("u", 404, "nope", Message(), io.BytesIO())]
     with pytest.raises(httpmod.HttpError):
         httpmod.HttpClient(cache_ttl=0).get_json("https://api.mojang.com/y")
+
+
+def test_process_stats():
+    import os
+    import time as _time
+    from mcsm import stats
+    rss, cpu = stats.sample(os.getpid())
+    assert rss > 1024 * 1024 and cpu > 0
+    s = stats.Sampler()
+    first = s.read(os.getpid())
+    assert first["memory_bytes"] > 0 and first["cpu_percent"] is None  # needs two readings
+    end = _time.monotonic() + 0.6
+    while _time.monotonic() < end:
+        sum(range(1000))  # keep a core busy
+    second = s.read(os.getpid())
+    assert 0 < second["cpu_percent"] <= 100
+    assert s.read(None) is None
+    assert stats.heap_bytes("6G", 4) == 6 * 1024 ** 3 and stats.heap_bytes("512m", 4) == 512 * 1024 ** 2
+    assert stats.heap_bytes("auto", 3) == 3 * 1024 ** 3
+
+
+def test_skins(tmp_path, http):
+    import base64
+    import json as _json
+    from mcsm.skins import SESSION_PROFILE, SkinError, Skins
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "usercache.json").write_text(_json.dumps([{"name": "Notch", "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5"}]))
+    png = b"\x89PNG\r\n\x1a\n" + b"skin" * 10
+    textures = base64.b64encode(_json.dumps(
+        {"textures": {"SKIN": {"url": "http://textures.minecraft.net/texture/abc123"}}}).encode()).decode()
+    http.json[f"{SESSION_PROFILE}/069a79f444e94726a5befca90e38aaf5"] = {"properties": [{"name": "textures", "value": textures}]}
+    http.files["https://textures.minecraft.net/texture/abc123"] = png
+    skins = Skins(tmp_path / "skins", server, http)
+    assert skins.png("Notch") == png
+    http.files.clear()
+    assert skins.png("notch") == png  # cached on disk
+    with pytest.raises(SkinError):
+        skins.png("../etc")
+    with pytest.raises(SkinError):
+        skins.png("Nobody")  # not in the cache and Mojang doesn't know them
+    # A texture address that isn't Mojang's is refused.
+    (server / "usercache.json").write_text(_json.dumps([{"name": "Evil", "uuid": "0" * 32}]))
+    bad = base64.b64encode(_json.dumps({"textures": {"SKIN": {"url": "http://evil.example/x"}}}).encode()).decode()
+    http.json[f"{SESSION_PROFILE}/{'0' * 32}"] = {"properties": [{"name": "textures", "value": bad}]}
+    with pytest.raises(SkinError):
+        skins.png("Evil")

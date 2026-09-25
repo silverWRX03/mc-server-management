@@ -31,7 +31,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, backup, config as configmod, licenses, notice, setup as setupmod, webauth
+from . import __version__, backup, config as configmod, licenses, notice, setup as setupmod, stats, webauth
 from .config import ConfigError, ModSpec
 from .daemon import Daemon
 from .http import sha1_file
@@ -40,6 +40,7 @@ from .mods import ModError
 from .mods.modrinth import ModrinthProvider
 from .players import PlayerError, Players
 from .properties import read_properties
+from .skins import SkinError, Skins
 
 log = logging.getLogger(__name__)
 
@@ -210,8 +211,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in {**SECURITY_HEADERS, **(headers or {})}.items():
+        headers = {"Cache-Control": "no-store", **SECURITY_HEADERS, **(headers or {})}
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
@@ -298,6 +299,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             q = {k: v[-1] for k, v in query.items()}
             if path == "/api/manual/upload":
                 return self._json(200, self.web.api.upload(self, q))
+            if path == "/api/players/skin":
+                try:
+                    png = self.web.api.skins.png(q.get("name", ""))
+                except SkinError as e:
+                    raise ApiError(404, str(e)) from None
+                return self._send(200, png, "image/png", {"Cache-Control": "private, max-age=3600"})
             body = self._body() if method == "POST" else {}
             return self._json(200, handler(q, body))
         except ApiError as e:
@@ -341,6 +348,7 @@ class Api:
         post("/api/mods/remove", self.remove_mod)
         post("/api/mods/required", self.set_required)
         post("/api/manual/upload", lambda q, b: None)  # handled specially (raw body)
+        get("/api/players/skin", lambda q, b: None)    # handled specially (an image)
         get("/api/backups", self.backups)
         post("/api/backups/create", self.create_backup)
         post("/api/backups/restore", self.restore_backup)
@@ -352,6 +360,14 @@ class Api:
         get("/api/settings", self.settings)
         post("/api/settings", self.save_settings)
         self.routes = r
+        self.sampler = stats.Sampler()
+        self._skins: Skins | None = None
+
+    @property
+    def skins(self) -> Skins:
+        if self._skins is None or self._skins.server_dir != self.m.server_dir:  # the config may change
+            self._skins = Skins(self.m.config.state_dir / "skins", self.m.server_dir)
+        return self._skins
 
     @property
     def m(self):
@@ -391,7 +407,20 @@ class Api:
             "setup_pending": d.setup_pending,
             "self_update": d.self_update,
             "auth": self.web.auth.info(),
+            "resources": self._resources(),
         }
+
+    def _resources(self) -> dict | None:
+        """CPU and memory use of the running server, for the dashboard's bars."""
+        proc = self.d.proc
+        pid = proc.proc.pid if proc and proc.running and getattr(proc, "proc", None) else None
+        usage = self.sampler.read(pid)
+        if usage is None:
+            return None
+        total = setupmod.total_ram_gb()
+        return {**usage,
+                "memory_max_bytes": stats.heap_bytes(self.m.config.server.memory, setupmod.suggested_memory_gb()),
+                "system_memory_bytes": int(total * 1024 ** 3) if total else None}
 
     def accept_notice(self, q, b) -> dict:
         if b.get("version") != notice.NOTICE_VERSION:
