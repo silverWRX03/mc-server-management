@@ -181,7 +181,7 @@ def test_web_auth_store(tmp_path):
     cfg = configmod.parse(tmp_path, {"server": {"loader": "fabric"}})
     store = webauth.AuthStore(cfg)
     auth = store.get()
-    assert auth.default and auth.check("PASSWORD") and not auth.check("password")
+    assert auth.default and auth.check("PASSWORD") and auth.check("Password") and not auth.check("passwort")
     store.set("pin", "0042")
     assert webauth.AuthStore(cfg).get().check("0042")  # saved
     for mode, secret in (("pin", "123"), ("pin", "123456789"), ("password", "abc"), ("password", "PASSWORD"),
@@ -190,12 +190,12 @@ def test_web_auth_store(tmp_path):
             store.set(mode, secret)
     assert store.get().mode == "none" or store.get().check("0042")  # failed changes keep the old one
 
-    # mcsm 0.1's plain-text password keeps working and is replaced by a hash.
+    # mcsm 0.1's generated plain-text password is replaced by the default PASSWORD.
     legacy = tmp_path / "old"
     (legacy / ".mcsm").mkdir(parents=True)
     (legacy / ".mcsm" / "web-password").write_text("s3cret-from-0.1\n")
     old = webauth.AuthStore(configmod.parse(legacy, {"server": {"loader": "fabric"}})).get()
-    assert old.check("s3cret-from-0.1") and not old.default
+    assert old.check("PASSWORD") and old.default and not old.check("s3cret-from-0.1")
     assert not (legacy / ".mcsm" / "web-password").exists()
 
     # [web] password in mcsm.toml wins and can't be changed from the UI.
