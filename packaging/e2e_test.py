@@ -147,7 +147,13 @@ def main() -> int:
         out = run(exe, "-C", str(root), "cmd", "list", env=env)
         if "players online" not in out:
             raise Failed("RCON `list` gave no player count")
-        run(exe, "-C", str(root), "player", "op", "Notch", env=env)
+        # The server looks the name up with Mojang, which rate-limits busy CI addresses; mcsm
+        # reports that as an error, so give Mojang a few chances before calling it a failure.
+        for attempt in range(4):
+            if attempt:
+                time.sleep(30)
+            if "the server says" not in run(exe, "-C", str(root), "player", "op", "Notch", env=env, ok=False):
+                break
         wait("ops.json to list Notch",
              lambda: "Notch" in (root / "server" / "ops.json").read_text(), 60)
         print("op via RCON works")

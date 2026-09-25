@@ -34,7 +34,9 @@ class Client:
                     self.cookie = r.headers["Set-Cookie"].split(";")[0]
                 raw_body = r.read()
                 ctype = r.headers.get("Content-Type", "")
-                return r.status, json.loads(raw_body) if "json" in ctype else raw_body.decode(), r.headers
+                if "json" in ctype:
+                    return r.status, json.loads(raw_body), r.headers
+                return r.status, raw_body.decode() if ctype.startswith("text/") else raw_body, r.headers
         except urllib.error.HTTPError as e:
             raw_body = e.read() or b"{}"
             try:
@@ -283,3 +285,25 @@ def test_foreign_host_names_are_refused(running_default):
         assert c.call("GET", "/api/auth", headers={"Host": ok})[0] == 200, ok
     cfg.web.allowed_hosts.append("mc.example.com")
     assert c.call("GET", "/api/auth", headers={"Host": "mc.example.com"})[0] == 200
+
+
+def test_dashboard_usage_and_skins(running):
+    d, c, cfg = running
+    login(c)
+    first = c.get("/api/status")[1]["resources"]
+    assert first["memory_bytes"] > 0 and first["cpus"] >= 1 and first["memory_max_bytes"] == 4 * 1024 ** 3
+    time.sleep(0.6)
+    assert c.get("/api/status")[1]["resources"]["cpu_percent"] is not None
+
+    from mcsm.skins import SkinError
+    skins = d.ui.api.skins
+
+    def fake_png(name):
+        if name != "Notch":
+            raise SkinError("no skin")
+        return b"\x89PNG\r\n\x1a\nfake"
+    skins.png = fake_png
+    assert c.get("/api/players/skin?name=Nobody")[0] == 404  # the page draws a lettered tile
+    status, body, headers = c.call("GET", "/api/players/skin?name=Notch")
+    assert status == 200 and headers["Content-Type"] == "image/png" and body.startswith(b"\x89PNG")
+    assert Client(c.base).get("/api/players/skin?name=Notch")[0] == 401  # signed-in only

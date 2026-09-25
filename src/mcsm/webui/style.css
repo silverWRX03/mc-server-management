@@ -103,7 +103,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; min-width: 0; }
 .card h3 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
 .card + .card { margin-top: 16px; }
-.grid .card + .card { margin-top: 0; }
+.grid .card + .card, .meters .card + .card { margin-top: 0; }
 .stat { font-size: 26px; font-weight: 700; }
 dl.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
 dl.kv dt { color: var(--muted); }
@@ -129,6 +129,27 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: upp
 .console .l-error { color: #ff8a80; }
 .console .l-user { color: #7ec8ff; }
 .console-input { margin-top: 10px; display: flex; gap: 8px; }
+.console.compact { height: 260px; flex: none; }
+
+/* dashboard: usage bars and who's online */
+.meters { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.meter { display: grid; gap: 8px; }
+.meter-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.meter-head span { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+.meter-head strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.bar { height: 10px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+.bar-fill { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .6s ease; }
+.bar-fill.warn { background: var(--warn); }
+.bar-fill.bad { background: var(--danger); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 4px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text); font: inherit; cursor: pointer; }
+.chip:hover { border-color: #3d454d; }
+.chip.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.head { border-radius: 4px; image-rendering: pixelated; flex-shrink: 0; }
+.badge { font-size: 10.5px; font-weight: 700; text-transform: uppercase; color: #ffe8a8; background: #3a3215;
+  border-radius: 4px; padding: 1px 5px; }
+.player-actions { padding: 10px 12px; background: var(--panel-2); border-radius: var(--radius); }
 .console-input input { font-family: var(--mono); }
 
 /* events */

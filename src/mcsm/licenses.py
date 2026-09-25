@@ -50,6 +50,8 @@ DOWNLOADED = [
 # Online services mcsm talks to (their terms apply; no account data is sent).
 SERVICES = [
     ("Mojang version manifest and profile API", "https://www.minecraft.net/en-us/terms"),
+    ("Mojang session and texture servers (player skins for the dashboard's head icons)",
+     "https://www.minecraft.net/en-us/terms"),
     ("Modrinth API", "https://modrinth.com/legal/terms"),
     ("CurseForge API (only with your API key)", "https://support.curseforge.com/en/support/solutions/articles/9000207405"),
     ("Fabric / Quilt / NeoForge / Forge metadata and maven servers", "see each project above"),

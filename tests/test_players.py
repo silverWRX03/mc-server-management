@@ -88,3 +88,31 @@ def test_running_server_gets_commands(server, http):
     p.act("ban-ip", "Steve")
     p.act("whitelist-add", "Alex")
     assert sent == ["op Steve", "kick Steve be nice stop", "ban-ip Steve", "whitelist add Alex"]
+
+
+def test_cli_reports_when_the_server_cant_find_a_player(make_config, monkeypatch, capsys):
+    from mcsm import cli
+
+    class FakeRcon:
+        replies = {"op Notch": "That player does not exist", "op Steve": "Made Steve a server operator"}
+
+        @classmethod
+        def from_server_dir(cls, d):
+            return cls()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def command(self, c):
+            return self.replies[c]
+
+    cfg = make_config([])
+    monkeypatch.setattr(cli, "Rcon", FakeRcon)
+    monkeypatch.setattr(cli, "running_pid", lambda m: 123)
+    assert cli.main(["-C", str(cfg.root), "player", "op", "Notch"]) == 1
+    assert "Mojang's lookup service may be busy" in capsys.readouterr().out
+    assert cli.main(["-C", str(cfg.root), "player", "op", "Steve"]) == 0
+    assert "Made Steve a server operator" in capsys.readouterr().out

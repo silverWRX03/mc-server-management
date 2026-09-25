@@ -5,6 +5,7 @@ import getpass
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import sys
@@ -538,6 +539,10 @@ def cmd_player(args) -> int:
 
     def send(command: str) -> None:
         reply = rcon.command(command)
+        if reply and re.search(r"does not exist|no player was found|unknown player", reply, re.I):
+            # The server looks names up with Mojang itself; it says this when that fails.
+            raise PlayerError(f"the server says: {reply.strip()}. Check the spelling; if it's right, "
+                              "Mojang's lookup service may be busy, so try again in a minute")
         if reply:
             print(reply)
     if running:

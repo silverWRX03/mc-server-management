@@ -59,8 +59,10 @@ class HttpClient:
     re-fetching the same data; it expires so a long-running daemon sees new releases.
     """
 
-    def __init__(self, retries: int = 3, timeout: float = 30.0, cache_ttl: float = 300.0):
+    def __init__(self, retries: int = 3, timeout: float = 30.0, cache_ttl: float = 300.0,
+                 rate_limit_retries: int = RATE_LIMIT_RETRIES):
         self.retries = retries
+        self.rate_limit_retries = rate_limit_retries
         self.timeout = timeout
         self.cache_ttl = cache_ttl
         self._cache: dict[str, tuple[float, Any]] = {}
@@ -79,7 +81,7 @@ class HttpClient:
                 if e.code != 429 and e.code < 500:
                     raise HttpError(req.full_url, e.code, f"HTTP {e.code}") from e
                 last = e
-                if e.code == 429 and limited < RATE_LIMIT_RETRIES:
+                if e.code == 429 and limited < self.rate_limit_retries:
                     # Rate limited (Mojang's lookup API does this readily): wait as asked, or long
                     # enough for the limit to reset, without using up the normal retries.
                     delay = min(_retry_after(e) or RATE_LIMIT_DELAYS[limited], MAX_RATE_LIMIT_DELAY)
