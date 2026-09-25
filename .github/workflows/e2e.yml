@@ -63,7 +63,8 @@ jobs:
       - name: End-to-end test
         shell: bash
         run: |
-          exe=dist/mcsm$([ -f dist/mcsm.exe ] && echo .exe)
+          exe=dist/mcsm
+          if [ -f dist/mcsm.exe ]; then exe=dist/mcsm.exe; fi
           python packaging/e2e_test.py "$exe" --loader ${{ matrix.loader }} --minecraft ${{ matrix.minecraft }} ${{ matrix.args }}
       - name: Upload logs
         if: failure()
