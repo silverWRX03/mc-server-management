@@ -57,6 +57,8 @@ class Auth:
             return True
         if not self.hash:
             return False
+        if self.default:  # the built-in password is forgiving about case and stray spaces
+            secret = secret.strip().upper()
         return hmac.compare_digest(_hash(secret, bytes.fromhex(self.salt), self.iterations), self.hash)
 
     def info(self) -> dict:
@@ -106,13 +108,9 @@ class AuthStore:
                                 iterations=int(d.get("iterations", ITERATIONS)), default=bool(d.get("default")))
             except (ValueError, TypeError):
                 pass
-        legacy = self.config.state_dir / LEGACY_FILE
-        if legacy.exists() and legacy.read_text().strip():
-            # Keep an existing mcsm 0.1 password working, but stop storing it in plain text.
-            auth = _hashed("password", legacy.read_text().strip())
-            self._save(auth)
-            legacy.unlink(missing_ok=True)
-            return auth
+        # mcsm 0.1 generated a random password into a plain-text file; nobody chose it, so
+        # start over with the default (and the prompt to pick your own).
+        (self.config.state_dir / LEGACY_FILE).unlink(missing_ok=True)
         auth = _hashed("password", DEFAULT_PASSWORD, default=True)
         self._save(auth)
         return auth

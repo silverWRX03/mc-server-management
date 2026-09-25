@@ -453,7 +453,19 @@ class Api:
             "gamemodes": setupmod.GAMEMODES,
             "server_dir": str(self.m.server_dir),
             "network_access": self.m.config.web.host in ("0.0.0.0", "::"),
+            "current": self._current_setup(),
         }
+
+    def _current_setup(self) -> dict | None:
+        """What an existing mcsm.toml already asks for, so the setup page can start from it."""
+        cfg = self.m.config
+        mods = [{"slug": s.id, "required": s.required} for s in cfg.mods
+                if s.source == "modrinth" and s.id != "fabric-api"]
+        if not mods and cfg.server.minecraft == "latest" and cfg.server.loader == "fabric":
+            return None  # the untouched default
+        mem = re.fullmatch(r"(\d+)G", cfg.server.memory)
+        return {"loader": cfg.server.loader, "minecraft": cfg.server.minecraft, "mods": mods,
+                "memory_gb": int(mem.group(1)) if mem and 1 <= int(mem.group(1)) <= 64 else None}
 
     def setup_apply(self, q, b) -> dict:
         if not self.d.setup_pending:

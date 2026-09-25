@@ -181,7 +181,7 @@ def test_web_auth_store(tmp_path):
     cfg = configmod.parse(tmp_path, {"server": {"loader": "fabric"}})
     store = webauth.AuthStore(cfg)
     auth = store.get()
-    assert auth.default and auth.check("PASSWORD") and not auth.check("password")
+    assert auth.default and auth.check("PASSWORD") and auth.check("Password") and not auth.check("passwort")
     store.set("pin", "0042")
     assert webauth.AuthStore(cfg).get().check("0042")  # saved
     for mode, secret in (("pin", "123"), ("pin", "123456789"), ("password", "abc"), ("password", "PASSWORD"),
@@ -190,12 +190,12 @@ def test_web_auth_store(tmp_path):
             store.set(mode, secret)
     assert store.get().mode == "none" or store.get().check("0042")  # failed changes keep the old one
 
-    # mcsm 0.1's plain-text password keeps working and is replaced by a hash.
+    # mcsm 0.1's generated plain-text password is replaced by the default PASSWORD.
     legacy = tmp_path / "old"
     (legacy / ".mcsm").mkdir(parents=True)
     (legacy / ".mcsm" / "web-password").write_text("s3cret-from-0.1\n")
     old = webauth.AuthStore(configmod.parse(legacy, {"server": {"loader": "fabric"}})).get()
-    assert old.check("s3cret-from-0.1") and not old.default
+    assert old.check("PASSWORD") and old.default and not old.check("s3cret-from-0.1")
     assert not (legacy / ".mcsm" / "web-password").exists()
 
     # [web] password in mcsm.toml wins and can't be changed from the UI.
@@ -215,3 +215,35 @@ def test_host_allowlist():
         assert host_allowed(ok, ["proxy.example.com"]), ok
     for bad in ("evil.example", "evil.example:8765", "localhost.evil.example", "127.0.0.1.nip.io"):
         assert not host_allowed(bad, []), bad
+
+
+def test_http_waits_out_rate_limits(monkeypatch):
+    import io
+    import urllib.error
+    from email.message import Message
+    from mcsm import http as httpmod
+
+    def limited(retry_after=None):
+        headers = Message()
+        if retry_after:
+            headers["Retry-After"] = retry_after
+        return urllib.error.HTTPError("https://api.mojang.com/x", 429, "Too Many Requests", headers, io.BytesIO())
+
+    replies = [limited("12"), limited(), limited(), limited(), io.BytesIO(b'{"id": "abc"}')]
+    slept = []
+    monkeypatch.setattr(httpmod.time, "sleep", slept.append)
+
+    def urlopen(req, timeout):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        reply.headers = {}
+        return reply
+    monkeypatch.setattr(httpmod.urllib.request, "urlopen", urlopen)
+    assert httpmod.HttpClient(cache_ttl=0).get_json("https://api.mojang.com/x") == {"id": "abc"}
+    assert slept == [12, 10, 20, 30]  # Retry-After first, then growing waits
+
+    # Other client errors still fail at once, and plain failures stop after the normal retries.
+    replies[:] = [urllib.error.HTTPError("u", 404, "nope", Message(), io.BytesIO())]
+    with pytest.raises(httpmod.HttpError):
+        httpmod.HttpClient(cache_ttl=0).get_json("https://api.mojang.com/y")

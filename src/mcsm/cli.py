@@ -369,6 +369,9 @@ def cmd_start(args) -> int:
             configmod.set_value(root / configmod.CONFIG_NAME, "web", "host", '"0.0.0.0"')
         setupmod.mark_pending(root)
     m = Manager(configmod.load(root))
+    if not first_run and not m.lock.installed and not setupmod.is_pending(root) and not running_pid(m):
+        # Configured but never installed (e.g. an earlier attempt failed): finish setup in the browser.
+        setupmod.mark_pending(root)
     if args.web_host:
         m.config.web.host = args.web_host
     if args.web_port:

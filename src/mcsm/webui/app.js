@@ -762,7 +762,7 @@ views.settings = () => {
 // Kept outside the view so choices survive re-renders and a failed attempt.
 const setupState = { loader: "fabric", minecraft: "latest", mods: new Map(), motd: "A Minecraft server",
   max_players: 20, difficulty: "normal", gamemode: "survival", port: 25565, memory_gb: null,
-  network_access: null, accept_eula: false, submitted: false };
+  network_access: null, accept_eula: false, submitted: false, prefilled: false };
 
 views.setup = () => {
   const main = h("div", { class: "setup" });
@@ -880,6 +880,14 @@ views.setup = () => {
   (async () => {
     opts = await api("/api/setup").catch((e) => { toast(e.message, true); return null; });
     if (!opts) return;
+    if (!st.prefilled && opts.current) {  // an existing mcsm.toml: start from its choices
+      st.prefilled = true;
+      const c = opts.current;
+      if (opts.loaders.some((l) => l.name === c.loader)) st.loader = c.loader;
+      st.minecraft = c.minecraft;
+      for (const m of c.mods) st.mods.set(m.slug, { name: m.slug, required: m.required });
+      if (c.memory_gb) st.memory_gb = c.memory_gb;
+    }
     if (st.memory_gb === null) st.memory_gb = opts.memory_gb;
     if (st.network_access === null) st.network_access = opts.network_access;
     if (opts.versions_error) toast(opts.versions_error, true);
