@@ -42,6 +42,12 @@ class ModFile:
     dependencies: list[str] = field(default_factory=list)
     required: bool = True
     dependency_of: str | None = None
+    #: set when the author blocks automatic downloads: a page where a person can download it
+    manual_url: str | None = None
+
+    @property
+    def manual(self) -> bool:
+        return bool(self.manual_url)
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -6,6 +6,8 @@ import socket
 import struct
 from pathlib import Path
 
+from .properties import read_properties
+
 LOGIN, COMMAND, RESPONSE = 3, 2, 0
 
 
@@ -21,16 +23,6 @@ def encode(request_id: int, kind: int, body: str) -> bytes:
 def decode(data: bytes) -> tuple[int, int, str]:
     request_id, kind = struct.unpack("<ii", data[:8])
     return request_id, kind, data[8:-2].decode("utf-8", errors="replace")
-
-
-def read_properties(path: Path) -> dict[str, str]:
-    props = {}
-    if path.exists():
-        for line in path.read_text(errors="replace").splitlines():
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                props[k.strip()] = v.strip()
-    return props
 
 
 class Rcon:

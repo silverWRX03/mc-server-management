@@ -9,6 +9,7 @@ from ..http import HttpClient, HttpError
 from .base import CHANNEL_RANK, ModError, ModFile, ModProvider, Project, Unavailable
 
 API = "https://api.curseforge.com/v1"
+WEBSITE = "https://www.curseforge.com/minecraft/mc-mods"
 MINECRAFT_GAME_ID = 432
 MODS_CLASS_ID = 6
 LOADER_TYPES = {"forge": 1, "fabric": 4, "quilt": 5, "neoforge": 6}
@@ -83,16 +84,23 @@ class CurseForgeProvider(ModProvider):
             if not files:
                 continue
             f = max(files, key=lambda f: f.get("fileDate", ""))
-            if not f.get("downloadUrl"):
-                raise Unavailable(f"{project.name}'s author has disabled third-party downloads; "
-                                  f"install {f['fileName']} manually")
+            # Authors can opt out of third-party downloads; then a person has to fetch
+            # the file from the website, and mcsm picks it up from the manual folder.
+            manual_url = None if f.get("downloadUrl") else manual_download_url(project, f["id"])
             sha1 = next((h["value"] for h in f.get("hashes", []) if h.get("algo") == 1), None)
             deps = [str(d["modId"]) for d in f.get("dependencies", [])
                     if d.get("relationType") == REQUIRED_DEPENDENCY]
             return ModFile(
                 key=project.key, source=self.source, project_id=project.id, name=project.name,
                 version_id=str(f["id"]), version_number=f.get("displayName", f["fileName"]),
-                filename=f["fileName"], url=f["downloadUrl"], sha1=sha1,
+                filename=f["fileName"], url=f.get("downloadUrl") or "", sha1=sha1,
                 dependencies=deps, required=spec.required, dependency_of=spec.dependency_of,
+                manual_url=manual_url,
             )
         raise Unavailable(f"{project.name} has no {'/'.join(loaders)} build for {minecraft}")
+
+
+def manual_download_url(project: Project, file_id: int | str) -> str:
+    if project.slug:
+        return f"{WEBSITE}/{project.slug}/files/{file_id}"
+    return f"https://www.curseforge.com/projects/{project.id}"

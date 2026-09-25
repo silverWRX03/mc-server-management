@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import secrets
 import signal
 import socket
 import sys
@@ -16,7 +17,9 @@ from .manager import Manager, UpgradeError
 from .mods import ModError, providers_for
 from .http import HttpClient, HttpError
 from .java import JavaError
-from .rcon import Rcon, RconError, read_properties
+from .java import JavaManager
+from .properties import read_properties, write_properties
+from .rcon import Rcon, RconError
 
 log = logging.getLogger("mcsm")
 
@@ -33,28 +36,107 @@ def _server_port_open(manager: Manager) -> bool:
 
 
 # ---------------------------------------------------------------- commands
-def cmd_init(args) -> int:
-    root: Path = args.root
+EULA_NOTE = ("read https://aka.ms/MinecraftEULA, then accept it with --accept-eula "
+             "or by writing eula=true to eula.txt in the server directory")
+
+
+def scaffold(root: Path, loader: str, minecraft: str, server_dir: str | None = None,
+             accept_eula: bool = False, force: bool = False) -> configmod.Config | None:
+    """Write a fresh mcsm.toml (and server dir) under ``root``."""
     path = root / configmod.CONFIG_NAME
-    if path.exists() and not args.force:
+    if path.exists() and not force:
         print(f"{path} already exists (use --force to overwrite)")
-        return 1
+        return None
     root.mkdir(parents=True, exist_ok=True)
-    path.write_text(configmod.render_template(args.loader, args.minecraft))
+    path.write_text(configmod.render_template(loader, minecraft))
+    if server_dir:
+        configmod.set_value(path, "server", "dir", json.dumps(Path(server_dir).resolve().as_posix()))
     cfg = configmod.load(root)
-    if args.server_dir:
-        text = path.read_text().replace('dir = "server" ', f'dir = "{Path(args.server_dir).resolve().as_posix()}" ', 1)
-        path.write_text(text)
-        cfg = configmod.load(root)
     cfg.server.dir.mkdir(parents=True, exist_ok=True)
-    if args.accept_eula:
+    if accept_eula:
         (cfg.server.dir / "eula.txt").write_text(
-            "# Accepted via mcsm init --accept-eula (https://aka.ms/MinecraftEULA)\neula=true\n")
+            "# Accepted via mcsm --accept-eula (https://aka.ms/MinecraftEULA)\neula=true\n")
     print(f"wrote {path}")
-    if not args.accept_eula and not (cfg.server.dir / "eula.txt").exists():
-        print("note: read https://aka.ms/MinecraftEULA, then accept it with `mcsm init --accept-eula --force` "
-              "or by writing eula=true to eula.txt in the server directory")
+    return cfg
+
+
+def cmd_init(args) -> int:
+    cfg = scaffold(args.root, args.loader, args.minecraft, args.server_dir, args.accept_eula, args.force)
+    if cfg is None:
+        return 1
+    if not (cfg.server.dir / "eula.txt").exists():
+        print(f"note: {EULA_NOTE}")
     print("next: add mods with `mcsm add <slug>` (or `mcsm import` for an existing server), then `mcsm update`")
+    return 0
+
+
+def _add_mods(cfg: configmod.Config, source: str, ids: list[str], optional: bool) -> bool:
+    providers = providers_for(cfg, HttpClient())
+    listed = list(cfg.mods)
+    for mod_id in ids:
+        try:
+            project = providers[source].project(mod_id)
+        except ModError as e:
+            print(f"error: {e}")
+            return False
+        if project.server_side == "unsupported":
+            print(f"skipping {project.name}: it is a client-side only mod")
+            continue
+        if any(s.source == source and s.id in (mod_id, project.id, project.slug) for s in listed):
+            print(f"{project.name} is already listed")
+            continue
+        spec = ModSpec(source, project.slug or project.id, required=not optional)
+        configmod.append_mod(cfg.path, spec)
+        listed.append(spec)
+        print(f"added {project.name}{' (optional)' if optional else ''}")
+    return True
+
+
+def cmd_create(args) -> int:
+    """Build a brand-new server: config, mods, server.properties, Java, loader, first boot."""
+    root: Path = args.dir.resolve()
+    cfg = scaffold(root, args.loader, args.minecraft, None, args.accept_eula, args.force)
+    if cfg is None:
+        return 1
+    configmod.set_value(cfg.path, "server", "memory", json.dumps(args.memory))
+    if args.java:
+        configmod.set_value(cfg.path, "java", "version", str(args.java))
+    cfg = configmod.load(root)
+    for source, ids, optional in (("modrinth", args.mod, False), ("modrinth", args.optional_mod, True),
+                                  ("curseforge", args.curseforge, False)):
+        if ids and not _add_mods(cfg, source, ids, optional):
+            return 1
+        cfg = configmod.load(root)
+
+    props = {"server-port": str(args.port), "motd": args.motd, "max-players": str(args.max_players),
+             "difficulty": args.difficulty, "gamemode": args.gamemode}
+    if args.seed:
+        props["level-seed"] = args.seed
+    password = None
+    if args.rcon:
+        password = secrets.token_urlsafe(18)
+        props.update({"enable-rcon": "true", "rcon.port": "25575", "rcon.password": password})
+    write_properties(cfg.server.dir / "server.properties", props)
+
+    m = Manager(cfg, echo=not args.quiet)
+    decision, changes = m.check()
+    _print_decision(m, decision, changes)
+    if not decision.plan:
+        print("\nconfig written, but nothing can be installed yet - fix the blockers above and run `mcsm update`")
+        return 1
+    booted = m.eula_accepted()
+    result = m.apply(decision.plan, verify=booted)
+    print(result.message)
+    if not result.ok:
+        return 1
+    print(f"\nserver built in {root}")
+    print(f"  Minecraft {m.lock.minecraft}, {m.lock.loader} {m.lock.loader_version}, "
+          f"Java {m.lock.java_major} ({m.launch_argv()[0]})")
+    if password:
+        print(f"  RCON enabled on port 25575 (password saved in server.properties)")
+    if not booted:
+        print(f"  not test-booted: {EULA_NOTE}")
+    print(f"start it with:  cd {root} && mcsm run")
     return 0
 
 
@@ -81,22 +163,8 @@ def cmd_import(args) -> int:
 
 
 def cmd_add(args) -> int:
-    cfg = configmod.load(args.root)
-    providers = providers_for(cfg, HttpClient())
-    for mod_id in args.ids:
-        try:
-            project = providers[args.source].project(mod_id)
-        except ModError as e:
-            print(f"error: {e}")
-            return 1
-        if project.server_side == "unsupported":
-            print(f"skipping {project.name}: it is a client-side only mod")
-            continue
-        if any(s.source == args.source and s.id in (mod_id, project.id, project.slug) for s in cfg.mods):
-            print(f"{project.name} is already listed")
-            continue
-        configmod.append_mod(cfg.path, ModSpec(args.source, project.slug or project.id, required=not args.optional))
-        print(f"added {project.name}{' (optional)' if args.optional else ''}")
+    if not _add_mods(configmod.load(args.root), args.source, args.ids, args.optional):
+        return 1
     print("run `mcsm check` to see what would be installed")
     return 0
 
@@ -129,6 +197,12 @@ def _print_decision(m: Manager, decision, changes) -> None:
             print(f"\nready to update to Minecraft {p.minecraft} with {p.loader} {p.loader_version}:")
             for line in changes.summary():
                 print(f"  {line}")
+        missing = m.missing_manual(p)
+        if missing:
+            print(f"\nmanual download needed - these authors block automatic downloads.")
+            print(f"download each file and put it in {m.config.manual_dir}:")
+            for mod in missing:
+                print(f"  -> {mod.name}: {mod.filename}\n     {mod.manual_url}")
     else:
         print("\nno installable combination found")
     unmanaged = m.unmanaged_jars()
@@ -203,6 +277,8 @@ def cmd_status(args) -> int:
     print(f"daemon:     {'running (pid %s)' % pid if pid else 'not running'}")
     print(f"minecraft:  {lk.minecraft or '(not installed)'}")
     print(f"loader:     {lk.loader or m.config.server.loader} {lk.loader_version or ''}")
+    print(f"java:       {lk.java_major and f'Java {lk.java_major} required' or '-'}"
+          f"{f' (forced to Java {m.config.java_version})' if m.config.java_version else ''}")
     print(f"updated:    {lk.updated_at or '-'}")
     print(f"mods ({len(lk.mods)}):")
     for mod in lk.mods:
@@ -214,6 +290,66 @@ def cmd_status(args) -> int:
         print("failed updates (will not be retried until something changes):")
         for fp, err in lk.failed_plans.items():
             print(f"  {fp}: {err}")
+    return 0
+
+
+def cmd_java(args) -> int:
+    cfg = configmod.load(args.root)
+    jm = JavaManager(cfg)
+    action = args.java_command
+    if action in ("update", "remove") and running_pid(Manager(cfg)):
+        print("the server is running on a managed runtime - `mcsm stop` first, then try again")
+        return 1
+    if action == "list":
+        managed = jm.installed()
+        print(f"managed runtimes ({jm.dir}):")
+        for major, j in managed.items():
+            print(f"  Java {major:<3} {j.release:24} {j.binary}")
+        if not managed:
+            print("  (none)")
+        if cfg.java_versions:
+            print("configured in [java.versions]:")
+            for major, path in sorted(cfg.java_versions.items()):
+                print(f"  Java {major:<3} {path}")
+        found = jm.probe(cfg.java_default)
+        print(f"default: {cfg.java_default} ({f'Java {found}' if found else 'not found'})")
+        forced = cfg.java_version
+        print(f"server uses: {f'Java {forced} (forced)' if forced else 'the version Minecraft needs (auto)'}"
+              f"{', downloading it if missing' if cfg.java_auto_install else ''}")
+        lk = lockmod.load(cfg.root)
+        if lk.java_major:
+            try:
+                print(f"current server: Minecraft {lk.minecraft} needs Java {lk.java_major} -> "
+                      f"{jm.select(lk.java_major, install=False)}")
+            except JavaError as e:
+                print(f"current server: {e}")
+    elif action == "install":
+        for major in args.major:
+            j = jm.install(major)
+            print(f"installed Java {major} ({j.release}) at {j.binary}")
+    elif action == "update":
+        changed = jm.update()
+        for major, old, new in changed:
+            print(f"Java {major}: {old} -> {new}")
+        if not changed:
+            print("managed Java runtimes are up to date")
+    elif action == "remove":
+        print(f"removed Java {args.major}" if jm.remove(args.major) else f"Java {args.major} is not managed by mcsm")
+    elif action == "use":
+        value = args.version
+        if value != "auto":
+            if not value.isdigit():
+                print('use a major version such as 21, or "auto"')
+                return 1
+            required = lockmod.load(cfg.root).java_major
+            if required and int(value) < required:
+                print(f"Minecraft {lockmod.load(cfg.root).minecraft} needs Java {required}+")
+                return 1
+            if cfg.java_auto_install and int(value) not in jm.installed():
+                jm.select(int(value))  # download now rather than at the next start
+        configmod.set_value(cfg.path, "java", "version", json.dumps(value) if value == "auto" else value)
+        print(f"server will use {'the Java version Minecraft needs' if value == 'auto' else f'Java {value}'}"
+              " (applies at the next start)")
     return 0
 
 
@@ -279,6 +415,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true")
     s.set_defaults(fn=cmd_init)
 
+    s = sub.add_parser("create", help="download and build a complete new server in a new directory")
+    s.add_argument("dir", type=Path, help="directory to create the server in")
+    s.add_argument("--loader", choices=configmod.LOADERS, default="fabric")
+    s.add_argument("--minecraft", default="latest", help="version (default: newest release your mods support)")
+    s.add_argument("--mod", action="append", default=[], metavar="SLUG", help="Modrinth mod (repeatable)")
+    s.add_argument("--optional-mod", action="append", default=[], metavar="SLUG",
+                   help="Modrinth mod that shouldn't block upgrades (repeatable)")
+    s.add_argument("--curseforge", action="append", default=[], metavar="ID", help="CurseForge mod (repeatable)")
+    s.add_argument("--memory", default="4G")
+    s.add_argument("--java", type=int, help="force a Java major version (default: whatever Minecraft needs)")
+    s.add_argument("--port", type=int, default=25565)
+    s.add_argument("--motd", default="A forever Minecraft server")
+    s.add_argument("--max-players", type=int, default=20)
+    s.add_argument("--difficulty", choices=["peaceful", "easy", "normal", "hard"], default="normal")
+    s.add_argument("--gamemode", choices=["survival", "creative", "adventure", "spectator"], default="survival")
+    s.add_argument("--seed")
+    s.add_argument("--rcon", action="store_true", help="enable RCON with a random password (for `mcsm cmd`)")
+    s.add_argument("--accept-eula", action="store_true", help="accept the Minecraft EULA (needed for the test boot)")
+    s.add_argument("--force", action="store_true")
+    s.add_argument("-q", "--quiet", action="store_true")
+    s.set_defaults(fn=cmd_create)
+
     s = sub.add_parser("import", help="adopt the mods already in an existing server's mods/ folder")
     s.set_defaults(fn=cmd_import)
 
@@ -313,6 +471,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("status", help="show what is installed")
     s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("java", help="download and manage the Java runtime the server uses")
+    jsub = s.add_subparsers(dest="java_command", required=True)
+    jsub.add_parser("list", help="show managed and configured Java runtimes and which one the server uses")
+    j = jsub.add_parser("install", help="download Eclipse Temurin for one or more major versions")
+    j.add_argument("major", type=int, nargs="+")
+    jsub.add_parser("update", help="update managed runtimes to their newest patch release")
+    j = jsub.add_parser("remove", help="delete a managed runtime")
+    j.add_argument("major", type=int)
+    j = jsub.add_parser("use", help='force a Java major version, or "auto" to follow Minecraft')
+    j.add_argument("version")
+    s.set_defaults(fn=cmd_java)
 
     s = sub.add_parser("cmd", help="send a console command over RCON")
     s.add_argument("command", nargs="+")

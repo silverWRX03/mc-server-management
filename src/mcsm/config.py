@@ -70,6 +70,10 @@ class Config:
     mods: list[ModSpec]
     java_default: str = "java"
     java_versions: dict[int, str] = field(default_factory=dict)
+    java_version: int | None = None     # force a Java major version; None = what Minecraft needs
+    java_auto_install: bool = True      # download Temurin when the needed version isn't available
+    java_image: str = "jre"
+    manual_dir: Path | None = None      # where to drop mods that must be downloaded by hand
     discord_webhook: str = ""
     curseforge_api_key: str = ""
     restart_on_crash: bool = True
@@ -166,6 +170,10 @@ def parse(root: Path, data: dict) -> Config:
         except ValueError:
             raise ConfigError(f"java.versions keys must be Java major versions (got {k!r})") from None
 
+    forced = j.get("version", "auto")
+    if forced != "auto" and not (isinstance(forced, int) or str(forced).isdigit()):
+        raise ConfigError(f'[java] version must be "auto" or a major version like 21 (got {forced!r})')
+
     return Config(
         root=root.resolve(),
         server=server,
@@ -174,6 +182,10 @@ def parse(root: Path, data: dict) -> Config:
         mods=mods,
         java_default=j.get("default", "java"),
         java_versions=java_versions,
+        java_version=None if forced == "auto" else int(forced),
+        java_auto_install=bool(j.get("auto_install", True)),
+        java_image=_choice(j.get("image", "jre"), ("jre", "jdk"), "java.image"),
+        manual_dir=(root / data.get("downloads", {}).get("manual_dir", "manual-downloads")).resolve(),
         discord_webhook=data.get("notify", {}).get("discord_webhook", ""),
         curseforge_api_key=(data.get("curseforge", {}).get("api_key", "")
                             or os.environ.get("MCSM_CURSEFORGE_API_KEY", "")),
@@ -212,14 +224,22 @@ keep = 10
 exclude = ["logs", "crash-reports"]
 
 [java]
-default = "java"
-# Different Minecraft versions need different Java versions. Map a major version to a binary:
+version = "auto"               # "auto" = whatever the Minecraft version needs, or force one, e.g. 21
+auto_install = true            # download Eclipse Temurin into .mcsm/java/ when the needed version is missing
+image = "jre"                  # jre | jdk
+default = "java"               # a system Java to use if it is exactly the right version
+# Java you installed yourself, by major version (used before downloading):
 # [java.versions]
 # 17 = "/usr/lib/jvm/java-17-openjdk/bin/java"
 # 21 = "/usr/lib/jvm/java-21-openjdk/bin/java"
 
 [notify]
 discord_webhook = ""
+
+[downloads]
+# Some CurseForge authors block third-party downloads. mcsm prints a link for each;
+# download the file and drop it in this folder (or straight into mods/), then update again.
+manual_dir = "manual-downloads"
 
 [curseforge]
 api_key = ""                   # or set MCSM_CURSEFORGE_API_KEY; only needed for curseforge mods
@@ -266,3 +286,25 @@ def remove_mod(path: Path, source: str, mod_id: str) -> bool:
     if removed:
         path.write_text("".join(line for chunk in kept for line in chunk))
     return removed
+
+
+def set_value(path: Path, table: str, key: str, literal: str) -> None:
+    """Set ``key = literal`` inside ``[table]``, keeping every other line (and comment) as is."""
+    lines = path.read_text().splitlines(keepends=True)
+    header = re.compile(rf"^\s*\[{re.escape(table)}\]\s*(#.*)?$")
+    start = next((i for i, line in enumerate(lines) if header.match(line)), None)
+    if start is None:
+        suffix = "" if not lines or lines[-1].endswith("\n") else "\n"
+        path.write_text("".join(lines) + f"{suffix}\n[{table}]\n{key} = {literal}\n")
+        return
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^\s*\[", lines[i])), len(lines))
+    assign = re.compile(rf"^(\s*{re.escape(key)}\s*=\s*)([^#\n]*?)(\s*#.*)?$")
+    for i in range(start + 1, end):
+        m = assign.match(lines[i].rstrip("\n"))
+        if m:
+            comment = m.group(3) or ""
+            lines[i] = f"{m.group(1)}{literal}{comment}\n"
+            break
+    else:
+        lines.insert(start + 1, f"{key} = {literal}\n")
+    path.write_text("".join(lines))

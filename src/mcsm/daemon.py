@@ -16,7 +16,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from .manager import Manager
+from .manager import Manager, ManualDownloadRequired
 from .process import ServerProcess
 
 log = logging.getLogger(__name__)
@@ -148,6 +148,13 @@ class Daemon:
             if decision.plan.fingerprint not in self.announced:
                 self.announced.add(decision.plan.fingerprint)
                 self.m.notifier.send(f"Update available (run `mcsm update` to apply):\n{summary}")
+            return
+        missing = self.m.missing_manual(decision.plan)
+        if missing:
+            key = "manual:" + decision.plan.fingerprint
+            if key not in self.announced:
+                self.announced.add(key)
+                self.m.notifier.send(str(ManualDownloadRequired(missing, self.m.config.manual_dir)))
             return
         if cfg.wait_for_empty and self.proc and self.proc.running and not force:
             online = self.proc.players_online()

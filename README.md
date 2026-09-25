@@ -40,7 +40,14 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Server supervisor** (`mcsm run`): restarts after crashes, gives in-game restart
   countdowns, can wait until nobody is online, passes console input through, and
   shuts down gracefully on SIGTERM.
-- **Picks the right Java** for each Minecraft version (1.20.5+ needs Java 21, and so on).
+- **Manages Java for you.** Each Minecraft version needs a particular Java version
+  (1.20.5+ needs Java 21, 1.18–1.20.4 needs Java 17). mcsm picks the right one and
+  downloads Eclipse Temurin into `.mcsm/java/` if you don't have it. You can also pin a
+  version or keep runtimes patched with `mcsm java`.
+- **Builds new servers from nothing:** `mcsm create` gives you a complete, test-booted server in one command.
+- **Handles blocked CurseForge downloads.** When an author disallows third-party
+  downloads, mcsm gives you the direct link to the file, then picks up and hash-checks
+  the file once you drop it in `manual-downloads/`.
 - **Discord notifications** for upgrades, blocked releases, crashes and rollbacks.
 - **Leaves your files alone.** Only files mcsm installed (tracked in `mcsm.lock.json`)
   are ever replaced. World, configs and hand-added jars are never touched.
@@ -53,10 +60,26 @@ pipx install git+https://github.com/silverWRX03/mc-server-management
 # or: pip install git+https://github.com/silverWRX03/mc-server-management
 ```
 
-You also need Java. Install the versions your Minecraft versions need and list them in
-`mcsm.toml` under `[java.versions]`.
+You don't need to install Java yourself: mcsm downloads the version each Minecraft
+release needs. If you'd rather use your own, see [Java](#java).
 
-## Quick start: new server
+## Quick start: build a new server
+
+One command downloads and builds everything: config, mods and their dependencies,
+the loader, Java and `server.properties`. It then test-boots the server:
+
+```sh
+mcsm create ~/minecraft --loader fabric \
+    --mod fabric-api --mod lithium --mod ferrite-core \
+    --optional-mod create-fabric \
+    --memory 6G --motd "Forever server" --rcon --accept-eula   # read https://aka.ms/MinecraftEULA first
+cd ~/minecraft && mcsm run
+```
+
+`--minecraft` defaults to the newest release your mods support. Other options:
+`--port`, `--max-players`, `--difficulty`, `--gamemode`, `--seed`, `--java`, `--curseforge ID`.
+
+Or do the same thing step by step:
 
 ```sh
 mkdir ~/minecraft && cd ~/minecraft
@@ -84,6 +107,48 @@ mcsm update        # re-installs the loader through mcsm so it can manage it fro
 Jars that Modrinth doesn't recognise stay where they are and are reported as
 *unmanaged*. Add CurseForge mods with `mcsm add --source curseforge <id>` and then
 delete the old jar, or leave it unmanaged if the mod never needs updating.
+
+## Mods that block third-party downloads
+
+Some CurseForge authors don't allow tools to download their files. mcsm still finds
+the right file for each Minecraft version, but a person has to download it:
+
+```
+$ mcsm check
+...
+manual download needed - these authors block automatic downloads.
+download each file and put it in /home/me/minecraft/manual-downloads:
+  -> Some Mod: somemod-1.21.4-2.3.jar
+     https://www.curseforge.com/minecraft/mc-mods/some-mod/files/5550001
+```
+
+Open the link, download the file, drop it into `manual-downloads/` (or straight into
+the server's `mods/`), and run `mcsm update` again. The file's hash is checked against
+CurseForge, so a wrong or outdated file isn't used. The update never starts until
+every file is present, so the server is never left half-upgraded. With `mcsm run`, the
+same links go to your Discord notifications when a new version needs them.
+
+## Java
+
+By default (`[java] version = "auto"`) the server runs on the Java version that its
+Minecraft version asks for. mcsm looks for it in this order:
+
+1. that exact version in `[java.versions]`,
+2. an mcsm-managed runtime in `.mcsm/java/`,
+3. your system `java`, if it's exactly that version,
+4. a fresh download of Eclipse Temurin (turn this off with `auto_install = false`).
+
+| Command | What it does |
+|---|---|
+| `mcsm java list` | managed and configured runtimes, and which one the server uses |
+| `mcsm java install 21 17` | download Temurin runtimes |
+| `mcsm java update` | move managed runtimes to their newest patch release (server stopped) |
+| `mcsm java use 21` | always run on Java 21 (must be at least what Minecraft needs) |
+| `mcsm java use auto` | go back to following the Minecraft version |
+| `mcsm java remove 17` | delete a managed runtime |
+
+When a Minecraft upgrade needs a newer Java, it's downloaded during staging, before
+the server is stopped.
 
 ## Running it forever
 
@@ -117,9 +182,12 @@ warn_minutes = [10, 5, 1]
 wait_for_empty = false
 verify_boot = true
 
-[java.versions]
-17 = "/usr/lib/jvm/java-17-openjdk/bin/java"
-21 = "/usr/lib/jvm/java-21-openjdk/bin/java"
+[java]
+version = "auto"                 # or force a major version, e.g. 21
+auto_install = true              # download Temurin when the needed version is missing
+
+[downloads]
+manual_dir = "manual-downloads"  # drop blocked CurseForge files here
 
 [notify]
 discord_webhook = "https://discord.com/api/webhooks/..."
@@ -142,8 +210,8 @@ required = true
 
 1. **Plan:** for each candidate release, find the newest loader build and the newest
    acceptable file for every mod and dependency.
-2. **Stage:** download everything into `.mcsm/staging/`, verify hashes, run the loader
-   installer. If anything fails here, the live server hasn't been touched.
+2. **Stage:** make sure any manual downloads are present, get the right Java, download
+   everything into `.mcsm/staging/`, verify hashes, and run the loader installer. If anything fails here, the live server hasn't been touched.
 3. **Warn and stop:** in-game countdown, then a graceful `stop`.
 4. **Back up** the server directory to `backups/` (old backups are pruned).
 5. **Swap:** remove the old managed mod jars and loader files, then move the new ones in.

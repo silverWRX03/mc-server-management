@@ -4,7 +4,8 @@ import pytest
 
 from mcsm import backup, config as configmod
 from mcsm.config import ConfigError, ModSpec, parse_duration
-from mcsm.java import parse_major, select
+from mcsm.java import JavaError
+from mcsm.java import JavaManager, parse_major
 from mcsm.loaders.base import version_key
 from mcsm.loaders.forge import NEOFORGE_VERSIONS, NeoForgeLoader, neoforge_prefix
 from mcsm.loaders.fabric import FABRIC_META, FabricLoader
@@ -55,10 +56,38 @@ def test_java_selection(tmp_path):
     (tmp_path / "mcsm.toml").write_text(configmod.render_template("fabric", "1.21.1"))
     cfg = configmod.load(tmp_path)
     cfg.java_versions = {17: "/j17", 21: "/j21"}
+    cfg.java_auto_install = False
     majors = {"/j17": 17, "/j21": 21, "java": 25}
-    assert select(cfg, 21, majors.get) == "/j21"
-    assert select(cfg, 17, majors.get) == "/j17"
-    assert select(cfg, 25, majors.get) == "java"
+    jm = JavaManager(cfg, probe_fn=majors.get)
+    assert jm.select(21) == "/j21"
+    assert jm.select(17) == "/j17"
+    assert jm.select(25) == "java"
+    assert jm.select(16) == "/j17"  # no exact match: lowest newer one
+    cfg.java_version = 21
+    assert jm.select(17) == "/j21"  # forced
+    with pytest.raises(JavaError, match="needs Java 25"):
+        jm.select(25)
+
+
+def test_config_set_value_keeps_comments(tmp_path):
+    path = tmp_path / "mcsm.toml"
+    path.write_text(configmod.render_template("fabric", "1.21.1"))
+    configmod.set_value(path, "java", "version", "21")
+    configmod.set_value(path, "server", "memory", '"8G"')
+    configmod.set_value(path, "brand_new", "key", "true")
+    cfg = configmod.load(tmp_path)
+    assert cfg.java_version == 21
+    assert cfg.server.memory == "8G"
+    assert "# download Eclipse Temurin" in path.read_text()
+
+
+def test_server_properties_editing(tmp_path):
+    from mcsm.properties import read_properties, write_properties
+    path = tmp_path / "server.properties"
+    path.write_text("#Minecraft server properties\nmotd=old\nview-distance=10\n")
+    write_properties(path, {"motd": "new", "server-port": "25570"})
+    assert read_properties(path) == {"motd": "new", "view-distance": "10", "server-port": "25570"}
+    assert path.read_text().startswith("#Minecraft")
 
 
 def test_neoforge_versions(http):

@@ -59,11 +59,13 @@ class FakeHttp:
             return {}
         return handler(body) if callable(handler) else handler
 
-    def download(self, url, dest: Path, sha1=None, sha512=None, headers=None):
+    def download(self, url, dest: Path, sha1=None, sha512=None, headers=None, sha256=None):
         if url not in self.files:
             raise HttpError(url, 404, "HTTP 404")
         data = self.files[url]
         if sha1 and hashlib.sha1(data).hexdigest() != sha1:
+            raise HashMismatch(url)
+        if sha256 and hashlib.sha256(data).hexdigest() != sha256:
             raise HashMismatch(url)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)

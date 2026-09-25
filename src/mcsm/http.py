@@ -86,20 +86,23 @@ class HttpClient:
             return json.loads(resp.read().decode("utf-8"))
 
     def download(self, url: str, dest: Path, sha1: str | None = None, sha512: str | None = None,
-                 headers: dict[str, str] | None = None) -> Path:
+                 headers: dict[str, str] | None = None, sha256: str | None = None) -> Path:
         """Download to ``dest`` atomically, verifying hashes when given."""
         dest.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-        h1, h512 = hashlib.sha1(), hashlib.sha512()
+        h1, h256, h512 = hashlib.sha1(), hashlib.sha256(), hashlib.sha512()
         fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=".part-")
         try:
             with self._open(req) as resp, os.fdopen(fd, "wb") as out:
                 while chunk := resp.read(1 << 16):
                     h1.update(chunk)
+                    h256.update(chunk)
                     h512.update(chunk)
                     out.write(chunk)
             if sha1 and h1.hexdigest() != sha1.lower():
                 raise HashMismatch(f"sha1 mismatch for {url}: expected {sha1}, got {h1.hexdigest()}")
+            if sha256 and h256.hexdigest() != sha256.lower():
+                raise HashMismatch(f"sha256 mismatch for {url}")
             if sha512 and h512.hexdigest() != sha512.lower():
                 raise HashMismatch(f"sha512 mismatch for {url}")
             shutil.move(tmp, dest)

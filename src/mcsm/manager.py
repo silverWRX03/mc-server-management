@@ -22,6 +22,7 @@ from typing import Callable
 from . import backup, java as javamod, lock as lockmod
 from .config import Config
 from .http import HttpClient, sha1_file
+from .java import JavaManager
 from .loaders import Loader, Runtime, get_loader
 from .lock import Lock
 from .minecraft import Mojang
@@ -35,6 +36,16 @@ log = logging.getLogger(__name__)
 
 class UpgradeError(Exception):
     pass
+
+
+class ManualDownloadRequired(UpgradeError):
+    def __init__(self, mods: list[ModFile], folder: Path):
+        self.mods = mods
+        self.folder = folder
+        lines = [f"  {m.name} ({m.filename}): {m.manual_url}" for m in mods]
+        super().__init__(
+            f"{len(mods)} mod(s) can't be downloaded automatically because their authors block it. "
+            f"Download them from these links, put the files in {folder}, then update again:\n" + "\n".join(lines))
 
 
 @dataclass
@@ -63,7 +74,7 @@ class Manager:
         self.mojang = mojang or Mojang(self.http)
         self.loader = loader or get_loader(config.server.loader, self.http, self.mojang)
         self.providers = providers or providers_for(config, self.http)
-        self.java_probe = java_probe
+        self.java = JavaManager(config, self.http, java_probe)
         self.notifier = notifier or Notifier(self.http, config.discord_webhook)
         self.echo = echo
         self.sleep = sleep
@@ -103,7 +114,7 @@ class Manager:
         lock = lock or self.lock
         if not lock.installed:
             raise UpgradeError("nothing is installed yet - run `mcsm update` first")
-        java = java or javamod.select(self.config, lock.java_major or 8, self.java_probe)
+        java = java or self.java.select(lock.java_major or 8)
         mem = self.config.server.memory
         return [java, f"-Xms{mem}", f"-Xmx{mem}", *self.config.server.jvm_args, *lock.launch]
 
@@ -133,20 +144,42 @@ class Manager:
         proc.say("Restarting now!")
 
     # --------------------------------------------------------------- staging
+    def _local_copy(self, mod: ModFile) -> Path | None:
+        """A verified copy of ``mod`` already on disk (installed, or dropped in by hand)."""
+        places = [self.server_dir / "mods" / mod.filename]
+        if mod.manual and self.config.manual_dir:
+            places.append(self.config.manual_dir / mod.filename)
+        installed = next((m for m in self.lock.mods if m.key == mod.key), None)
+        for path in places:
+            if not path.is_file():
+                continue
+            if mod.sha1:
+                if sha1_file(path) == mod.sha1.lower():
+                    return path
+            elif mod.manual or (installed and installed.version_id == mod.version_id):
+                return path
+        return None
+
+    def missing_manual(self, plan: Plan) -> list[ModFile]:
+        """Mods in ``plan`` that must be downloaded by hand and haven't been yet."""
+        return [m for m in plan.mods if m.manual and self._local_copy(m) is None]
+
     def stage(self, plan: Plan, changes: Changes) -> Staged:
+        missing = self.missing_manual(plan)
+        if missing:
+            if self.config.manual_dir:
+                self.config.manual_dir.mkdir(parents=True, exist_ok=True)
+            raise ManualDownloadRequired(missing, self.config.manual_dir)
         info = self.mojang.info(plan.minecraft)
-        java = javamod.select(self.config, info.java_major, self.java_probe)
+        java = self.java.select(info.java_major)
         if self.staging_dir.exists():
             shutil.rmtree(self.staging_dir)
         mods_out = self.staging_dir / "mods"
         mods_out.mkdir(parents=True)
 
-        current = {m.key: m for m in self.lock.mods}
         for mod in plan.mods:
-            local = self.server_dir / "mods" / mod.filename
-            old = current.get(mod.key)
-            if (old and old.version_id == mod.version_id and local.exists()
-                    and (not mod.sha1 or sha1_file(local) == mod.sha1)):
+            local = self._local_copy(mod)
+            if local:
                 shutil.copy2(local, mods_out / mod.filename)
             else:
                 log.info("downloading %s %s", mod.name, mod.version_number)
@@ -191,7 +224,8 @@ class Manager:
         return new
 
     # --------------------------------------------------------------- upgrade
-    def apply(self, plan: Plan, server: ServerProcess | None = None, restart: bool = False) -> Result:
+    def apply(self, plan: Plan, server: ServerProcess | None = None, restart: bool = False,
+              verify: bool | None = None) -> Result:
         """Apply ``plan``. If ``server`` is running it is stopped first.
 
         With ``restart`` the upgraded (or rolled back) server is left running and
@@ -203,7 +237,7 @@ class Manager:
         old_mc = self.lock.minecraft
         title = (f"Minecraft {old_mc or '(new install)'} -> {plan.minecraft}" if changes.minecraft
                  else f"mod updates for Minecraft {plan.minecraft}")
-        will_boot = restart or self.config.updates.verify_boot
+        will_boot = restart or (self.config.updates.verify_boot if verify is None else verify)
         if will_boot and not self.eula_accepted():
             return Result(False, "the Minecraft EULA has not been accepted; run `mcsm init --accept-eula`", server)
 
