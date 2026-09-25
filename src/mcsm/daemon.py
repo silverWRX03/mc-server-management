@@ -378,7 +378,7 @@ class Daemon:
 
     # ---------------------------------------------------------- updates
     def check_only(self, target: str | None = None) -> str:
-        decision, changes = self.m.check(target)
+        decision, changes = self.m.check(target, retry_failed=True)
         self.last_check = decision_to_dict(self.m, decision, changes)
         if self.last_check["up_to_date"]:
             return f"up to date (Minecraft {self.m.lock.minecraft})"
@@ -390,7 +390,7 @@ class Daemon:
         cfg = self.m.config.updates
         self.next_check = time.monotonic() + cfg.check_interval
         try:
-            decision, changes = self.m.check(target)
+            decision, changes = self.m.check(target, retry_failed=force)
         except Exception as e:
             log.warning("update check failed: %s", e)
             return f"update check failed: {e}"
@@ -398,6 +398,8 @@ class Daemon:
         for plan in decision.blocked:
             if plan.minecraft == decision.latest and plan.fingerprint not in self.announced:
                 self.announced.add(plan.fingerprint)
+                if any(b.key == "mcsm:failed" for b in plan.blockers):
+                    continue  # already reported when it failed
                 waiting = ", ".join(b.name for b in plan.blockers) or f"{plan.loader} loader"
                 self.m.notifier.send(f"Minecraft {plan.minecraft} is out; waiting on: {waiting}")
         if not decision.plan or not changes or changes.empty:
@@ -423,7 +425,8 @@ class Daemon:
                 return f"waiting for {online} player(s) to leave"
         was_running = bool(self.proc and self.proc.running)
         result = self.m.apply(decision.plan, server=self.proc, restart=was_running or self.want_running)
-        log.info(result.message)
+        if result.ok:
+            log.info(result.message)  # failures are already logged by the rollback
         if result.process:
             self.proc = result.process
         elif self.proc and not self.proc.running and self.want_running:

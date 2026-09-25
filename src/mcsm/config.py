@@ -128,6 +128,16 @@ def load(root: Path) -> Config:
     return parse(root, data)
 
 
+def _memory(value) -> str:
+    """Java heap size: a number with M or G (``4G``, ``4096M``), or ``auto``."""
+    text = str(value).strip()
+    if text.lower() == "auto":
+        return "auto"
+    if re.fullmatch(r"\d+[MmGg]", text) and int(text[:-1]) > 0:
+        return text.upper()
+    raise ConfigError(f"server.memory is {value!r}; use something like 4G, 4096M, or auto")
+
+
 def parse(root: Path, data: dict) -> Config:
     s = data.get("server", {})
     if "loader" not in s:
@@ -136,7 +146,7 @@ def parse(root: Path, data: dict) -> Config:
         dir=(root / s.get("dir", "server")).resolve(),
         loader=_choice(s["loader"], LOADERS, "server.loader"),
         minecraft=str(s.get("minecraft", "latest")),
-        memory=s.get("memory", "4G"),
+        memory=_memory(s.get("memory", "4G")),
         jvm_args=list(s.get("jvm_args", [])),
         startup_timeout=parse_duration(s.get("startup_timeout", 600)),
         stop_timeout=parse_duration(s.get("stop_timeout", 120)),

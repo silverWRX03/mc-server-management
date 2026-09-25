@@ -243,7 +243,7 @@ def cmd_update(args) -> int:
     if _server_port_open(m):
         print("the server port is in use - stop the server first (or let `mcsm run` manage it)")
         return 1
-    decision, changes = m.check(args.to)
+    decision, changes = m.check(args.to, retry_failed=True)
     _print_decision(m, decision, changes)
     if not decision.plan or not changes or changes.empty or args.dry_run:
         return 0 if decision.plan else 1

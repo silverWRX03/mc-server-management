@@ -195,20 +195,26 @@ class Planner:
             return newer[:1] + [current]
         return newer + [current]
 
-    def decide(self, target: str | None = None) -> Decision:
-        """Pick the plan to apply. ``target`` forces a specific Minecraft version."""
+    def decide(self, target: str | None = None, retry_failed: bool = False) -> Decision:
+        """Pick the plan to apply. ``target`` forces a specific Minecraft version.
+
+        Combinations that failed before are skipped by automatic upgrades, but tried again
+        when someone asks (``retry_failed``) or when nothing is installed yet.
+        """
         latest = self.mojang.latest_release()
         if target:
             plan = self.plan_for(target)
             return Decision(plan=plan if plan.complete else None, blocked=[] if plan.complete else [plan],
                             latest=latest)
         blocked = []
+        skip_failed = self.lock.installed and not retry_failed
         for version in self._candidates():
             plan = self.plan_for(version)
-            if plan.complete and plan.fingerprint in self.lock.failed_plans:
-                log.info("skipping %s: this exact combination failed before", version)
-                plan.blockers.append(Blocker("mcsm:failed", "previous attempt",
-                                             self.lock.failed_plans[plan.fingerprint], True))
+            if skip_failed and plan.complete and plan.fingerprint in self.lock.failed_plans:
+                log.info("not retrying Minecraft %s automatically: the same update failed before", version)
+                plan.blockers.append(Blocker("mcsm:failed", "an earlier attempt",
+                                             f"it failed ({self.lock.failed_plans[plan.fingerprint]}); "
+                                             "update manually to try again", True))
             if plan.complete:
                 return Decision(plan=plan, blocked=blocked, latest=latest)
             blocked.append(plan)

@@ -114,10 +114,10 @@ class Manager:
     def planner(self) -> Planner:
         return Planner(self.config, self.lock, self.mojang, self.loader, self.providers)
 
-    def check(self, target: str | None = None) -> tuple[Decision, Changes | None]:
+    def check(self, target: str | None = None, retry_failed: bool = False) -> tuple[Decision, Changes | None]:
         if hasattr(self.http, "clear_cache"):
             self.http.clear_cache()  # always look at fresh release data
-        decision = self.planner().decide(target)
+        decision = self.planner().decide(target, retry_failed=retry_failed)
         changes = decision.plan.changes(self.lock) if decision.plan else None
         return decision, changes
 
@@ -139,6 +139,9 @@ class Manager:
             raise UpgradeError("nothing is installed yet - run `mcsm update` first")
         java = java or self.java.select(lock.java_major or 8)
         mem = self.config.server.memory
+        if mem == "auto":
+            from .setup import suggested_memory_gb
+            mem = f"{suggested_memory_gb()}G"
         return [java, f"-Xms{mem}", f"-Xmx{mem}", *self.config.server.jvm_args, *lock.launch]
 
     def new_process(self, lock: Lock | None = None) -> ServerProcess:

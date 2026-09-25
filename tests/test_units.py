@@ -155,3 +155,22 @@ def test_backup_restore_prune(tmp_path):
         backup.create(server, backups, f"extra{i}", [])
     backup.prune(backups, 2)
     assert len(backup.list_backups(backups)) == 2
+
+
+def test_memory_setting(tmp_path, monkeypatch):
+    def memory(value):
+        return configmod.parse(tmp_path, {"server": {"loader": "fabric", "memory": value}}).server.memory
+    assert memory("4g") == "4G" and memory("4096M") == "4096M" and memory("AUTO") == "auto"
+    for bad in ("4", "4 GB", "-1G", "0G", "lots"):
+        with pytest.raises(ConfigError, match="server.memory"):
+            memory(bad)
+
+    # "auto" becomes a real size on the java command line, never -Xmxauto.
+    from mcsm import setup as setupmod
+    from mcsm.lock import Lock
+    from mcsm.manager import Manager
+    monkeypatch.setattr(setupmod, "suggested_memory_gb", lambda total=None: 6)
+    m = Manager.__new__(Manager)
+    m.config = configmod.parse(tmp_path, {"server": {"loader": "fabric", "memory": "auto"}})
+    argv = m.launch_argv(Lock(minecraft="1.21.1", launch=["-jar", "server.jar"]), java="java")
+    assert argv[:3] == ["java", "-Xms6G", "-Xmx6G"]
