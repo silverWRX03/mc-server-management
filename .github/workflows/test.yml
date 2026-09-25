@@ -53,3 +53,22 @@ jobs:
       - name: Smoke test
         shell: bash
         run: python packaging/smoke_test.py dist/mcsm$([ -f dist/mcsm.exe ] && echo .exe)
+      # Test builds: download these from the run's Summary page to try them before a release.
+      - name: Name the test build
+        shell: bash
+        run: |
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Windows-X64) name=mcsm-windows-x64.exe ;;
+            macOS-ARM64) name=mcsm-macos-arm64 ;;
+            Linux-X64)   name=mcsm-linux-x64 ;;
+            Linux-ARM64) name=mcsm-linux-arm64 ;;
+            *)           name=mcsm-${{ runner.os }}-${{ runner.arch }} ;;
+          esac
+          mkdir -p test-build
+          cp dist/mcsm$([ -f dist/mcsm.exe ] && echo .exe) "test-build/$name"
+          echo "BUILD_NAME=$name" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-build-${{ env.BUILD_NAME }}
+          path: test-build/
+          retention-days: 14
