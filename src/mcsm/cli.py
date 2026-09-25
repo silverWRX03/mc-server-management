@@ -10,9 +10,9 @@ import socket
 import sys
 from pathlib import Path
 
-from . import __version__, backup, config as configmod, lock as lockmod
+from . import __version__, backup, config as configmod, licenses, lock as lockmod, notice, selfupdate
 from .config import ConfigError, ModSpec
-from .daemon import Daemon, request_path, running_pid
+from .daemon import Daemon, request_path, running_pid, self_update_request_path
 from .manager import Manager, UpgradeError
 from .mods import ModError, providers_for
 from .http import HttpClient, HttpError
@@ -261,7 +261,13 @@ def cmd_run(args) -> int:
         m.config.web.port = args.web_port
     if args.web_host:
         m.config.web.host = args.web_host
-    return Daemon(m).run(web=args.web or m.config.web.enabled)
+    d = Daemon(m)
+    code = d.run(web=args.web or m.config.web.enabled)
+    if d.restart_requested:
+        argv = selfupdate.restart_argv()
+        print("restarting mcsm on the new version...", flush=True)
+        os.execv(argv[0], argv)
+    return code
 
 
 def cmd_web_password(args) -> int:
@@ -414,6 +420,52 @@ def cmd_player(args) -> int:
             rcon.__exit__(None, None, None)
 
 
+def cmd_notice(args) -> int:
+    print(notice.as_text())
+    root = args.root if (args.root / configmod.CONFIG_NAME).exists() else None
+    if args.accept:
+        notice.accept(root, by="cli")
+        print("\naccepted")
+    else:
+        print(f"\n{'accepted' if notice.accepted(root) else 'not accepted yet (run `mcsm notice --accept`)'}")
+    return 0
+
+
+def cmd_licenses(args) -> int:
+    print(licenses.as_text())
+    print("\nFull details: THIRD_PARTY_NOTICES.md")
+    return 0
+
+
+def cmd_self_update(args) -> int:
+    ok, why = selfupdate.install_method()
+    release = selfupdate.check(HttpClient())
+    if release is None:
+        print(f"mcsm {__version__} is the latest version")
+        return 0
+    print(f"mcsm {release.version} is available (you have {__version__}): {release.url}")
+    if release.notes:
+        print("\n" + release.notes.strip()[:1500] + "\n")
+    if args.check:
+        return 0
+    if not ok:
+        print(why)
+        return 1
+    root_cfg = args.root / configmod.CONFIG_NAME
+    if root_cfg.exists():
+        m = Manager(configmod.load(args.root))
+        if running_pid(m):
+            path = self_update_request_path(m)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(release.version)
+            print("`mcsm run` is managing a server; it will install the update and restart itself now")
+            return 0
+    if not args.yes and (not sys.stdin.isatty() or input("install it? [y/N] ").strip().lower() not in ("y", "yes")):
+        return 1
+    print(selfupdate.install(release))
+    return 0
+
+
 def cmd_cmd(args) -> int:
     m = _manager(args)
     try:
@@ -460,12 +512,48 @@ def cmd_restore(args) -> int:
 
 
 # ------------------------------------------------------------------- main
+NOTICE_EXEMPT = {"notice", "licenses"}
+
+
+def _notice_ok(args) -> bool:
+    """Show the first-run notice and require acceptance before anything else runs."""
+    root = getattr(args, "dir", None) or args.root
+    root = root.resolve() if (root / configmod.CONFIG_NAME).exists() else None
+    if args.command in NOTICE_EXEMPT or notice.accepted(root):
+        return True
+    if args.accept_notice:
+        notice.accept(root, by="cli")
+        return True
+    if sys.stdin.isatty():
+        print(notice.as_text() + "\n")
+        if input("Type 'yes' to accept and continue: ").strip().lower() in ("y", "yes"):
+            notice.accept(root, by="cli")
+            print()
+            return True
+        print("not accepted; nothing was changed")
+        return False
+    if args.command == "run" and root is not None:
+        try:
+            web = args.web or configmod.load(root).web.enabled
+        except ConfigError:
+            web = False
+        if web:
+            return True  # the web UI shows the notice; the server waits until it is accepted
+    print(notice.as_text() + "\n", file=sys.stderr)
+    print("Accept it first: run `mcsm notice --accept`, pass --accept-notice, or accept it in the web UI "
+          "(`mcsm run --web`).", file=sys.stderr)
+    return False
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mcsm", description="A forever Minecraft server: runs your modded server "
                                 "and upgrades it to the newest release once your mods support it.")
     p.add_argument("--version", action="version", version=f"mcsm {__version__}")
     p.add_argument("-C", "--root", type=Path, default=Path("."), help="directory containing mcsm.toml")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--accept-notice", action="store_true",
+                   help="accept the first-run notice without a prompt (for scripts and services)")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("init", help="create mcsm.toml")
@@ -558,6 +646,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reason", help="shown to the player when kicked or banned")
     s.set_defaults(fn=cmd_player)
 
+    s = sub.add_parser("notice", help="show the first-run notice (what mcsm does and doesn't do)")
+    s.add_argument("--accept", action="store_true", help="accept it (for scripts and services)")
+    s.set_defaults(fn=cmd_notice)
+
+    s = sub.add_parser("licenses", help="list the open-source licenses of everything mcsm uses")
+    s.set_defaults(fn=cmd_licenses)
+
+    s = sub.add_parser("self-update", help="update mcsm itself to the newest release")
+    s.add_argument("--check", action="store_true", help="only check, don't install")
+    s.add_argument("-y", "--yes", action="store_true")
+    s.set_defaults(fn=cmd_self_update)
+
     s = sub.add_parser("cmd", help="send a console command over RCON")
     s.add_argument("command", nargs="+")
     s.set_defaults(fn=cmd_cmd)
@@ -579,6 +679,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="[mcsm] %(message)s")
     args.root = args.root.resolve()
+    if not _notice_ok(args):
+        return 2
     try:
         return args.fn(args)
     except (ConfigError, UpgradeError, ModError, HttpError, JavaError) as e:

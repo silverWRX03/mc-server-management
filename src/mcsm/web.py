@@ -26,7 +26,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, backup, config as configmod
+from . import __version__, backup, config as configmod, licenses, notice
 from .config import ConfigError, ModSpec
 from .daemon import Daemon
 from .http import sha1_file
@@ -52,6 +52,10 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
 }
+
+
+# Reachable before the first-run notice has been accepted.
+NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses"}
 
 
 class ApiError(Exception):
@@ -207,6 +211,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.web.logout(self._token())
                 return self._json(200, {"ok": True},
                                   {"Set-Cookie": f"{SESSION_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict"})
+            if path not in NOTICE_EXEMPT and not notice.accepted(self.web.d.m.config.root):
+                raise ApiError(428, "accept the notice first")
             handler = self.web.api.routes.get((method, path))
             if handler is None:
                 raise ApiError(404, "not found")
@@ -232,6 +238,12 @@ class Api:
         get = lambda p, f: r.__setitem__(("GET", p), f)    # noqa: E731
         post = lambda p, f: r.__setitem__(("POST", p), f)  # noqa: E731
         get("/api/status", self.status)
+        get("/api/notice", lambda q, b: {"accepted": notice.accepted(self.m.config.root), "version": notice.NOTICE_VERSION,
+                                         "title": notice.TITLE, "points": notice.POINTS})
+        post("/api/notice/accept", self.accept_notice)
+        get("/api/licenses", lambda q, b: licenses.as_dict())
+        post("/api/self-update/check", lambda q, b: self._job("mcsm update check", self.d.check_self_update))
+        post("/api/self-update/apply", self.apply_self_update)
         get("/api/console", self.console)
         get("/api/events", self.events)
         post("/api/command", self.command)
@@ -294,7 +306,26 @@ class Api:
             "strategy": m.config.updates.strategy,
             "auto_upgrade": m.config.updates.auto_upgrade,
             "update": self._update_summary(),
+            "notice_accepted": notice.accepted(m.config.root),
+            "self_update": d.self_update,
         }
+
+    def accept_notice(self, q, b) -> dict:
+        if b.get("version") != notice.NOTICE_VERSION:
+            raise ApiError(409, "the notice has changed; reload the page")
+        notice.accept(self.m.config.root, by="web")
+        log.info("first-run notice accepted in the web UI")
+        return {"ok": True}
+
+    def apply_self_update(self, q, b) -> dict:
+        info = self.d.self_update
+        if not info:
+            raise ApiError(404, "no mcsm update is available")
+        if not info.get("can_install"):
+            raise ApiError(400, info.get("reason") or "mcsm can't update itself here")
+        if b.get("version") != info["version"]:
+            raise ApiError(409, "a different version is available now; reload the page")
+        return self._job(f"update mcsm to {info['version']}", self.d.apply_self_update)
 
     def _update_summary(self) -> dict | None:
         c = self.d.last_check

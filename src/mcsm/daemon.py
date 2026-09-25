@@ -19,6 +19,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
+from . import notice, selfupdate
 from .manager import Manager, ManualDownloadRequired
 from .process import JOINED, LEFT, READY, ServerProcess
 
@@ -27,6 +28,7 @@ log = logging.getLogger(__name__)
 CRASH_WINDOW = 600      # seconds
 MAX_CRASHES = 3         # within CRASH_WINDOW before giving up
 EMPTY_RETRY = 300       # seconds between "is anyone online?" checks when waiting for an empty server
+SELF_CHECK_INTERVAL = 24 * 3600
 
 
 def pid_path(manager: Manager) -> Path:
@@ -35,6 +37,10 @@ def pid_path(manager: Manager) -> Path:
 
 def request_path(manager: Manager) -> Path:
     return manager.config.state_dir / "update-requested"
+
+
+def self_update_request_path(manager: Manager) -> Path:
+    return manager.config.state_dir / "self-update-requested"
 
 
 def running_pid(manager: Manager) -> int | None:
@@ -123,6 +129,9 @@ class Daemon:
         self.ops = threading.Lock()     # one job at a time
         self.job: dict | None = None
         self.last_job: dict | None = None
+        self.self_update: dict | None = None     # a newer mcsm release, if any
+        self.next_self_check = time.monotonic() + 30
+        self.restart_requested = False           # re-exec mcsm after exiting (self-update)
         manager.on_line = self._on_line
         manager.on_process = self._on_process
 
@@ -248,6 +257,12 @@ class Daemon:
 
     def _loop(self) -> int:
         self._forward_console()
+        if not notice.accepted(self.m.config.root):
+            log.info("waiting for the first-run notice to be accepted in the web UI")
+            while not notice.accepted(self.m.config.root):
+                if self.stop_requested.wait(1):
+                    return self.exit_code
+            log.info("notice accepted")
         self.submit("start", self._boot)
         # Let the first start finish before the first scheduled update check.
         self.next_check = time.monotonic() + 60
@@ -263,6 +278,15 @@ class Daemon:
                 target = (req.read_text().strip() or None) if requested else None
                 req.unlink(missing_ok=True)
                 self.submit("update check", self.check_for_updates, requested, target)
+            sreq = self_update_request_path(self.m)
+            if idle and sreq.exists():
+                sreq.unlink(missing_ok=True)
+                self.check_self_update()
+                if self.self_update:
+                    self.submit(f"update mcsm to {self.self_update['version']}", self.apply_self_update)
+            if self.m.config.self_update_check and time.monotonic() >= self.next_self_check:
+                self.next_self_check = time.monotonic() + SELF_CHECK_INTERVAL
+                threading.Thread(target=self.check_self_update, daemon=True, name="self-update-check").start()
             self.stop_requested.wait(self.tick)
         return self.exit_code
 
@@ -366,3 +390,38 @@ class Daemon:
         if not result.ok:
             raise RuntimeError(result.message)
         return result.message
+
+    # ------------------------------------------------------- self-update
+    def check_self_update(self) -> str:
+        try:
+            release = selfupdate.check(self.m.http)
+        except Exception as e:
+            log.debug("mcsm update check failed: %s", e)
+            return f"couldn't check for mcsm updates: {e}"
+        if release is None:
+            self.self_update = None
+            return f"mcsm {selfupdate.__version__} is the latest version"
+        can, why = selfupdate.install_method()
+        first = self.self_update is None or self.self_update.get("version") != release.version
+        self.self_update = {**release.to_dict(), "current": selfupdate.__version__, "can_install": can, "reason": why}
+        if first:
+            self.m.notifier.send(f"mcsm {release.version} is available (you have {selfupdate.__version__}). "
+                                 f"Update from the web UI or with `mcsm self-update`.")
+        return f"mcsm {release.version} is available"
+
+    def apply_self_update(self) -> str:
+        """Install the new mcsm, stop the server cleanly, and restart mcsm on the new version."""
+        info = self.self_update
+        if not info:
+            raise RuntimeError("no mcsm update is available")
+        release = selfupdate.Release(info["version"], info["tag"], info["url"], info["notes"])
+        message = selfupdate.install(release)
+        if self.proc and self.proc.running:
+            if self.players:
+                self.proc.say("Server restarting in 1 minute: updating the server manager")
+                self.stop_requested.wait(60)
+            self.proc.say("Restarting now!")
+        self.m.notifier.send(f"{message}; restarting mcsm")
+        self.restart_requested = True
+        self.stop_requested.set()  # run() stops the server; cli re-executes mcsm
+        return message

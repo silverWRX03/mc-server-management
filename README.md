@@ -57,6 +57,31 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
   are ever replaced. World, configs and hand-added jars are never touched.
 - No dependencies beyond Python 3.11+.
 
+## What mcsm does and doesn't do
+
+The first time you run it, mcsm shows these points and asks you to accept them, in
+the terminal or in the web UI. Nothing runs until you do.
+
+- mcsm runs your Minecraft server on this computer and keeps it and its mods up to date.
+- It connects to the internet to download Minecraft, mod loaders, mods, Java and its
+  own updates (from Mojang, Modrinth, CurseForge, Fabric, Quilt, NeoForge, Forge, Adoptium and GitHub).
+- It does not collect usage data. There is no analytics, tracking, advertising or account.
+- Your worlds, settings and backups stay on this computer. Nothing is uploaded, except
+  messages to Discord if you set up a webhook.
+- It changes files in your server folder: it replaces the mods and loader files it
+  installed, and makes a backup first.
+- Moving a world to a newer Minecraft version can't be undone. Restoring a backup is the only way back.
+- Minecraft belongs to Mojang, and each mod belongs to its author. You accept Minecraft's EULA separately.
+- This software was created with the help of AI (Anthropic's Claude). It is tested,
+  but it may still have mistakes.
+- It is free, open-source software (Apache 2.0 license), provided as is, with no warranty.
+- Keep your own copies of anything you can't afford to lose.
+
+For scripts, services and containers, accept it once with `mcsm notice --accept` or
+pass `--accept-notice`. Under systemd, `mcsm run --web` waits and shows the notice in
+the web UI. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) (or run
+`mcsm licenses`) for every license involved.
+
 ## Install
 
 ```sh
@@ -172,6 +197,29 @@ offline UUID when `online-mode=false`. Kicking, and IP-banning by player name, n
 the server running.
 
 ![Players page](docs/web-players.png)
+
+## Updating mcsm itself
+
+mcsm checks its GitHub releases once a day; set `[mcsm] update_check = false` to turn
+this off. When a new version is out:
+
+- **Web UI:** a toast shows the new version and a link to what's new, with **Update
+  now** and **Later** buttons. **Later** hides it until the next version comes out;
+  **Settings → About → Check for mcsm updates** brings it back. **Update now**
+  installs the release, warns players a minute ahead if anyone is online, stops the
+  server cleanly, and restarts mcsm (and the server) on the new version. Then you
+  sign in again.
+- **Command line:** `mcsm self-update --check` shows what's new, and `mcsm self-update`
+  installs it after asking. If `mcsm run` is managing a server, it hands the update to
+  the daemon, which restarts itself.
+- Nothing is ever installed without you accepting it.
+- It installs with the same Python that runs mcsm (`pip install --upgrade
+  git+https://github.com/silverWRX03/mc-server-management@<tag>`), so pip and pipx
+  installs both work. A source checkout is updated with `git pull` instead.
+
+**For maintainers:** a new version is published by bumping `__version__` in
+`src/mcsm/__init__.py` and creating a GitHub release tagged `vX.Y.Z` (for example
+`v0.2.0`). Drafts and pre-releases are ignored.
 
 ## Mods that block third-party downloads
 
@@ -310,4 +358,5 @@ The test suite runs the full install → upgrade → crash → rollback cycle ag
 
 ## License
 
-Apache-2.0
+Apache-2.0. See [LICENSE](LICENSE), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+for the licenses of everything mcsm uses or downloads.

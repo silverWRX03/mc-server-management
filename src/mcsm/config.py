@@ -83,6 +83,7 @@ class Config:
     java_image: str = "jre"
     manual_dir: Path | None = None      # where to drop mods that must be downloaded by hand
     web: WebConfig = field(default_factory=lambda: WebConfig())
+    self_update_check: bool = True      # look for new mcsm releases (installing always asks first)
     discord_webhook: str = ""
     curseforge_api_key: str = ""
     restart_on_crash: bool = True
@@ -195,6 +196,7 @@ def parse(root: Path, data: dict) -> Config:
         java_auto_install=bool(j.get("auto_install", True)),
         java_image=_choice(j.get("image", "jre"), ("jre", "jdk"), "java.image"),
         manual_dir=(root / data.get("downloads", {}).get("manual_dir", "manual-downloads")).resolve(),
+        self_update_check=bool(data.get("mcsm", {}).get("update_check", True)),
         web=WebConfig(
             enabled=bool(data.get("web", {}).get("enabled", False)),
             host=str(data.get("web", {}).get("host", "127.0.0.1")),
@@ -250,6 +252,9 @@ default = "java"               # a system Java to use if it is exactly the right
 
 [notify]
 discord_webhook = ""
+
+[mcsm]
+update_check = true            # tell you when a new version of mcsm is out (it never installs without asking)
 
 [web]
 enabled = false                # or start with `mcsm run --web`

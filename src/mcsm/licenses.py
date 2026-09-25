@@ -1,0 +1,66 @@
+"""Licenses of everything mcsm uses, downloads or talks to. Kept in sync with THIRD_PARTY_NOTICES.md."""
+
+from __future__ import annotations
+
+PROJECT = ("mcsm (mc-server-management)", "Apache-2.0",
+           "https://github.com/silverWRX03/mc-server-management/blob/main/LICENSE")
+
+# (name, how mcsm uses it, license, link)
+RUNTIME = [
+    ("Python and its standard library", "runs mcsm; mcsm has no other runtime dependencies",
+     "PSF-2.0", "https://docs.python.org/3/license.html"),
+]
+
+DEVELOPMENT = [
+    ("pytest", "running the test suite (not installed for users)", "MIT", "https://github.com/pytest-dev/pytest"),
+    ("setuptools", "building the package", "MIT", "https://github.com/pypa/setuptools"),
+]
+
+# Software mcsm downloads for you. None of it is bundled with or redistributed by mcsm.
+DOWNLOADED = [
+    ("Minecraft server", "the game server itself (from Mojang)", "Minecraft EULA (proprietary)",
+     "https://www.minecraft.net/en-us/eula"),
+    ("Fabric Loader and installer", "the fabric loader", "Apache-2.0", "https://github.com/FabricMC/fabric-loader"),
+    ("Quilt Loader and installer", "the quilt loader", "Apache-2.0", "https://github.com/QuiltMC/quilt-loader"),
+    ("NeoForge", "the neoforge loader", "LGPL-2.1", "https://github.com/neoforged/NeoForge"),
+    ("Minecraft Forge", "the forge loader", "LGPL-2.1", "https://github.com/MinecraftForge/MinecraftForge"),
+    ("Eclipse Temurin (OpenJDK)", "the Java runtime, when mcsm manages Java", "GPL-2.0 with Classpath Exception",
+     "https://adoptium.net/about/"),
+    ("Mods", "whatever you add; each is downloaded from its author's page", "each mod's own license",
+     "https://modrinth.com/"),
+]
+
+# Online services mcsm talks to (their terms apply; no account data is sent).
+SERVICES = [
+    ("Mojang version manifest and profile API", "https://www.minecraft.net/en-us/terms"),
+    ("Modrinth API", "https://modrinth.com/legal/terms"),
+    ("CurseForge API (only with your API key)", "https://support.curseforge.com/en/support/solutions/articles/9000207405"),
+    ("Fabric / Quilt / NeoForge / Forge metadata and maven servers", "see each project above"),
+    ("Adoptium API", "https://adoptium.net/"),
+    ("GitHub API (mcsm's own releases)", "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service"),
+    ("Discord webhooks (only if you set one)", "https://discord.com/terms"),
+]
+
+
+def as_text() -> str:
+    lines = [f"{PROJECT[0]}: {PROJECT[1]}  {PROJECT[2]}", "", "Used at runtime:"]
+    lines += [f"  {n}: {lic}  ({use})  {url}" for n, use, lic, url in RUNTIME]
+    lines += ["", "Used only for development:"]
+    lines += [f"  {n}: {lic}  ({use})  {url}" for n, use, lic, url in DEVELOPMENT]
+    lines += ["", "Downloaded for you (never bundled or redistributed by mcsm):"]
+    lines += [f"  {n}: {lic}  ({use})  {url}" for n, use, lic, url in DOWNLOADED]
+    lines += ["", "Online services it talks to:"]
+    lines += [f"  {n}  {url}" for n, url in SERVICES]
+    lines += ["", "The web UI uses no third-party code, fonts or images."]
+    return "\n".join(lines)
+
+
+def as_dict() -> dict:
+    row = lambda n, use, lic, url: {"name": n, "use": use, "license": lic, "url": url}  # noqa: E731
+    return {
+        "project": {"name": PROJECT[0], "license": PROJECT[1], "url": PROJECT[2]},
+        "runtime": [row(*r) for r in RUNTIME],
+        "development": [row(*r) for r in DEVELOPMENT],
+        "downloaded": [row(*r) for r in DOWNLOADED],
+        "services": [{"name": n, "url": url} for n, url in SERVICES],
+    }

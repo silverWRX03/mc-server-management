@@ -150,6 +150,15 @@ class ModrinthFixture:
         self.http.json[url] = list(reversed(self.versions[pid]))
 
 
+@pytest.fixture(autouse=True)
+def notice_accepted(tmp_path, monkeypatch):
+    """Keep tests away from the real user config, with the first-run notice already accepted."""
+    from mcsm import notice
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("APPDATA", raising=False)
+    notice.accept(None, by="cli")
+
+
 @pytest.fixture
 def http():
     return FakeHttp()

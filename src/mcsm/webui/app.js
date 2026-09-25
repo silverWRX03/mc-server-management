@@ -34,9 +34,17 @@ async function api(path, { method = "GET", body, raw } = {}) {
   let data = {};
   try { data = await res.json(); } catch (_) { /* empty */ }
   if (res.status === 401 && path !== "/api/login") { showLogin(); throw new Unauthorized(); }
+  if (res.status === 428) { showNotice(); throw new Unauthorized(); }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
+
+// A toast that stays until the user picks an action.
+function stickyToast(id, children) {
+  if (document.getElementById(id)) return;
+  $("#toasts").append(h("div", { class: "toast sticky", id }, children));
+}
+function closeToast(id) { const el = document.getElementById(id); if (el) el.remove(); }
 
 function toast(message, bad = false) {
   const el = h("div", { class: "toast" + (bad ? " bad" : "") }, message);
@@ -102,9 +110,65 @@ $("#login-form").addEventListener("submit", async (e) => {
 
 $("#logout").addEventListener("click", async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); showLogin(); });
 
+// ------------------------------------------------------------ first-run notice
+let noticeOpening = false;
+async function showNotice() {
+  // Guard synchronously: several status polls can call this before the fetch returns.
+  if (noticeOpening || $("#notice")) return;
+  noticeOpening = true;
+  let n;
+  try { n = await (await fetch("/api/notice", { credentials: "same-origin" })).json(); } catch (_) { n = null; }
+  noticeOpening = false;
+  if (!n || n.accepted || $("#notice")) return;
+  clearTimers();
+  const accept = h("button", { class: "btn primary", onclick: async () => {
+    try {
+      await api("/api/notice/accept", { method: "POST", body: { version: n.version } });
+      $("#notice").remove();
+      route();
+    } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, true); }
+  } }, "I understand and accept");
+  const decline = h("button", { class: "btn ghost", onclick: async () => {
+    await api("/api/logout", { method: "POST" }).catch(() => {});
+    $("#notice").remove();
+    showLogin();
+  } }, "Decline and sign out");
+  document.body.append(h("div", { class: "modal-backdrop", id: "notice", role: "dialog", "aria-modal": "true", "aria-labelledby": "notice-title" },
+    h("div", { class: "modal" },
+      h("h2", { id: "notice-title" }, n.title),
+      h("ul", { class: "notice-points" }, n.points.map((p) => h("li", {}, p))),
+      h("p", { class: "muted small" }, "The Minecraft server won't start until this is accepted. You can read it again under Settings → About."),
+      h("div", { class: "row" }, accept, decline))));
+  accept.focus();
+}
+
+// ------------------------------------------------------------ mcsm self-update
+const DISMISS_KEY = "mcsm-dismissed-update";
+function dismissed() { try { return localStorage.getItem(DISMISS_KEY); } catch (_) { return null; } }
+function offerSelfUpdate(u, force = false) {
+  if (!u || (!force && dismissed() === u.version)) return;
+  const later = () => { try { localStorage.setItem(DISMISS_KEY, u.version); } catch (_) {} closeToast("self-update"); };
+  const install = () => {
+    if (!confirm(`Update mcsm ${u.current} → ${u.version}?\n\nmcsm installs the update, stops the Minecraft server cleanly (with a 1-minute warning if players are online), and restarts on the new version. You'll need to sign in again afterwards.`)) return;
+    closeToast("self-update");
+    act(() => api("/api/self-update/apply", { method: "POST", body: { version: u.version } }), "Updating mcsm… this page reconnects when it's back.");
+  };
+  stickyToast("self-update", [
+    h("strong", {}, `mcsm ${u.version} is available`),
+    h("div", { class: "small muted" }, `You have ${u.current}. `, u.url ? h("a", { href: u.url, target: "_blank", rel: "noopener noreferrer" }, "What's new ↗") : null),
+    u.can_install ? null : h("div", { class: "small" }, u.reason),
+    h("div", { class: "row mt-s" },
+      u.can_install ? h("button", { class: "btn primary small", onclick: install }, "Update now") : null,
+      h("button", { class: "btn small", onclick: later }, "Later")),
+  ]);
+}
+
 // ------------------------------------------------------------------- status
 async function refreshStatus() {
-  try { status = await api("/api/status"); } catch (_) { return; }
+  try { status = await api("/api/status"); } catch (e) {
+    if (!(e instanceof Unauthorized)) { $("#state-pill").textContent = "reconnecting"; $("#state-pill").className = "pill"; }
+    return;
+  }
   const s = status;
   const pill = $("#state-pill");
   pill.textContent = s.state;
@@ -128,6 +192,8 @@ async function refreshStatus() {
   } else if (lastJobSeen === null) {
     lastJobSeen = s.last_job ? s.last_job.finished : 0;
   }
+  if (!s.notice_accepted) showNotice();
+  else offerSelfUpdate(s.self_update);
   if (current && current.onStatus) current.onStatus(s);
 }
 
@@ -560,8 +626,41 @@ views.settings = () => {
       act(() => api("/api/settings", { method: "POST", body }), "Settings saved").then(load);
     };
   };
-  fill($("#main"), h("h2", { class: "view-title" }, "Settings"), form);
+  const about = h("div", { class: "mt" });
+  const loadAbout = async () => {
+    const [n, lic] = await Promise.all([api("/api/notice").catch(() => null), api("/api/licenses").catch(() => null)]);
+    if (!n || !lic) return;
+    const s = status || {};
+    const row = (x) => h("tr", {}, h("td", {}, x.name), h("td", {}, x.license), h("td", { class: "muted" }, x.use),
+      h("td", {}, h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" }, "↗")));
+    const table = (title, rows) => [h("h3", { class: "mt-l" }, title), h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "License"), h("th", {}, "Used for"), h("th", {}))),
+      h("tbody", {}, rows.map(row)))];
+    fill(about,
+      card("About mcsm",
+        h("dl", { class: "kv" },
+          h("dt", {}, "Version"), h("dd", {}, s.version || ""),
+          h("dt", {}, "License"), h("dd", {}, h("a", { href: lic.project.url, target: "_blank", rel: "noopener noreferrer" }, lic.project.license))),
+        h("div", { class: "row mt-s" },
+          h("button", { class: "btn", onclick: async () => {
+            try { localStorage.removeItem(DISMISS_KEY); } catch (_) {}
+            closeToast("self-update");
+            await act(() => api("/api/self-update/check", { method: "POST", body: {} }), "Checking for a new mcsm version…");
+          } }, "Check for mcsm updates"))),
+      h("div", { class: "mt" }, card("What mcsm does and doesn't do",
+        h("ul", { class: "notice-points" }, n.points.map((p) => h("li", {}, p))))),
+      h("div", { class: "mt" }, card("Open-source licenses",
+        h("p", { class: "muted" }, "mcsm has no third-party runtime dependencies, and the web UI uses no third-party code, fonts or images. Software it downloads for you is never bundled or redistributed by mcsm."),
+        table("Used by mcsm", lic.runtime), table("Used only for development", lic.development),
+        table("Downloaded for you", lic.downloaded),
+        h("h3", { class: "mt-l" }, "Online services"),
+        h("ul", { class: "list" }, lic.services.map((x) => h("li", {}, h("span", { class: "grow" }, x.name),
+          x.url.startsWith("http") ? h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" }, "terms ↗") : h("span", { class: "muted small" }, x.url)))))),
+    );
+  };
+  fill($("#main"), h("h2", { class: "view-title" }, "Settings"), form, about);
   load();
+  loadAbout();
   return {};
 };
 

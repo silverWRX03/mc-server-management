@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mc-server-management"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A forever Minecraft server: manages a modded server and upgrades it to the newest release as soon as your mods support it."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -19,6 +19,9 @@ mcsm = "mcsm.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "mcsm.__version__" }
 
 [tool.setuptools.package-data]
 mcsm = ["webui/*"]

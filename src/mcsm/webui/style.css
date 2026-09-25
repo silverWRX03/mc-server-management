@@ -150,17 +150,26 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: upp
 .notice.ok { border-left-color: var(--accent); }
 .notice.bad { border-left-color: var(--danger); }
 
+/* first-run notice */
+.modal-backdrop { position: fixed; inset: 0; background: #000b; display: grid; place-items: center; padding: 16px; z-index: 20; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px 26px;
+  max-width: 640px; width: 100%; max-height: calc(100vh - 32px); overflow: auto; box-shadow: 0 12px 48px #000a; }
+.modal h2 { margin: 0 0 14px; font-size: 19px; }
+.notice-points { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 8px; }
+.notice-points li { line-height: 1.5; }
+
 /* toasts */
 .toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 10; max-width: min(420px, calc(100vw - 32px)); }
 .toast { background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent);
   padding: 10px 14px; border-radius: 6px; box-shadow: 0 6px 24px #0008; white-space: pre-wrap; overflow-wrap: anywhere; }
 .toast.bad { border-left-color: var(--danger); }
+.toast.sticky { border-left-color: var(--info); display: grid; gap: 4px; }
 
 /* spacing utilities (inline styles are blocked by the CSP) */
-.mt { margin-top: 16px; }
-.mt-s { margin-top: 12px; }
-.mt-l { margin-top: 22px; }
-.mb { margin-bottom: 16px; }
+.mt { margin-top: 16px !important; }
+.mt-s { margin-top: 12px !important; }
+.mt-l { margin-top: 22px !important; }
+.mb { margin-bottom: 16px !important; }
 .narrow { max-width: 110px; }
 
 @media (max-width: 760px) {
