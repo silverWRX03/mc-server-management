@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import sys
 import textwrap
@@ -169,17 +170,32 @@ def modrinth(http):
     return ModrinthFixture(http)
 
 
+FAKE_JAVA = textwrap.dedent("""\
+    import runpy, sys
+    args = sys.argv[1:]
+    if args[:1] == ["-version"]:
+        print('openjdk version "21.0.4" 2024-07-16', file=sys.stderr)
+        sys.exit(0)
+    while args and args[0].startswith("-X"):
+        args.pop(0)
+    sys.argv = args
+    runpy.run_path(args[0], run_name="__main__")
+    """)
+
+
 @pytest.fixture
 def fake_java(tmp_path):
-    path = tmp_path / "bin" / "java"
-    path.parent.mkdir()
-    path.write_text(textwrap.dedent(f"""\
-        #!/bin/sh
-        if [ "$1" = "-version" ]; then echo 'openjdk version "21.0.4" 2024-07-16' >&2; exit 0; fi
-        while [ $# -gt 0 ]; do case "$1" in -X*) shift;; *) break;; esac; done
-        exec {sys.executable} "$@"
-        """))
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    """A stand-in `java` that runs the Python "server" it is given."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "fakejava.py").write_text(FAKE_JAVA)
+    if os.name == "nt":
+        path = bindir / "java.bat"
+        path.write_text(f'@"{sys.executable}" "{bindir / "fakejava.py"}" %*\r\n')
+    else:
+        path = bindir / "java"
+        path.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{bindir / "fakejava.py"}" "$@"\n')
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return path
 
 
@@ -189,7 +205,7 @@ def make_config(tmp_path, fake_java):
         root = tmp_path / "root"
         root.mkdir(exist_ok=True)
         text = configmod.render_template("fabric", minecraft)
-        text = text.replace('default = "java"', f'default = "{fake_java}"')
+        text = text.replace('default = "java"', f'default = {json.dumps(str(fake_java))}')
         text = text.replace("warn_minutes = [10, 5, 1]", "warn_minutes = []")
         text = text.replace('startup_timeout = "10m"', 'startup_timeout = "30s"')
         for key, value in updates.items():

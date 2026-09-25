@@ -5,14 +5,14 @@ import json
 import logging
 import os
 import secrets
-import signal
 import socket
 import sys
+import webbrowser
 from pathlib import Path
 
 from . import __version__, backup, config as configmod, licenses, lock as lockmod, notice, selfupdate
 from .config import ConfigError, ModSpec
-from .daemon import Daemon, request_path, running_pid, self_update_request_path
+from .daemon import Daemon, request_path, request_stop, running_pid, self_update_request_path
 from .manager import Manager, UpgradeError
 from .mods import ModError, providers_for
 from .http import HttpClient, HttpError
@@ -255,19 +255,88 @@ def cmd_update(args) -> int:
     return 0 if result.ok else 1
 
 
+def _run_daemon(d: Daemon, web: bool) -> int:
+    code = d.run(web=web)
+    if d.restart_requested:
+        argv = selfupdate.restart_argv()
+        print("restarting mcsm on the new version...", flush=True)
+        os.execv(argv[0], argv)
+    return code
+
+
 def cmd_run(args) -> int:
     m = _manager(args)
     if args.web_port:
         m.config.web.port = args.web_port
     if args.web_host:
         m.config.web.host = args.web_host
+    return _run_daemon(Daemon(m), web=args.web or m.config.web.enabled)
+
+
+def default_home() -> Path:
+    """Where `mcsm start` keeps its server when no mcsm.toml is in the current folder."""
+    return Path(os.environ.get("MCSM_HOME") or Path.home() / "mcsm").resolve()
+
+
+def _ask(question: str, default: str, choices: tuple[str, ...] | None = None) -> str:
+    hint = f" [{default}]" if default else ""
+    while True:
+        answer = input(f"{question}{hint}: ").strip() or default
+        if choices is None or answer in choices:
+            return answer
+        print(f"  please answer one of: {', '.join(choices)}")
+
+
+def _wizard(root: Path) -> bool:
+    print(f"\nWelcome to mcsm! Let's set up your Minecraft server in {root}\n"
+          "(Press Enter to take the suggestion in [brackets].)\n")
+    loader = _ask("Mod loader: fabric, neoforge, forge, quilt or vanilla", "fabric", configmod.LOADERS)
+    minecraft = _ask("Minecraft version ('latest' = the newest one your mods support)", "latest")
+    memory = _ask("Memory for the server, e.g. 4G or 8G", "4G")
+    mods = []
+    if loader != "vanilla":
+        answer = _ask("Mods to install from Modrinth, separated by commas (e.g. lithium, ferrite-core), "
+                      "or leave empty", "")
+        mods = [x.strip() for x in answer.split(",") if x.strip()]
+        if loader in ("fabric", "quilt") and mods and "fabric-api" not in mods:
+            mods.insert(0, "fabric-api")
+    print("\nMinecraft servers require accepting Mojang's EULA: https://aka.ms/MinecraftEULA")
+    if _ask("Do you accept the Minecraft EULA? (yes/no)", "no", ("yes", "no", "y", "n")) not in ("yes", "y"):
+        print("The server can't run without accepting the EULA. Nothing was set up.")
+        return False
+    print("\nDownloading and building your server. This can take a few minutes...\n")
+    ns = argparse.Namespace(
+        root=root, dir=root, loader=loader, minecraft=minecraft, mod=mods, optional_mod=[], curseforge=[],
+        memory=memory, java=None, port=25565, motd="A Minecraft server managed by mcsm", max_players=20,
+        difficulty="normal", gamemode="survival", seed=None, rcon=False, accept_eula=True, force=False, quiet=True)
+    return cmd_create(ns) == 0
+
+
+def cmd_start(args) -> int:
+    """The double-click entry point: set up a server if needed, run it, and open the web UI."""
+    from .web import load_password
+
+    root = args.root if (args.root / configmod.CONFIG_NAME).exists() else default_home()
+    if not (root / configmod.CONFIG_NAME).exists():
+        if not sys.stdin.isatty():
+            print(f"no server set up in {root}; run `mcsm start` in a terminal to set one up")
+            return 1
+        if not _wizard(root):
+            return 1
+    m = Manager(configmod.load(root))
+    if running_pid(m):
+        url = f"http://localhost:{m.config.web.port}/"
+        print(f"mcsm is already running this server. Opening {url}")
+        if not args.no_browser:
+            webbrowser.open(url)
+        return 0
     d = Daemon(m)
-    code = d.run(web=args.web or m.config.web.enabled)
-    if d.restart_requested:
-        argv = selfupdate.restart_argv()
-        print("restarting mcsm on the new version...", flush=True)
-        os.execv(argv[0], argv)
-    return code
+    d.open_browser = not args.no_browser
+    password, _ = load_password(d)
+    print(f"\n  Server folder:  {root}\n  Control panel:  http://localhost:{m.config.web.port}/\n"
+          f"  Password:       {password}\n\n  Keep this window open while the server runs. "
+          "Press Ctrl+C to stop it.\n", flush=True)
+    return _run_daemon(d, web=True)
 
 
 def cmd_web_password(args) -> int:
@@ -292,7 +361,7 @@ def cmd_stop(args) -> int:
     if not pid:
         print("mcsm run is not running")
         return 1
-    os.kill(pid, signal.SIGTERM)
+    request_stop(m)
     print(f"asked mcsm (pid {pid}) to stop the server")
     return 0
 
@@ -432,13 +501,21 @@ def cmd_notice(args) -> int:
 
 
 def cmd_licenses(args) -> int:
+    if args.full:
+        texts = licenses.full_texts()
+        if not texts:
+            print("full license texts are bundled only in the downloadable executables; see "
+                  "https://github.com/silverWRX03/mc-server-management/blob/main/THIRD_PARTY_NOTICES.md")
+            return 0
+        for name, text in texts:
+            print(f"{'=' * 78}\n{name}\n{'=' * 78}\n{text}\n")
+        return 0
     print(licenses.as_text())
-    print("\nFull details: THIRD_PARTY_NOTICES.md")
+    print("\nFull details: THIRD_PARTY_NOTICES.md, or `mcsm licenses --full` in the downloadable executables")
     return 0
 
 
 def cmd_self_update(args) -> int:
-    ok, why = selfupdate.install_method()
     release = selfupdate.check(HttpClient())
     if release is None:
         print(f"mcsm {__version__} is the latest version")
@@ -448,6 +525,7 @@ def cmd_self_update(args) -> int:
         print("\n" + release.notes.strip()[:1500] + "\n")
     if args.check:
         return 0
+    ok, why = selfupdate.install_method(release)
     if not ok:
         print(why)
         return 1
@@ -512,7 +590,7 @@ def cmd_restore(args) -> int:
 
 
 # ------------------------------------------------------------------- main
-NOTICE_EXEMPT = {"notice", "licenses"}
+NOTICE_EXEMPT = {"notice", "licenses", "stop", "status", "web-password"}  # never blocked by the notice
 
 
 def _notice_ok(args) -> bool:
@@ -532,9 +610,9 @@ def _notice_ok(args) -> bool:
             return True
         print("not accepted; nothing was changed")
         return False
-    if args.command == "run" and root is not None:
+    if args.command in ("run", "start") and root is not None:
         try:
-            web = args.web or configmod.load(root).web.enabled
+            web = args.command == "start" or args.web or configmod.load(root).web.enabled
         except ConfigError:
             web = False
         if web:
@@ -554,7 +632,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--accept-notice", action="store_true",
                    help="accept the first-run notice without a prompt (for scripts and services)")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command")
+    p.set_defaults(fn=None)
+
+    s = sub.add_parser("start", help="set up a server if needed, run it, and open the web UI (the default)")
+    s.add_argument("--no-browser", action="store_true", help="don't open the web UI in a browser")
+    s.set_defaults(fn=cmd_start)
 
     s = sub.add_parser("init", help="create mcsm.toml")
     s.add_argument("--loader", choices=configmod.LOADERS, default="fabric")
@@ -651,6 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_notice)
 
     s = sub.add_parser("licenses", help="list the open-source licenses of everything mcsm uses")
+    s.add_argument("--full", action="store_true", help="print the full license texts bundled in the executable")
     s.set_defaults(fn=cmd_licenses)
 
     s = sub.add_parser("self-update", help="update mcsm itself to the newest release")
@@ -675,7 +759,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.fn is None:  # no command, e.g. the executable was double-clicked
+        args = parser.parse_args([*argv, "start"])
+    selfupdate.cleanup_after_update()
+    try:
+        return _main(args)
+    finally:
+        if selfupdate.frozen() and os.name == "nt" and args.command == "start" and not argv:
+            # Double-clicked on Windows: keep the console open so messages can be read.
+            input("\nPress Enter to close this window...")
+
+
+def _main(args) -> int:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="[mcsm] %(message)s")
     args.root = args.root.resolve()

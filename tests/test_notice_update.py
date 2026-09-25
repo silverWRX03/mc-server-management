@@ -93,7 +93,7 @@ def test_check(http):
 
 
 def test_install_uses_pip_with_the_release_tag(monkeypatch):
-    monkeypatch.setattr(selfupdate, "install_method", lambda: (True, ""))
+    monkeypatch.setattr(selfupdate, "install_method", lambda release=None: (True, ""))
     calls = []
 
     def runner(argv, **kw):
@@ -110,7 +110,7 @@ def test_install_uses_pip_with_the_release_tag(monkeypatch):
 
 
 def test_source_checkouts_are_not_self_updated(monkeypatch):
-    monkeypatch.setattr(selfupdate, "install_method", lambda: (False, "running from a source checkout"))
+    monkeypatch.setattr(selfupdate, "install_method", lambda release=None: (False, "running from a source checkout"))
     with pytest.raises(selfupdate.SelfUpdateError, match="source checkout"):
         selfupdate.install(selfupdate.Release("0.2.0", "v0.2.0", "", ""))
 
@@ -162,7 +162,7 @@ def test_web_self_update(web_daemon, monkeypatch):
                      "can_install": True, "reason": ""}
     assert c.get("/api/status")[1]["self_update"]["version"] == "9.9.9"
     installed = []
-    monkeypatch.setattr(selfupdate, "install", lambda r: installed.append(r.tag) or f"installed mcsm {r.version}")
+    monkeypatch.setattr(selfupdate, "install", lambda r, **kw: installed.append(r.tag) or f"installed mcsm {r.version}")
     assert c.post("/api/self-update/apply", {"version": "9.9.8"})[0] == 409
     assert c.post("/api/self-update/apply", {"version": "9.9.9"})[0] == 200
     wait_for(lambda: d.restart_requested and d.stop_requested.is_set())

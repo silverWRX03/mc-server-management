@@ -82,15 +82,80 @@ pass `--accept-notice`. Under systemd, `mcsm run --web` waits and shows the noti
 the web UI. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) (or run
 `mcsm licenses`) for every license involved.
 
-## Install
+## Download and run
+
+Get the file for your computer from the
+[latest release](https://github.com/silverWRX03/mc-server-management/releases/latest).
+It's a single file: no installer, no Python, and no Java to set up (mcsm downloads the
+right Java by itself).
+
+| Your computer | Download |
+|---|---|
+| Windows 10/11 (64-bit) | [`mcsm-windows-x64.exe`](https://github.com/silverWRX03/mc-server-management/releases/latest/download/mcsm-windows-x64.exe) |
+| Mac with Apple silicon (M1 or newer) | [`mcsm-macos-arm64`](https://github.com/silverWRX03/mc-server-management/releases/latest/download/mcsm-macos-arm64) |
+| Linux, 64-bit Intel/AMD | [`mcsm-linux-x64`](https://github.com/silverWRX03/mc-server-management/releases/latest/download/mcsm-linux-x64) |
+| Linux on ARM (Raspberry Pi 4/5 with a 64-bit OS) | [`mcsm-linux-arm64`](https://github.com/silverWRX03/mc-server-management/releases/latest/download/mcsm-linux-arm64) |
+
+**Windows:** put `mcsm-windows-x64.exe` in a folder of its own (for example
+`Documents\mcsm`) and double-click it.
+- The first time, Windows SmartScreen may say *"Windows protected your PC"*, because
+  the app isn't code-signed yet. Click **More info → Run anyway**.
+- When the server first starts, allow it through Windows Firewall so friends can connect.
+
+**Mac:** macOS blocks apps downloaded from the internet that aren't notarized, so run
+these once in Terminal:
+
+```sh
+cd ~/Downloads
+chmod +x mcsm-macos-arm64
+xattr -d com.apple.quarantine mcsm-macos-arm64
+./mcsm-macos-arm64
+```
+
+**Linux:**
+
+```sh
+curl -LO https://github.com/silverWRX03/mc-server-management/releases/latest/download/mcsm-linux-x64
+chmod +x mcsm-linux-x64
+./mcsm-linux-x64
+```
+
+### What happens when you run it
+
+1. It shows [what mcsm does and doesn't do](#what-mcsm-does-and-doesnt-do) and asks you to accept.
+2. A few questions set up your server: loader, Minecraft version, memory, mods, and Mojang's EULA.
+3. It downloads and builds everything, starts the server, and opens the control panel in
+   your browser. The password is shown in the window.
+
+Next time, run it the same way: it goes straight to starting your server. Keep the
+window open while the server runs, and press Ctrl+C to stop it cleanly.
+
+Your server lives in a folder called `mcsm` in your home folder (`C:\Users\<you>\mcsm`
+on Windows). To keep it somewhere else, set the `MCSM_HOME` environment variable, or run
+mcsm from a folder that already contains an `mcsm.toml`.
+
+**For friends outside your home network,** forward TCP port 25565 on your router to
+this computer.
+
+**Verifying a download (optional):** every release includes `SHA256SUMS.txt`. Compare it with
+`sha256sum mcsm-linux-x64` (Linux), `shasum -a 256 mcsm-macos-arm64` (Mac), or
+`Get-FileHash mcsm-windows-x64.exe` (Windows PowerShell). The built-in updater checks this for you.
+
+### With Python instead
+
+If you have Python 3.11 or newer (for example on an Intel Mac, or anything not listed
+above):
 
 ```sh
 pipx install git+https://github.com/silverWRX03/mc-server-management
-# or: pip install git+https://github.com/silverWRX03/mc-server-management
+mcsm
 ```
 
-You don't need to install Java yourself: mcsm downloads the version each Minecraft
-release needs. If you'd rather use your own, see [Java](#java).
+### Running it as a background service
+
+On a Linux server, use systemd with [`examples/mcsm.service`](examples/mcsm.service),
+pointing `ExecStart` at the downloaded file. Accept the notice once with
+`mcsm notice --accept`, or in the web UI.
 
 ## Quick start: build a new server
 
@@ -217,9 +282,10 @@ this off. When a new version is out:
   git+https://github.com/silverWRX03/mc-server-management@<tag>`), so pip and pipx
   installs both work. A source checkout is updated with `git pull` instead.
 
-**For maintainers:** a new version is published by bumping `__version__` in
-`src/mcsm/__init__.py` and creating a GitHub release tagged `vX.Y.Z` (for example
-`v0.2.0`). Drafts and pre-releases are ignored.
+The downloadable executables update themselves: mcsm downloads the new file for your
+system from the release, checks it against `SHA256SUMS.txt`, and swaps it in. If
+mcsm lives in a folder you can't write to, it tells you to download the new version
+yourself.
 
 ## Mods that block third-party downloads
 
@@ -337,6 +403,23 @@ required = true
 > World upgrades are one-way: once a world has been opened in a newer Minecraft
 > version, older versions can't load it. That's why every upgrade makes a full backup
 > first. `mcsm restore` puts back the latest one (or a named one).
+
+## Releasing (for maintainers)
+
+1. Set `__version__` in `src/mcsm/__init__.py`, e.g. `"0.2.0"`, and commit.
+2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+3. The [release workflow](.github/workflows/release.yml) tests the code and builds the
+   Windows, macOS and Linux executables with [PyInstaller](https://pyinstaller.org). It
+   smoke-tests each one on its own OS, then publishes a GitHub release with the
+   executables, the Python wheel, and `SHA256SUMS.txt`.
+4. Running copies of mcsm notice the release within a day and offer to update.
+
+To build an executable yourself: `pip install pyinstaller && pyinstaller packaging/mcsm.spec`
+(the output is in `dist/`), then `python packaging/smoke_test.py dist/mcsm`.
+
+The executables aren't code-signed yet, which is why Windows and macOS show warnings.
+Signing needs a Windows code-signing certificate and an Apple Developer ID
+($99/year); both can be added to the release workflow later.
 
 ## Development
 

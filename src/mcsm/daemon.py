@@ -43,16 +43,45 @@ def self_update_request_path(manager: Manager) -> Path:
     return manager.config.state_dir / "self-update-requested"
 
 
-def running_pid(manager: Manager) -> int | None:
-    path = pid_path(manager)
+def stop_request_path(manager: Manager) -> Path:
+    return manager.config.state_dir / "stop-requested"
+
+
+def pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        # os.kill(pid, 0) would send Ctrl+C on Windows, so ask the kernel instead.
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
-        pid = int(path.read_text().strip())
         os.kill(pid, 0)
-        return pid
-    except (FileNotFoundError, ValueError, ProcessLookupError):
-        return None
+        return True
+    except ProcessLookupError:
+        return False
     except PermissionError:  # alive, owned by someone else
-        return pid
+        return True
+
+
+def running_pid(manager: Manager) -> int | None:
+    try:
+        pid = int(pid_path(manager).read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+    return pid if pid_alive(pid) else None
+
+
+def request_stop(manager: Manager) -> None:
+    """Ask a running daemon to stop the server cleanly and exit (works on every OS)."""
+    path = stop_request_path(manager)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("stop")
 
 
 class LogBuffer:
@@ -121,6 +150,7 @@ class Daemon:
         self.want_running = True        # False after a deliberate stop (no crash restarts)
         self.web_enabled = False
         self.ui = None
+        self.open_browser = False
         self.console = LogBuffer(3000)
         self.events = LogBuffer(500)
         self.players: set[str] = set()
@@ -218,6 +248,7 @@ class Daemon:
             log.error("mcsm is already running (pid %s)", pid)
             return 1
         pid_path(self.m).write_text(str(os.getpid()))
+        stop_request_path(self.m).unlink(missing_ok=True)
         handler = _EventHandler(self.events)
         mcsm_log = logging.getLogger("mcsm")
         mcsm_log.addHandler(handler)
@@ -234,6 +265,9 @@ class Daemon:
                 ui.start()
                 self.ui = ui
                 self.web_enabled = True
+                if self.open_browser:
+                    import webbrowser
+                    threading.Timer(1.0, webbrowser.open, args=(ui.url,)).start()
             return self._loop()
         finally:
             if ui:
@@ -260,7 +294,8 @@ class Daemon:
         if not notice.accepted(self.m.config.root):
             log.info("waiting for the first-run notice to be accepted in the web UI")
             while not notice.accepted(self.m.config.root):
-                if self.stop_requested.wait(1):
+                if self.stop_requested.wait(1) or stop_request_path(self.m).exists():
+                    stop_request_path(self.m).unlink(missing_ok=True)
                     return self.exit_code
             log.info("notice accepted")
         self.submit("start", self._boot)
@@ -268,6 +303,11 @@ class Daemon:
         self.next_check = time.monotonic() + 60
 
         while not self.stop_requested.is_set():
+            if stop_request_path(self.m).exists():
+                stop_request_path(self.m).unlink(missing_ok=True)
+                log.info("stop requested")
+                self.stop_requested.set()
+                break
             idle = not self.ops.locked()
             if (idle and self.want_running and self.proc is not None and not self.proc.running
                     and not self.proc.stopping):
@@ -401,7 +441,7 @@ class Daemon:
         if release is None:
             self.self_update = None
             return f"mcsm {selfupdate.__version__} is the latest version"
-        can, why = selfupdate.install_method()
+        can, why = selfupdate.install_method(release)
         first = self.self_update is None or self.self_update.get("version") != release.version
         self.self_update = {**release.to_dict(), "current": selfupdate.__version__, "can_install": can, "reason": why}
         if first:
@@ -414,8 +454,8 @@ class Daemon:
         info = self.self_update
         if not info:
             raise RuntimeError("no mcsm update is available")
-        release = selfupdate.Release(info["version"], info["tag"], info["url"], info["notes"])
-        message = selfupdate.install(release)
+        release = selfupdate.Release(info["version"], info["tag"], info["url"], info["notes"], info.get("assets", {}))
+        message = selfupdate.install(release, http=self.m.http)
         if self.proc and self.proc.running:
             if self.players:
                 self.proc.say("Server restarting in 1 minute: updating the server manager")

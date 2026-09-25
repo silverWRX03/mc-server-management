@@ -6,10 +6,17 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python: ["3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,3 +24,21 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
       - run: pytest -q
+
+  # Catch packaging problems before release time: build the executable and run it.
+  package:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "pyinstaller>=6,<7"
+      - run: pyinstaller --noconfirm packaging/mcsm.spec
+      - name: Smoke test
+        shell: bash
+        run: python packaging/smoke_test.py dist/mcsm$([ -f dist/mcsm.exe ] && echo .exe)
