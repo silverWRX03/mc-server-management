@@ -454,8 +454,10 @@ required = true
 
 ## Releasing (for maintainers)
 
-1. Set `__version__` in `src/mcsm/__init__.py`, e.g. `"0.2.0"`, and commit.
-2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+1. Set `__version__` in `src/mcsm/__init__.py`, e.g. `"0.2.0"`, and merge it to `main`.
+2. Go to **Actions → release → Run workflow**, enter `0.2.0`, and run it. This creates
+   the `v0.2.0` tag for you. Pushing the tag yourself works too:
+   `git tag v0.2.0 && git push origin v0.2.0`.
 3. The [release workflow](.github/workflows/release.yml) tests the code and builds the
    Windows, macOS and Linux executables with [PyInstaller](https://pyinstaller.org). It
    smoke-tests each one on its own OS, then publishes a GitHub release with the
