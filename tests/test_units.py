@@ -1,0 +1,129 @@
+from pathlib import Path
+
+import pytest
+
+from mcsm import backup, config as configmod
+from mcsm.config import ConfigError, ModSpec, parse_duration
+from mcsm.java import parse_major, select
+from mcsm.loaders.base import version_key
+from mcsm.loaders.forge import NEOFORGE_VERSIONS, NeoForgeLoader, neoforge_prefix
+from mcsm.loaders.fabric import FABRIC_META, FabricLoader
+from mcsm.process import PLAYERS, READY
+from mcsm.rcon import decode, encode
+
+from conftest import FakeMojang
+
+
+def test_durations():
+    assert parse_duration("6h") == 21600
+    assert parse_duration("30m") == 1800
+    assert parse_duration(90) == 90
+    with pytest.raises(ConfigError):
+        parse_duration("soon")
+
+
+def test_template_loads_and_mod_blocks_round_trip(tmp_path):
+    (tmp_path / "mcsm.toml").write_text(configmod.render_template("neoforge", "1.21.1"))
+    path = tmp_path / "mcsm.toml"
+    configmod.append_mod(path, ModSpec("modrinth", "create"))
+    configmod.append_mod(path, ModSpec("curseforge", "238222", required=False))
+    cfg = configmod.load(tmp_path)
+    assert cfg.server.loader == "neoforge"
+    assert [(m.source, m.id, m.required) for m in cfg.mods] == [
+        ("modrinth", "create", True), ("curseforge", "238222", False)]
+
+    assert configmod.remove_mod(path, "modrinth", "create")
+    assert not configmod.remove_mod(path, "modrinth", "create")
+    cfg = configmod.load(tmp_path)
+    assert [m.id for m in cfg.mods] == ["238222"]
+    assert "# mcsm configuration" in path.read_text()  # comments survive edits
+
+
+def test_invalid_config(tmp_path):
+    (tmp_path / "mcsm.toml").write_text('[server]\nloader = "bukkit"\n')
+    with pytest.raises(ConfigError, match="server.loader"):
+        configmod.load(tmp_path)
+
+
+def test_java_version_parsing():
+    assert parse_major('openjdk version "21.0.4" 2024-07-16') == 21
+    assert parse_major('java version "1.8.0_392"') == 8
+    assert parse_major('openjdk version "17" 2021-09-14') == 17
+
+
+def test_java_selection(tmp_path):
+    (tmp_path / "mcsm.toml").write_text(configmod.render_template("fabric", "1.21.1"))
+    cfg = configmod.load(tmp_path)
+    cfg.java_versions = {17: "/j17", 21: "/j21"}
+    majors = {"/j17": 17, "/j21": 21, "java": 25}
+    assert select(cfg, 21, majors.get) == "/j21"
+    assert select(cfg, 17, majors.get) == "/j17"
+    assert select(cfg, 25, majors.get) == "java"
+
+
+def test_neoforge_versions(http):
+    assert neoforge_prefix("1.21.1") == "21.1."
+    assert neoforge_prefix("1.21") == "21.0."
+    assert neoforge_prefix("26.1") == "26.1."
+    http.json[NEOFORGE_VERSIONS] = {"versions": ["21.1.9", "21.1.77", "21.1.100-beta", "21.2.1", "21.1.10"]}
+    loader = NeoForgeLoader(http, FakeMojang(http, ["1.21.1"]))
+    assert loader.latest_version("1.21.1") == "21.1.77"
+    assert loader.latest_version("1.21.4") is None
+
+
+def test_fabric_latest_version(http):
+    http.json[f"{FABRIC_META}/versions/loader/1.21.1"] = [
+        {"loader": {"version": "0.17.0-beta", "stable": False}},
+        {"loader": {"version": "0.16.10", "stable": True}},
+    ]
+    http.json[f"{FABRIC_META}/versions/loader/26.1"] = []
+    loader = FabricLoader(http, FakeMojang(http, ["1.21.1"]))
+    assert loader.latest_version("1.21.1") == "0.16.10"
+    assert loader.latest_version("26.1") is None
+    assert loader.latest_version("9.9") is None  # 404 means unsupported
+
+
+def test_version_key_orders_prereleases_first():
+    assert sorted(["1.2.0", "1.10.0", "1.2.0-beta", "1.9"], key=version_key) == \
+        ["1.2.0-beta", "1.2.0", "1.9", "1.10.0"]
+
+
+def test_mojang_ordering_handles_new_version_scheme(http):
+    mojang = FakeMojang(http, ["1.21.9", "1.21.10", "26.1"])
+    assert mojang.newer_than("1.21.9") == ["26.1", "1.21.10"]
+    assert mojang.latest_release() == "26.1"
+
+
+def test_log_patterns():
+    assert READY.search('[12:00:00] [Server thread/INFO]: Done (4.512s)! For help, type "help"')
+    assert READY.search('[12:00:00] [Server thread/INFO] [minecraft/DedicatedServer]: Done (31.2s)! For help')
+    assert not READY.search("<steve> Done (1s)! lol")
+    assert PLAYERS.search("[Server thread/INFO]: There are 3 of a max of 20 players online: a, b, c").group(1) == "3"
+
+
+def test_rcon_packets():
+    packet = encode(7, 2, "list")
+    assert int.from_bytes(packet[:4], "little") == len(packet) - 4
+    assert decode(packet[4:]) == (7, 2, "list")
+
+
+def test_backup_restore_prune(tmp_path):
+    server = tmp_path / "server"
+    (server / "world").mkdir(parents=True)
+    (server / "world" / "level.dat").write_text("v1")
+    (server / "logs").mkdir()
+    (server / "logs" / "latest.log").write_text("noise")
+    backups = tmp_path / "backups"
+
+    archive = backup.create(server, backups, "test", ["logs"])
+    (server / "world" / "level.dat").write_text("v2")
+    (server / "new.txt").write_text("x")
+    backup.restore(archive, server)
+    assert (server / "world" / "level.dat").read_text() == "v1"
+    assert not (server / "new.txt").exists()
+    assert not (server / "logs").exists()
+
+    for i in range(3):
+        backup.create(server, backups, f"extra{i}", [])
+    backup.prune(backups, 2)
+    assert len(backup.list_backups(backups)) == 2

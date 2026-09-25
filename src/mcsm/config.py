@@ -1,0 +1,268 @@
+"""Loading and editing ``mcsm.toml``."""
+
+from __future__ import annotations
+
+import os
+import re
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+CONFIG_NAME = "mcsm.toml"
+LOADERS = ("fabric", "quilt", "neoforge", "forge", "vanilla")
+MOD_SOURCES = ("modrinth", "curseforge")
+STRATEGIES = ("latest-compatible", "latest", "mods-only")
+CHANNELS = ("release", "beta", "alpha")
+
+
+class ConfigError(Exception):
+    pass
+
+
+@dataclass
+class ModSpec:
+    source: str
+    id: str
+    required: bool = True
+    # Set on specs created automatically for a mod's dependencies.
+    dependency_of: str | None = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.source}:{self.id}"
+
+
+@dataclass
+class ServerConfig:
+    dir: Path
+    loader: str
+    minecraft: str
+    memory: str = "4G"
+    jvm_args: list[str] = field(default_factory=list)
+    startup_timeout: int = 600
+    stop_timeout: int = 120
+
+
+@dataclass
+class UpdateConfig:
+    strategy: str = "latest-compatible"
+    mod_channel: str = "release"
+    auto_upgrade: bool = True
+    check_interval: int = 6 * 3600
+    warn_minutes: list[int] = field(default_factory=lambda: [10, 5, 1])
+    wait_for_empty: bool = False
+    verify_boot: bool = True
+
+
+@dataclass
+class BackupConfig:
+    dir: Path
+    keep: int = 10
+    exclude: list[str] = field(default_factory=lambda: ["logs", "crash-reports"])
+
+
+@dataclass
+class Config:
+    root: Path
+    server: ServerConfig
+    updates: UpdateConfig
+    backups: BackupConfig
+    mods: list[ModSpec]
+    java_default: str = "java"
+    java_versions: dict[int, str] = field(default_factory=dict)
+    discord_webhook: str = ""
+    curseforge_api_key: str = ""
+    restart_on_crash: bool = True
+
+    @property
+    def path(self) -> Path:
+        return self.root / CONFIG_NAME
+
+    @property
+    def state_dir(self) -> Path:
+        return self.root / ".mcsm"
+
+
+_DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$")
+
+
+def parse_duration(value: str | int) -> int:
+    """Parse ``"30m"``, ``"6h"``, ``"1d"`` or plain seconds into seconds."""
+    if isinstance(value, int):
+        return value
+    m = _DURATION.match(value)
+    if not m:
+        raise ConfigError(f"invalid duration: {value!r} (use e.g. 30m, 6h, 1d)")
+    n, unit = int(m.group(1)), m.group(2) or "s"
+    return n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+
+
+def _choice(value: str, choices: tuple[str, ...], name: str) -> str:
+    if value not in choices:
+        raise ConfigError(f"{name} must be one of {', '.join(choices)} (got {value!r})")
+    return value
+
+
+def load(root: Path) -> Config:
+    path = root / CONFIG_NAME
+    if not path.exists():
+        raise ConfigError(f"{path} not found - run `mcsm init` first")
+    try:
+        data = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path}: {e}") from e
+    return parse(root, data)
+
+
+def parse(root: Path, data: dict) -> Config:
+    s = data.get("server", {})
+    if "loader" not in s:
+        raise ConfigError("[server] loader is required")
+    server = ServerConfig(
+        dir=(root / s.get("dir", "server")).resolve(),
+        loader=_choice(s["loader"], LOADERS, "server.loader"),
+        minecraft=str(s.get("minecraft", "latest")),
+        memory=s.get("memory", "4G"),
+        jvm_args=list(s.get("jvm_args", [])),
+        startup_timeout=parse_duration(s.get("startup_timeout", 600)),
+        stop_timeout=parse_duration(s.get("stop_timeout", 120)),
+    )
+
+    u = data.get("updates", {})
+    updates = UpdateConfig(
+        strategy=_choice(u.get("strategy", "latest-compatible"), STRATEGIES, "updates.strategy"),
+        mod_channel=_choice(u.get("mod_channel", "release"), CHANNELS, "updates.mod_channel"),
+        auto_upgrade=bool(u.get("auto_upgrade", True)),
+        check_interval=parse_duration(u.get("check_interval", "6h")),
+        warn_minutes=sorted((int(x) for x in u.get("warn_minutes", [10, 5, 1])), reverse=True),
+        wait_for_empty=bool(u.get("wait_for_empty", False)),
+        verify_boot=bool(u.get("verify_boot", True)),
+    )
+
+    b = data.get("backups", {})
+    backups = BackupConfig(
+        dir=(root / b.get("dir", "backups")).resolve(),
+        keep=int(b.get("keep", 10)),
+        exclude=list(b.get("exclude", ["logs", "crash-reports"])),
+    )
+
+    mods = []
+    for i, m in enumerate(data.get("mods", [])):
+        if "id" not in m:
+            raise ConfigError(f"mods[{i}] is missing `id`")
+        mods.append(ModSpec(
+            source=_choice(m.get("source", "modrinth"), MOD_SOURCES, f"mods[{i}].source"),
+            id=str(m["id"]),
+            required=bool(m.get("required", True)),
+        ))
+    if mods and server.loader == "vanilla":
+        raise ConfigError("the vanilla loader cannot run mods; set [server] loader or remove [[mods]]")
+
+    j = data.get("java", {})
+    java_versions = {}
+    for k, v in j.get("versions", {}).items():
+        try:
+            java_versions[int(k)] = v
+        except ValueError:
+            raise ConfigError(f"java.versions keys must be Java major versions (got {k!r})") from None
+
+    return Config(
+        root=root.resolve(),
+        server=server,
+        updates=updates,
+        backups=backups,
+        mods=mods,
+        java_default=j.get("default", "java"),
+        java_versions=java_versions,
+        discord_webhook=data.get("notify", {}).get("discord_webhook", ""),
+        curseforge_api_key=(data.get("curseforge", {}).get("api_key", "")
+                            or os.environ.get("MCSM_CURSEFORGE_API_KEY", "")),
+        restart_on_crash=bool(s.get("restart_on_crash", True)),
+    )
+
+
+TEMPLATE = """\
+# mcsm configuration - https://github.com/silverWRX03/mc-server-management
+
+[server]
+dir = "server"                 # server directory (world, config/, mods/, server.properties)
+loader = "{loader}"            # fabric | quilt | neoforge | forge | vanilla
+minecraft = "{minecraft}"      # version to install on first `mcsm update` ("latest" = newest release)
+memory = "4G"
+jvm_args = []                  # extra JVM flags, e.g. ["-XX:+UseZGC"]
+startup_timeout = "10m"        # how long a boot may take before it counts as failed
+stop_timeout = "2m"
+restart_on_crash = true
+
+[updates]
+# latest-compatible: move to the newest release that the loader and every required mod support
+# latest:            only ever move to the newest release, waiting until everything supports it
+# mods-only:         never change the Minecraft version, just keep mods updated
+strategy = "latest-compatible"
+mod_channel = "release"        # lowest mod release channel to accept: release | beta | alpha
+auto_upgrade = true            # let `mcsm run` apply upgrades on its own
+check_interval = "6h"
+warn_minutes = [10, 5, 1]      # in-game countdown before a restart
+wait_for_empty = false         # postpone upgrades until nobody is online
+verify_boot = true             # boot the upgraded server and roll back if it fails to start
+
+[backups]
+dir = "backups"
+keep = 10
+exclude = ["logs", "crash-reports"]
+
+[java]
+default = "java"
+# Different Minecraft versions need different Java versions. Map a major version to a binary:
+# [java.versions]
+# 17 = "/usr/lib/jvm/java-17-openjdk/bin/java"
+# 21 = "/usr/lib/jvm/java-21-openjdk/bin/java"
+
+[notify]
+discord_webhook = ""
+
+[curseforge]
+api_key = ""                   # or set MCSM_CURSEFORGE_API_KEY; only needed for curseforge mods
+
+# One [[mods]] block per mod. Dependencies are resolved automatically.
+# required = true  -> Minecraft upgrades wait for this mod
+# required = false -> the mod is left out of an upgrade if it isn't ready, and comes back when it is
+"""
+
+
+def render_template(loader: str, minecraft: str) -> str:
+    return TEMPLATE.format(loader=loader, minecraft=minecraft)
+
+
+def mod_block(spec: ModSpec) -> str:
+    ident = spec.id if spec.id.isdigit() and spec.source == "curseforge" else f'"{spec.id}"'
+    return f'\n[[mods]]\nsource = "{spec.source}"\nid = {ident}\nrequired = {str(spec.required).lower()}\n'
+
+
+def append_mod(path: Path, spec: ModSpec) -> None:
+    text = path.read_text()
+    if not text.endswith("\n"):
+        text += "\n"
+    path.write_text(text + mod_block(spec))
+
+
+def remove_mod(path: Path, source: str, mod_id: str) -> bool:
+    """Remove a ``[[mods]]`` block, leaving the rest of the file (and its comments) intact."""
+    lines = path.read_text().splitlines(keepends=True)
+    # Split into chunks that each start at a table header.
+    chunks: list[list[str]] = [[]]
+    for line in lines:
+        if re.match(r"^\s*\[", line):
+            chunks.append([])
+        chunks[-1].append(line)
+    kept, removed = [], False
+    for chunk in chunks:
+        if chunk and chunk[0].strip() == "[[mods]]":
+            body = tomllib.loads("".join(chunk[1:]))
+            if str(body.get("id")) == mod_id and body.get("source", "modrinth") == source:
+                removed = True
+                continue
+        kept.append(chunk)
+    if removed:
+        path.write_text("".join(line for chunk in kept for line in chunk))
+    return removed
