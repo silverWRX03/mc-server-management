@@ -2,7 +2,9 @@
 
 The daemon owns the server process. It restarts it after crashes, checks for
 updates on a schedule (or when ``mcsm update`` drops a request file), and applies
-them with an in-game countdown.
+them with an in-game countdown. Anything slow (starting, updating, backups, Java
+installs) runs as a *job*: one at a time, in the background, so the optional web
+UI stays responsive while it happens.
 """
 
 from __future__ import annotations
@@ -15,9 +17,10 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any, Callable
 
 from .manager import Manager, ManualDownloadRequired
-from .process import ServerProcess
+from .process import JOINED, LEFT, READY, ServerProcess
 
 log = logging.getLogger(__name__)
 
@@ -46,75 +49,251 @@ def running_pid(manager: Manager) -> int | None:
         return pid
 
 
+class LogBuffer:
+    """A bounded, thread-safe list of entries with increasing sequence numbers."""
+
+    def __init__(self, maxlen: int):
+        self._items: deque[dict] = deque(maxlen=maxlen)
+        self._seq = 0
+        self._lock = threading.Lock()
+
+    def append(self, **item: Any) -> None:
+        with self._lock:
+            self._seq += 1
+            self._items.append({"seq": self._seq, "time": time.time(), **item})
+
+    def since(self, seq: int, limit: int = 1000) -> tuple[list[dict], int]:
+        with self._lock:
+            items = [i for i in self._items if i["seq"] > seq]
+            return items[-limit:], self._seq
+
+
+class _EventHandler(logging.Handler):
+    def __init__(self, buffer: LogBuffer):
+        super().__init__(logging.INFO)
+        self.buffer = buffer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.buffer.append(level=record.levelname.lower(), message=record.getMessage())
+        except Exception:
+            pass
+
+
+def decision_to_dict(m: Manager, decision, changes) -> dict:
+    plan = decision.plan
+    return {
+        "checked_at": time.time(),
+        "installed": m.lock.minecraft,
+        "latest": decision.latest,
+        "target": plan.minecraft if plan else None,
+        "loader_version": plan.loader_version if plan else None,
+        "up_to_date": bool(plan and (changes is None or changes.empty)),
+        "changes": changes.summary() if changes else [],
+        "dropped": [{"name": b.name, "reason": b.reason} for b in plan.dropped] if plan else [],
+        "manual": [{"name": x.name, "filename": x.filename, "url": x.manual_url}
+                   for x in m.missing_manual(plan)] if plan else [],
+        "blocked": [{
+            "minecraft": p.minecraft,
+            "loader_missing": p.loader_version is None,
+            "blockers": [{"name": b.name, "reason": b.reason} for b in p.blockers],
+        } for p in decision.blocked],
+    }
+
+
 class Daemon:
     def __init__(self, manager: Manager, tick: float = 2.0):
         self.m = manager
         self.tick = tick
         self.proc: ServerProcess | None = None
         self.stop_requested = threading.Event()
+        self.exit_code = 0
         self.crashes: deque[float] = deque()
         self.next_check = 0.0
         self.announced: set[str] = set()
 
-    # ----------------------------------------------------------- lifecycle
-    def run(self) -> int:
+        self.want_running = True        # False after a deliberate stop (no crash restarts)
+        self.web_enabled = False
+        self.ui = None
+        self.console = LogBuffer(3000)
+        self.events = LogBuffer(500)
+        self.players: set[str] = set()
+        self.started_at: float | None = None
+        self.last_check: dict | None = None
+        self.ops = threading.Lock()     # one job at a time
+        self.job: dict | None = None
+        self.last_job: dict | None = None
+        manager.on_line = self._on_line
+        manager.on_process = self._on_process
+
+    # ------------------------------------------------------------ state
+    @property
+    def state(self) -> str:
+        if self.proc and self.proc.running:
+            return "running" if self.proc.ready.is_set() else "starting"
+        return "stopped"
+
+    def _on_process(self, proc: ServerProcess) -> None:
+        self.proc = proc
+        self.players.clear()
+        self.started_at = None
+
+    def _on_line(self, line: str) -> None:
+        self.console.append(text=line)
+        if m := JOINED.search(line):
+            self.players.add(m.group(1))
+        elif m := LEFT.search(line):
+            self.players.discard(m.group(1))
+        elif READY.search(line):
+            self.started_at = time.time()
+
+    def send_command(self, command: str) -> None:
+        if not self.proc or not self.proc.running:
+            raise RuntimeError("the server is not running")
+        self.console.append(text=f"> {command}", source="user")
+        self.proc.send(command)
+
+    # ------------------------------------------------------------- jobs
+    def submit(self, name: str, fn: Callable[..., Any], *args: Any) -> bool:
+        """Run ``fn`` in the background unless another job is running."""
+        if not self.ops.acquire(blocking=False):
+            return False
+        self.job = {"name": name, "started": time.time()}
+
+        def runner():
+            ok, message = True, ""
+            try:
+                message = fn(*args) or "done"
+            except Exception as e:
+                ok, message = False, str(e)
+                log.error("%s failed: %s", name, e)
+            finally:
+                self.last_job = {"name": name, "ok": ok, "message": message, "finished": time.time()}
+                self.job = None
+                self.ops.release()
+        threading.Thread(target=runner, daemon=True, name=f"job:{name}").start()
+        return True
+
+    def start_server(self) -> str:
+        self.want_running = True
+        if self.proc and self.proc.running:
+            return "already running"
+        if not self.m.lock.installed:
+            log.info("no server installed yet; installing")
+            self.check_for_updates(force=True)
+            if not self.m.lock.installed:
+                raise RuntimeError("no server could be installed yet; see the Updates page")
+            if self.proc and self.proc.running:  # the install left it running
+                return "installed and started"
+        self.m.start_server()
+        self.m.notifier.send(f"Server is up (Minecraft {self.m.lock.minecraft})")
+        return "started"
+
+    def stop_server(self) -> str:
+        self.want_running = False
+        if not self.proc or not self.proc.running:
+            return "already stopped"
+        self.proc.stop(self.m.config.server.stop_timeout)
+        log.info("server stopped")
+        return "stopped"
+
+    def restart_server(self) -> str:
+        self.stop_server()
+        return self.start_server()
+
+    # -------------------------------------------------------- lifecycle
+    def run(self, web: bool = False) -> int:
         state = self.m.config.state_dir
         state.mkdir(parents=True, exist_ok=True)
         if (pid := running_pid(self.m)) and pid != os.getpid():
             log.error("mcsm is already running (pid %s)", pid)
             return 1
         pid_path(self.m).write_text(str(os.getpid()))
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(sig, lambda *_: self.stop_requested.set())
+        handler = _EventHandler(self.events)
+        mcsm_log = logging.getLogger("mcsm")
+        mcsm_log.addHandler(handler)
+        if mcsm_log.getEffectiveLevel() > logging.INFO:
+            mcsm_log.setLevel(logging.INFO)  # the activity feed needs INFO records
+        if threading.current_thread() is threading.main_thread():
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(sig, lambda *_: self.stop_requested.set())
+        ui = None
         try:
+            if web:
+                from .web import WebUI
+                ui = WebUI(self)
+                ui.start()
+                self.ui = ui
+                self.web_enabled = True
             return self._loop()
         finally:
+            if ui:
+                ui.stop()
             if self.proc and self.proc.running:
                 log.info("stopping server")
                 self.proc.stop(self.m.config.server.stop_timeout)
+            logging.getLogger("mcsm").removeHandler(handler)
             pid_path(self.m).unlink(missing_ok=True)
 
+    def _boot(self) -> str:
+        try:
+            return self.start_server()
+        except Exception:
+            self.want_running = False
+            if not self.web_enabled:
+                # Without the web UI there's nobody to fix things interactively.
+                self.exit_code = 1
+                self.stop_requested.set()
+            raise
+
     def _loop(self) -> int:
-        if not self.m.lock.installed:
-            log.info("no server installed yet; installing")
-            self.check_for_updates(force=True)
-            if not self.m.lock.installed:
-                log.error("could not install a server; see the messages above")
-                return 1
-        if not self.proc or not self.proc.running:
-            self.proc = self.m.start_server()
-        self.m.notifier.send(f"Server is up (Minecraft {self.m.lock.minecraft})")
         self._forward_console()
+        self.submit("start", self._boot)
+        # Let the first start finish before the first scheduled update check.
+        self.next_check = time.monotonic() + 60
 
         while not self.stop_requested.is_set():
-            if not self.proc.running and not self.proc.stopping:
-                if not self._handle_crash():
-                    return 1
+            idle = not self.ops.locked()
+            if (idle and self.want_running and self.proc is not None and not self.proc.running
+                    and not self.proc.stopping):
+                self._handle_crash()
             req = request_path(self.m)
             requested = req.exists()
-            if requested or time.monotonic() >= self.next_check:
-                target = req.read_text().strip() or None if requested else None
+            if idle and (requested or time.monotonic() >= self.next_check):
+                target = (req.read_text().strip() or None) if requested else None
                 req.unlink(missing_ok=True)
-                self.check_for_updates(force=requested, target=target)
+                self.submit("update check", self.check_for_updates, requested, target)
             self.stop_requested.wait(self.tick)
-        return 0
+        return self.exit_code
 
-    def _handle_crash(self) -> bool:
+    def _handle_crash(self) -> None:
         now = time.monotonic()
         self.crashes.append(now)
         while self.crashes and now - self.crashes[0] > CRASH_WINDOW:
             self.crashes.popleft()
         tail = "\n".join(self.proc.tail(15))
+        self.proc.stopping = True  # handled; don't count this exit twice
         if not self.m.config.restart_on_crash or len(self.crashes) > MAX_CRASHES:
             self.m.notifier.send(f"Server stopped unexpectedly (exit {self.proc.returncode}); not restarting.\n{tail}")
-            return False
+            self.want_running = False
+            if not self.web_enabled:
+                self.exit_code = 1
+                self.stop_requested.set()
+            return
         self.m.notifier.send(f"Server crashed (exit {self.proc.returncode}); restarting.\n{tail}")
-        time.sleep(min(60, 5 * len(self.crashes)))
-        try:
-            self.proc = self.m.start_server()
-        except Exception as e:
-            log.error("restart failed: %s", e)
-        return True
+        delay = min(60, 5 * len(self.crashes))
+
+        def restart():
+            self.stop_requested.wait(delay)
+            if self.stop_requested.is_set() or not self.want_running:
+                return "cancelled"
+            try:
+                return self.start_server()
+            except Exception:
+                if self.proc:
+                    self.proc.stopping = False  # let crash handling try again
+                raise
+        self.submit("restart after crash", restart)
 
     def _forward_console(self) -> None:
         """Pass lines typed into this terminal through to the server console."""
@@ -127,45 +306,63 @@ class Daemon:
                     self.proc.send(line.rstrip("\n"))
         threading.Thread(target=pump, daemon=True, name="console").start()
 
-    # ------------------------------------------------------------- updates
-    def check_for_updates(self, force: bool = False, target: str | None = None) -> None:
+    # ---------------------------------------------------------- updates
+    def check_only(self, target: str | None = None) -> str:
+        decision, changes = self.m.check(target)
+        self.last_check = decision_to_dict(self.m, decision, changes)
+        if self.last_check["up_to_date"]:
+            return f"up to date (Minecraft {self.m.lock.minecraft})"
+        if decision.plan:
+            return f"update available: Minecraft {decision.plan.minecraft}"
+        return "no installable combination found"
+
+    def check_for_updates(self, force: bool = False, target: str | None = None) -> str:
         cfg = self.m.config.updates
         self.next_check = time.monotonic() + cfg.check_interval
         try:
             decision, changes = self.m.check(target)
         except Exception as e:
             log.warning("update check failed: %s", e)
-            return
+            return f"update check failed: {e}"
+        self.last_check = decision_to_dict(self.m, decision, changes)
         for plan in decision.blocked:
             if plan.minecraft == decision.latest and plan.fingerprint not in self.announced:
                 self.announced.add(plan.fingerprint)
                 waiting = ", ".join(b.name for b in plan.blockers) or f"{plan.loader} loader"
                 self.m.notifier.send(f"Minecraft {plan.minecraft} is out; waiting on: {waiting}")
         if not decision.plan or not changes or changes.empty:
-            return
+            return "up to date" if decision.plan else "no installable combination found"
         summary = "\n".join(changes.summary())
         if not (cfg.auto_upgrade or force):
             if decision.plan.fingerprint not in self.announced:
                 self.announced.add(decision.plan.fingerprint)
                 self.m.notifier.send(f"Update available (run `mcsm update` to apply):\n{summary}")
-            return
+            return "update available (automatic upgrades are off)"
         missing = self.m.missing_manual(decision.plan)
         if missing:
             key = "manual:" + decision.plan.fingerprint
             if key not in self.announced:
                 self.announced.add(key)
                 self.m.notifier.send(str(ManualDownloadRequired(missing, self.m.config.manual_dir)))
-            return
+            return f"waiting for {len(missing)} manual download(s)"
         if cfg.wait_for_empty and self.proc and self.proc.running and not force:
             online = self.proc.players_online()
             if online:
                 log.info("update ready but %s player(s) online; waiting", online)
                 self.next_check = time.monotonic() + EMPTY_RETRY
-                return
-        result = self.m.apply(decision.plan, server=self.proc, restart=True)
+                return f"waiting for {online} player(s) to leave"
+        was_running = bool(self.proc and self.proc.running)
+        result = self.m.apply(decision.plan, server=self.proc, restart=was_running or self.want_running)
         log.info(result.message)
         if result.process:
             self.proc = result.process
-        elif self.proc and not self.proc.running:
+        elif self.proc and not self.proc.running and self.want_running:
             # Neither the new nor the old version came back up; let crash handling retry.
             self.proc.stopping = False
+        try:
+            self.last_check = decision_to_dict(self.m, *self.m.check())
+        except Exception:
+            pass
+        if not result.ok:
+            raise RuntimeError(result.message)
+        return result.message

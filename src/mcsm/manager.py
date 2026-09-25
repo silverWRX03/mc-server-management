@@ -79,6 +79,10 @@ class Manager:
         self.echo = echo
         self.sleep = sleep
         self.lock = lockmod.load(config.root)
+        #: called with every line of server output (the web UI's console uses this)
+        self.on_line: Callable[[str], None] | None = None
+        #: called with each server process as soon as it has been launched
+        self.on_process: Callable[[ServerProcess], None] | None = None
 
     # ----------------------------------------------------------------- paths
     @property
@@ -89,11 +93,27 @@ class Manager:
     def staging_dir(self) -> Path:
         return self.config.state_dir / "staging"
 
+    def reload_config(self) -> None:
+        """Re-read mcsm.toml (after it was edited, e.g. from the web UI)."""
+        from . import config as configmod
+
+        new = configmod.load(self.config.root)
+        if new.server.loader != self.config.server.loader:
+            raise UpgradeError("changing the loader needs a restart of mcsm")
+        self.config = new
+        self.java.config = new
+        self.notifier.discord_webhook = new.discord_webhook
+        cf = self.providers.get("curseforge")
+        if cf is not None and hasattr(cf, "api_key"):
+            cf.api_key = new.curseforge_api_key
+
     # ------------------------------------------------------------- planning
     def planner(self) -> Planner:
         return Planner(self.config, self.lock, self.mojang, self.loader, self.providers)
 
     def check(self, target: str | None = None) -> tuple[Decision, Changes | None]:
+        if hasattr(self.http, "clear_cache"):
+            self.http.clear_cache()  # always look at fresh release data
         decision = self.planner().decide(target)
         changes = decision.plan.changes(self.lock) if decision.plan else None
         return decision, changes
@@ -119,7 +139,7 @@ class Manager:
         return [java, f"-Xms{mem}", f"-Xmx{mem}", *self.config.server.jvm_args, *lock.launch]
 
     def new_process(self, lock: Lock | None = None) -> ServerProcess:
-        return ServerProcess(self.launch_argv(lock), self.server_dir, echo=self.echo)
+        return ServerProcess(self.launch_argv(lock), self.server_dir, echo=self.echo, on_line=self.on_line)
 
     def start_server(self, lock: Lock | None = None) -> ServerProcess:
         if not self.eula_accepted():
@@ -127,6 +147,8 @@ class Manager:
                                "run `mcsm init --accept-eula` or set eula=true yourself")
         proc = self.new_process(lock)
         proc.start()
+        if self.on_process:
+            self.on_process(proc)
         if not proc.wait_ready(self.config.server.startup_timeout):
             tail = "\n".join(proc.tail(20))
             proc.stop(self.config.server.stop_timeout)

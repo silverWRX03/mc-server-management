@@ -40,12 +40,20 @@ def with_query(url: str, params: dict[str, Any] | None) -> str:
 
 
 class HttpClient:
-    """GET/POST JSON and verified downloads, with retries and a per-run GET cache."""
+    """GET/POST JSON and verified downloads, with retries and a short-lived GET cache.
 
-    def __init__(self, retries: int = 3, timeout: float = 30.0):
+    The cache lets one update check ask about many Minecraft versions without
+    re-fetching the same data; it expires so a long-running daemon sees new releases.
+    """
+
+    def __init__(self, retries: int = 3, timeout: float = 30.0, cache_ttl: float = 300.0):
         self.retries = retries
         self.timeout = timeout
-        self._cache: dict[str, Any] = {}
+        self.cache_ttl = cache_ttl
+        self._cache: dict[str, tuple[float, Any]] = {}
+
+    def clear_cache(self) -> None:
+        self._cache.clear()
 
     def _open(self, req: urllib.request.Request):
         last: Exception | None = None
@@ -68,13 +76,14 @@ class HttpClient:
     def get_json(self, url: str, params: dict[str, Any] | None = None,
                  headers: dict[str, str] | None = None) -> Any:
         full = with_query(url, params)
-        if full in self._cache:
-            return self._cache[full]
+        hit = self._cache.get(full)
+        if hit and time.monotonic() - hit[0] < self.cache_ttl:
+            return hit[1]
         req = urllib.request.Request(full, headers={"User-Agent": USER_AGENT, "Accept": "application/json",
                                                     **(headers or {})})
         with self._open(req) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        self._cache[full] = data
+        self._cache[full] = (time.monotonic(), data)
         return data
 
     def post_json(self, url: str, body: Any, headers: dict[str, str] | None = None) -> Any:

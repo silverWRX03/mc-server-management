@@ -133,7 +133,7 @@ def cmd_create(args) -> int:
     print(f"  Minecraft {m.lock.minecraft}, {m.lock.loader} {m.lock.loader_version}, "
           f"Java {m.lock.java_major} ({m.launch_argv()[0]})")
     if password:
-        print(f"  RCON enabled on port 25575 (password saved in server.properties)")
+        print("  RCON enabled on port 25575 (password saved in server.properties)")
     if not booted:
         print(f"  not test-booted: {EULA_NOTE}")
     print(f"start it with:  cd {root} && mcsm run")
@@ -199,7 +199,7 @@ def _print_decision(m: Manager, decision, changes) -> None:
                 print(f"  {line}")
         missing = m.missing_manual(p)
         if missing:
-            print(f"\nmanual download needed - these authors block automatic downloads.")
+            print("\nmanual download needed - these authors block automatic downloads.")
             print(f"download each file and put it in {m.config.manual_dir}:")
             for mod in missing:
                 print(f"  -> {mod.name}: {mod.filename}\n     {mod.manual_url}")
@@ -255,7 +255,28 @@ def cmd_update(args) -> int:
 
 
 def cmd_run(args) -> int:
-    return Daemon(_manager(args)).run()
+    m = _manager(args)
+    if args.web_port:
+        m.config.web.port = args.web_port
+    if args.web_host:
+        m.config.web.host = args.web_host
+    return Daemon(m).run(web=args.web or m.config.web.enabled)
+
+
+def cmd_web_password(args) -> int:
+    cfg = configmod.load(args.root)
+    if cfg.web.password:
+        print("the password is set in mcsm.toml under [web] password")
+        return 0
+    path = cfg.state_dir / "web-password"
+    if args.reset or not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(secrets.token_urlsafe(12) + "\n")
+        path.chmod(0o600)
+        if running_pid(Manager(cfg)):
+            print("note: restart `mcsm run` for the new password to take effect")
+    print(path.read_text().strip())
+    return 0
 
 
 def cmd_stop(args) -> int:
@@ -464,7 +485,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_update)
 
     s = sub.add_parser("run", help="run the server, restart it on crashes and keep it updated")
+    s.add_argument("--web", action="store_true", help="also serve the web UI (see [web] in mcsm.toml)")
+    s.add_argument("--web-port", type=int, help="web UI port (default 8765)")
+    s.add_argument("--web-host", help="web UI address (default 127.0.0.1)")
     s.set_defaults(fn=cmd_run)
+
+    s = sub.add_parser("web-password", help="print (or --reset) the generated web UI password")
+    s.add_argument("--reset", action="store_true")
+    s.set_defaults(fn=cmd_web_password)
 
     s = sub.add_parser("stop", help="stop a server started with `mcsm run`")
     s.set_defaults(fn=cmd_stop)

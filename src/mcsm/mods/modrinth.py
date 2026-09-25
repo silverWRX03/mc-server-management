@@ -78,3 +78,16 @@ class ModrinthProvider(ModProvider):
         if not sha1_hashes:
             return {}
         return self.http.post_json(f"{API}/version_files", {"hashes": sha1_hashes, "algorithm": "sha1"})
+
+    def search(self, query: str, loaders: tuple[str, ...], limit: int = 20) -> list[dict]:
+        """Server-compatible mods matching ``query``, most relevant first."""
+        facets = [[f"categories:{l}" for l in loaders], ["server_side:required", "server_side:optional"],
+                  ["project_type:mod"]]
+        data = self.http.get_json(f"{API}/search", params={
+            "query": query, "limit": limit, "facets": json.dumps([f for f in facets if f])})
+        return [{
+            "id": h["project_id"], "slug": h.get("slug", ""), "name": h.get("title", ""),
+            "description": h.get("description", ""), "icon": h.get("icon_url") or "",
+            "downloads": h.get("downloads", 0), "server_side": h.get("server_side", "unknown"),
+            "latest_version": h.get("latest_version", ""),
+        } for h in data.get("hits", [])]

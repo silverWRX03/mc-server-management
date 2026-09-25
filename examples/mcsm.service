@@ -10,7 +10,7 @@ Wants=network-online.target
 [Service]
 User=minecraft
 WorkingDirectory=/opt/minecraft
-ExecStart=/usr/local/bin/mcsm run
+ExecStart=/usr/local/bin/mcsm run --web
 # mcsm stops the server gracefully (with a world save) on SIGTERM.
 KillSignal=SIGTERM
 TimeoutStopSec=180

@@ -1,0 +1,197 @@
+"""The web UI's API, served by a real daemon running the fake Minecraft server."""
+
+import json
+import threading
+import time
+import urllib.error
+import urllib.request
+
+import pytest
+
+from mcsm.config import ModSpec
+from mcsm.daemon import Daemon
+
+from test_manager import manager, update
+
+
+class Client:
+    def __init__(self, base):
+        self.base = base
+        self.cookie = None
+
+    def call(self, method, path, body=None, headers=None, raw=None):
+        h = {"X-MCSM": "1", **(headers or {})}
+        if self.cookie:
+            h["Cookie"] = self.cookie
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        if body is not None:
+            h["Content-Type"] = "application/json"
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=h)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                if "Set-Cookie" in r.headers:
+                    self.cookie = r.headers["Set-Cookie"].split(";")[0]
+                raw_body = r.read()
+                ctype = r.headers.get("Content-Type", "")
+                return r.status, json.loads(raw_body) if "json" in ctype else raw_body.decode(), r.headers
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}"), e.headers
+
+    def get(self, path):
+        return self.call("GET", path)
+
+    def post(self, path, body=None, **kw):
+        return self.call("POST", path, body if body is not None else {}, **kw)
+
+
+def wait_for(fn, timeout=20):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if fn():
+            return True
+        time.sleep(0.1)
+    raise AssertionError("condition not met in time")
+
+
+@pytest.fixture
+def running(make_config, http, modrinth):
+    modrinth.project("AAA", "goodmod", "Good Mod")
+    modrinth.version("AAA", "1.0", ["1.21.1"])
+    modrinth.project("BBB", "othermod", "Other Mod")
+    modrinth.version("BBB", "1.0", ["1.21.1"])
+    cfg = make_config([ModSpec("modrinth", "goodmod")])
+    cfg.web.port = 0
+    cfg.web.password = "hunter2hunter2"
+    m = manager(cfg, http, ["1.21.1"])
+    assert update(m).ok
+    d = Daemon(m, tick=0.1)
+    t = threading.Thread(target=d.run, kwargs={"web": True}, daemon=True)
+    t.start()
+    wait_for(lambda: getattr(d, "ui", None) is not None and d.state == "running")
+    client = Client(d.ui.url.rstrip("/"))
+    yield d, client, cfg
+    d.stop_requested.set()
+    t.join(20)
+
+
+def login(c):
+    status, body, _ = c.post("/api/login", {"password": "hunter2hunter2"})
+    assert status == 200, body
+
+
+def test_auth_and_csrf(running):
+    d, c, cfg = running
+    assert c.get("/api/status")[0] == 401
+    assert c.post("/api/login", {"password": "nope"})[0] == 401
+    status, _, _ = c.call("POST", "/api/login", {"password": "hunter2hunter2"}, headers={"X-MCSM": ""})
+    assert status == 403  # no CSRF header
+    login(c)
+    assert c.get("/api/status")[0] == 200
+    # State-changing calls need the header even with a valid session.
+    assert c.call("POST", "/api/server/stop", {}, headers={"X-MCSM": "0"})[0] == 403
+    c.post("/api/logout")
+    assert c.get("/api/status")[0] == 401
+
+
+def test_login_is_rate_limited(running):
+    _, c, _ = running
+    for _ in range(5):
+        c.post("/api/login", {"password": "wrong"})
+    assert c.post("/api/login", {"password": "hunter2hunter2"})[0] == 429
+
+
+def test_static_page_and_headers(running):
+    _, c, _ = running
+    status, body, headers = c.get("/")
+    assert status == 200 and "mcsm" in body
+    assert "default-src 'self'" in headers["Content-Security-Policy"]
+    assert headers["X-Frame-Options"] == "DENY"
+    assert c.get("/app.js")[0] == 200
+
+
+def test_status_console_and_commands(running):
+    d, c, _ = running
+    login(c)
+    _, s, _ = c.get("/api/status")
+    assert s["state"] == "running" and s["minecraft"] == "1.21.1" and s["mods"] == 1
+    assert c.post("/api/command", {"command": "/list"})[0] == 200
+    wait_for(lambda: any("players online" in line["text"] for line in c.get("/api/console?since=0")[1]["lines"]))
+    lines = c.get("/api/console?since=0")[1]["lines"]
+    assert any(line["user"] and line["text"] == "> list" for line in lines)
+    last = c.get("/api/console?since=0")[1]["last"]
+    assert c.get(f"/api/console?since={last}")[1]["lines"] == []
+
+
+def test_stop_start_and_jobs(running):
+    d, c, _ = running
+    login(c)
+    assert c.post("/api/server/stop")[0] == 200
+    wait_for(lambda: c.get("/api/status")[1]["state"] == "stopped" and not c.get("/api/status")[1]["job"])
+    time.sleep(0.5)
+    assert d.state == "stopped"  # a deliberate stop isn't treated as a crash
+    assert c.post("/api/server/start")[0] == 200
+    wait_for(lambda: c.get("/api/status")[1]["state"] == "running")
+    wait_for(lambda: not c.get("/api/status")[1]["job"])
+
+
+def test_update_check_and_mod_management(running, modrinth):
+    d, c, cfg = running
+    login(c)
+    assert c.post("/api/updates/check")[0] == 200
+    wait_for(lambda: c.get("/api/updates")[1]["check"] is not None)
+    check = c.get("/api/updates")[1]["check"]
+    assert check["up_to_date"] and check["installed"] == "1.21.1"
+
+    status, body, _ = c.post("/api/mods/add", {"source": "modrinth", "id": "othermod", "required": False})
+    assert status == 200, body
+    assert c.post("/api/mods/add", {"source": "modrinth", "id": "othermod"})[0] == 409
+    assert c.post("/api/mods/add", {"source": "modrinth", "id": "../../etc"})[0] == 400
+    configured = c.get("/api/mods")[1]["configured"]
+    assert {"source": "modrinth", "id": "othermod", "required": False} in configured
+
+    wait_for(lambda: not c.get("/api/status")[1]["job"])
+    assert c.post("/api/updates/apply", {})[0] == 200
+    wait_for(lambda: len(d.m.lock.mods) == 2, timeout=30)
+    wait_for(lambda: c.get("/api/status")[1]["state"] == "running" and not c.get("/api/status")[1]["job"])
+
+    assert c.post("/api/mods/remove", {"source": "modrinth", "id": "othermod"})[0] == 200
+    assert all(s["id"] != "othermod" for s in c.get("/api/mods")[1]["configured"])
+
+
+def test_settings_validation(running):
+    d, c, cfg = running
+    login(c)
+    before = cfg.path.read_text()
+    assert c.post("/api/settings", {"strategy": "bogus"})[0] == 400
+    assert cfg.path.read_text() == before  # rolled back
+    assert c.post("/api/settings", {"strategy": "mods-only", "auto_upgrade": False,
+                                    "warn_minutes": [5, 1], "check_interval": "2h"})[0] == 200
+    s = c.get("/api/settings")[1]
+    assert s["strategy"] == "mods-only" and s["auto_upgrade"] is False
+    assert s["warn_minutes"] == [5, 1] and s["check_interval"] == "2h"
+    assert d.m.config.updates.strategy == "mods-only"
+
+
+def test_backups_and_restore_requires_stop(running):
+    d, c, cfg = running
+    login(c)
+    assert c.post("/api/backups/create", {"label": "web test"})[0] == 200
+    wait_for(lambda: any("web_test" in b["name"] for b in c.get("/api/backups")[1]["backups"]))
+    name = c.get("/api/backups")[1]["backups"][0]["name"]
+    assert c.post("/api/backups/restore", {"name": name})[0] == 409  # still running
+    assert c.post("/api/backups/restore", {"name": "../mcsm.toml"})[0] == 404
+
+
+def test_manual_upload_only_accepts_expected_files(running):
+    d, c, cfg = running
+    login(c)
+    status, body, _ = c.call("POST", "/api/manual/upload?filename=evil.jar", raw=b"x",
+                             headers={"Content-Type": "application/octet-stream"})
+    assert status == 400
+    d.last_check = {"manual": [{"filename": "blocked.jar", "name": "B", "url": "u"}], "target": None,
+                    "checked_at": 0, "up_to_date": False, "latest": "1.21.1"}
+    status, body, _ = c.call("POST", "/api/manual/upload?filename=blocked.jar", raw=b"jar bytes",
+                             headers={"Content-Type": "application/octet-stream"})
+    assert status == 200, body
+    assert (cfg.manual_dir / "blocked.jar").read_bytes() == b"jar bytes"
+    assert d.last_check["manual"] == []

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mcsm</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%277%27 fill=%27%237ec850%27/%3E%3Crect y=%277%27 width=%2716%27 height=%279%27 fill=%27%238b5a2b%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="login-form" class="login-card">
+      <div class="brand big"><span class="logo"></span>mcsm</div>
+      <p class="muted">Forever server control panel</p>
+      <label>Password<input id="login-password" type="password" autocomplete="current-password" autofocus></label>
+      <button class="btn primary" type="submit">Sign in</button>
+      <p id="login-error" class="error"></p>
+      <p class="muted small">The password is in <code>.mcsm/web-password</code>, or <code>[web] password</code> in mcsm.toml.</p>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo"></span>mcsm</div>
+      <nav id="nav">
+        <a href="#dashboard" data-view="dashboard">Dashboard</a>
+        <a href="#console" data-view="console">Console</a>
+        <a href="#updates" data-view="updates">Updates<span id="nav-update-dot" class="dot hidden"></span></a>
+        <a href="#mods" data-view="mods">Mods</a>
+        <a href="#backups" data-view="backups">Backups</a>
+        <a href="#java" data-view="java">Java</a>
+        <a href="#settings" data-view="settings">Settings</a>
+      </nav>
+      <div class="sidebar-foot">
+        <button id="logout" class="btn ghost small">Sign out</button>
+        <span id="version" class="muted small"></span>
+      </div>
+    </aside>
+
+    <div class="content">
+      <header class="topbar">
+        <div class="server-id">
+          <span id="state-pill" class="pill">…</span>
+          <span id="server-title" class="title"></span>
+        </div>
+        <div id="job" class="job hidden"><span class="spinner"></span><span id="job-name"></span></div>
+        <div class="actions">
+          <button id="btn-start" class="btn primary">Start</button>
+          <button id="btn-restart" class="btn">Restart</button>
+          <button id="btn-stop" class="btn danger">Stop</button>
+        </div>
+      </header>
+      <main id="main"></main>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

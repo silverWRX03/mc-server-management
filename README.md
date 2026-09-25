@@ -48,6 +48,8 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Handles blocked CurseForge downloads.** When an author disallows third-party
   downloads, mcsm gives you the direct link to the file, then picks up and hash-checks
   the file once you drop it in `manual-downloads/`.
+- **Web control panel:** dashboard, live console, one-click updates, mod search,
+  uploads for blocked downloads, backups, Java and settings.
 - **Discord notifications** for upgrades, blocked releases, crashes and rollbacks.
 - **Leaves your files alone.** Only files mcsm installed (tracked in `mcsm.lock.json`)
   are ever replaced. World, configs and hand-added jars are never touched.
@@ -108,6 +110,40 @@ Jars that Modrinth doesn't recognise stay where they are and are reported as
 *unmanaged*. Add CurseForge mods with `mcsm add --source curseforge <id>` and then
 delete the old jar, or leave it unmanaged if the mod never needs updating.
 
+## Web UI
+
+```sh
+mcsm run --web          # or set [web] enabled = true in mcsm.toml
+mcsm web-password       # prints the generated login password
+```
+
+Then open <http://localhost:8765>.
+
+![Dashboard](docs/web-dashboard.png)
+
+| Page | What you can do |
+|---|---|
+| **Dashboard** | server state, uptime, versions, who's online, update status, live activity feed |
+| **Console** | live server log (warnings and errors highlighted), send commands with history |
+| **Updates** | check now, see exactly what would change, which mods block newer versions, apply with one click |
+| **Mods** | search Modrinth for server-compatible mods and add them, add CurseForge mods, mark mods required/optional, remove them |
+| **Backups** | back up now (with a proper `save-all`), restore any backup |
+| **Java** | see which runtime the server uses, download Temurin versions, pin a version |
+| **Settings** | update strategy, schedule, countdowns, memory, backups to keep, Discord webhook |
+
+Mods whose authors block third-party downloads get a **Download** link and an
+**Upload** button right on the Updates page. The uploaded file is checked against
+CurseForge's checksum before it's accepted.
+
+![Updates page](docs/web-updates.png)
+
+**Security.** By default it only listens on `127.0.0.1`. Every request needs a
+password login (rate limited; sessions are HttpOnly, SameSite=Strict cookies), and
+changes need a CSRF header. The page runs under a strict Content Security Policy
+with no third-party scripts. The console gives full operator control of your
+server, so to reach it from elsewhere, put it behind an HTTPS reverse proxy (Caddy,
+nginx) or a VPN such as Tailscale rather than exposing the port directly.
+
 ## Mods that block third-party downloads
 
 Some CurseForge authors don't allow tools to download their files. mcsm still finds
@@ -162,6 +198,7 @@ the server is stopped.
 | `mcsm cmd say hello` | send a console command over RCON (enable RCON in `server.properties`) |
 | `mcsm status` | installed versions, mods, anything skipped, failed attempts |
 | `mcsm stop` | stop the server gracefully and exit the daemon |
+| `mcsm run --web` | same, plus the [web UI](#web-ui) |
 
 When the server isn't running, `mcsm update` does the upgrade and a test boot itself.
 
@@ -239,7 +276,8 @@ The test suite runs the full install → upgrade → crash → rollback cycle ag
 - Paper/Purpur plugin servers (Hangar/Modrinth plugins)
 - Proper TOML writing for `mcsm add --pin <version>`
 - Pre-upgrade world optimisation (`--forceUpgrade`) and a pre-generated test world for the verification boot
-- A web dashboard and Docker image
+- Docker image
+- Multiple servers from one web UI
 
 ## License
 

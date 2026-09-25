@@ -62,6 +62,14 @@ class BackupConfig:
 
 
 @dataclass
+class WebConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8765
+    password: str = ""   # empty = generate one into .mcsm/web-password
+
+
+@dataclass
 class Config:
     root: Path
     server: ServerConfig
@@ -74,6 +82,7 @@ class Config:
     java_auto_install: bool = True      # download Temurin when the needed version isn't available
     java_image: str = "jre"
     manual_dir: Path | None = None      # where to drop mods that must be downloaded by hand
+    web: WebConfig = field(default_factory=lambda: WebConfig())
     discord_webhook: str = ""
     curseforge_api_key: str = ""
     restart_on_crash: bool = True
@@ -186,6 +195,12 @@ def parse(root: Path, data: dict) -> Config:
         java_auto_install=bool(j.get("auto_install", True)),
         java_image=_choice(j.get("image", "jre"), ("jre", "jdk"), "java.image"),
         manual_dir=(root / data.get("downloads", {}).get("manual_dir", "manual-downloads")).resolve(),
+        web=WebConfig(
+            enabled=bool(data.get("web", {}).get("enabled", False)),
+            host=str(data.get("web", {}).get("host", "127.0.0.1")),
+            port=int(data.get("web", {}).get("port", 8765)),
+            password=str(data.get("web", {}).get("password", "")),
+        ),
         discord_webhook=data.get("notify", {}).get("discord_webhook", ""),
         curseforge_api_key=(data.get("curseforge", {}).get("api_key", "")
                             or os.environ.get("MCSM_CURSEFORGE_API_KEY", "")),
@@ -235,6 +250,12 @@ default = "java"               # a system Java to use if it is exactly the right
 
 [notify]
 discord_webhook = ""
+
+[web]
+enabled = false                # or start with `mcsm run --web`
+host = "127.0.0.1"             # only this machine; use "0.0.0.0" behind an HTTPS reverse proxy
+port = 8765
+password = ""                  # empty = a random one is generated into .mcsm/web-password
 
 [downloads]
 # Some CurseForge authors block third-party downloads. mcsm prints a link for each;
