@@ -2,8 +2,11 @@
 
 import hashlib
 import io
+import os
 import tarfile
 import urllib.parse
+
+from pathlib import Path
 
 from mcsm import cli, lock as lockmod
 from mcsm.config import ModSpec
@@ -44,9 +47,10 @@ def test_java_install_update_remove(make_config, http):
     publish_temurin(http, 21, "jdk-21.0.4+7")
     # Needed but missing -> downloaded automatically.
     binary = jm.select(21)
-    assert binary.endswith("bin/java")
+    assert Path(binary).parts[-2:] == ("bin", "java")
     assert jm.installed()[21].release == "jdk-21.0.4+7"
-    assert jm.probe(binary) == 21  # the extracted binary really runs
+    if os.name != "nt":  # the fake JDK's java is a shell script
+        assert jm.probe(binary) == 21  # the extracted binary really runs
 
     publish_temurin(http, 21, "jdk-21.0.5+11")
     assert jm.update() == [(21, "jdk-21.0.4+7", "jdk-21.0.5+11")]
@@ -87,13 +91,12 @@ def test_manual_download_for_blocked_curseforge_mod(make_config, http, modrinth)
 
 
 def test_manual_download_error_lists_links():
-    from pathlib import Path
-
     from mcsm.mods.base import ModFile
     mod = ModFile(key="curseforge:1", source="curseforge", project_id="1", name="X", version_id="9",
                   version_number="1", filename="x.jar", url="", manual_url="https://example.test/x")
-    text = str(ManualDownloadRequired([mod], Path("/srv/mc/manual-downloads")))
-    assert "https://example.test/x" in text and "/srv/mc/manual-downloads" in text
+    folder = Path("/srv/mc/manual-downloads")
+    text = str(ManualDownloadRequired([mod], folder))
+    assert "https://example.test/x" in text and str(folder) in text
 
 
 def test_create_builds_a_whole_server(tmp_path, http, modrinth, fake_java, monkeypatch):

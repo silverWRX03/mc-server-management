@@ -11,3 +11,4 @@ dist/
 /.mcsm/
 /mcsm.toml
 /mcsm.lock.json
+/.build-venv/

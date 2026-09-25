@@ -16,6 +16,9 @@ BUNDLED = [
     ("Python runtime and standard library", "bundled so no Python install is needed",
      "PSF-2.0 (includes components under their own licenses, e.g. OpenSSL: Apache-2.0, zlib, libffi: MIT)",
      "https://docs.python.org/3/license.html"),
+    ("python-build-standalone (Linux executables)", "a portable CPython build so Linux downloads run on any distro",
+     "PSF-2.0 for Python; bundled libraries under their own licenses (OpenSSL: Apache-2.0, libffi: MIT, ...)",
+     "https://github.com/astral-sh/python-build-standalone"),
     ("PyInstaller bootloader", "starts the bundled program",
      "GPL-2.0-or-later with the PyInstaller bootloader exception",
      "https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt"),
@@ -27,6 +30,7 @@ DEVELOPMENT = [
     ("PyInstaller", "building the downloadable executables", "GPL-2.0-or-later with the bootloader exception",
      "https://github.com/pyinstaller/pyinstaller"),
     ("build", "building the wheel for releases", "MIT", "https://github.com/pypa/build"),
+    ("uv", "fetching the portable Python for Linux builds", "MIT / Apache-2.0", "https://github.com/astral-sh/uv"),
 ]
 
 # Software mcsm downloads for you. None of it is bundled with or redistributed by mcsm.

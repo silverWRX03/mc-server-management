@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import logging
 import os
@@ -245,7 +246,7 @@ def cmd_update(args) -> int:
     _print_decision(m, decision, changes)
     if not decision.plan or not changes or changes.empty or args.dry_run:
         return 0 if decision.plan else 1
-    if not args.yes and sys.stdin.isatty():
+    if not args.yes and interactive():
         if input("\napply? [y/N] ").strip().lower() not in ("y", "yes"):
             return 1
     result = m.apply(decision.plan, restart=False)
@@ -300,6 +301,9 @@ def _wizard(root: Path) -> bool:
         mods = [x.strip() for x in answer.split(",") if x.strip()]
         if loader in ("fabric", "quilt") and mods and "fabric-api" not in mods:
             mods.insert(0, "fabric-api")
+    headless = not has_display()
+    remote = _ask("Open the control panel from other devices on your network too, like your phone or "
+                  "another PC? (yes/no)", "yes" if headless else "no", ("yes", "no", "y", "n")) in ("yes", "y")
     print("\nMinecraft servers require accepting Mojang's EULA: https://aka.ms/MinecraftEULA")
     if _ask("Do you accept the Minecraft EULA? (yes/no)", "no", ("yes", "no", "y", "n")) not in ("yes", "y"):
         print("The server can't run without accepting the EULA. Nothing was set up.")
@@ -309,7 +313,29 @@ def _wizard(root: Path) -> bool:
         root=root, dir=root, loader=loader, minecraft=minecraft, mod=mods, optional_mod=[], curseforge=[],
         memory=memory, java=None, port=25565, motd="A Minecraft server managed by mcsm", max_players=20,
         difficulty="normal", gamemode="survival", seed=None, rcon=False, accept_eula=True, force=False, quiet=True)
-    return cmd_create(ns) == 0
+    if cmd_create(ns) != 0:
+        return False
+    if remote:
+        configmod.set_value(root / configmod.CONFIG_NAME, "web", "host", '"0.0.0.0"')
+    return True
+
+
+def has_display() -> bool:
+    """Whether a browser can be opened here (not an SSH session on a headless server)."""
+    if sys.platform.startswith("linux") or "bsd" in sys.platform:
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
+
+
+def lan_ip() -> str | None:
+    """This machine's address on the local network (no traffic is sent)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # a documentation-only address; nothing is sent
+            ip = s.getsockname()[0]
+            return None if ip.startswith("127.") else ip
+    except OSError:
+        return None
 
 
 def cmd_start(args) -> int:
@@ -318,24 +344,38 @@ def cmd_start(args) -> int:
 
     root = args.root if (args.root / configmod.CONFIG_NAME).exists() else default_home()
     if not (root / configmod.CONFIG_NAME).exists():
-        if not sys.stdin.isatty():
+        if not interactive():
             print(f"no server set up in {root}; run `mcsm start` in a terminal to set one up")
             return 1
         if not _wizard(root):
             return 1
     m = Manager(configmod.load(root))
+    if args.web_host:
+        m.config.web.host = args.web_host
+    if args.web_port:
+        m.config.web.port = args.web_port
+    browser = not args.no_browser and has_display()
+    port = m.config.web.port
     if running_pid(m):
-        url = f"http://localhost:{m.config.web.port}/"
-        print(f"mcsm is already running this server. Opening {url}")
-        if not args.no_browser:
+        url = f"http://localhost:{port}/"
+        print(f"mcsm is already running this server: {url}")
+        if browser:
             webbrowser.open(url)
         return 0
     d = Daemon(m)
-    d.open_browser = not args.no_browser
+    d.open_browser = browser
     password, _ = load_password(d)
-    print(f"\n  Server folder:  {root}\n  Control panel:  http://localhost:{m.config.web.port}/\n"
-          f"  Password:       {password}\n\n  Keep this window open while the server runs. "
-          "Press Ctrl+C to stop it.\n", flush=True)
+    lines = [f"  Server folder:  {root}", f"  Control panel:  http://localhost:{port}/"]
+    if m.config.web.host in ("0.0.0.0", "::") and (ip := lan_ip()):
+        lines.append(f"  From other devices on your network:  http://{ip}:{port}/")
+    elif not has_display():
+        lines.append(f"  From your own PC, tunnel over SSH:  ssh -L {port}:localhost:{port} "
+                     f"{getpass.getuser()}@<this server>  then open http://localhost:{port}/")
+    lines += [f"  Password:       {password}", "",
+              "  Keep this window open while the server runs, and press Ctrl+C to stop it.",
+              "  (On Linux, `mcsm service install` keeps it running in the background instead.)"
+              if sys.platform.startswith("linux") else ""]
+    print("\n" + "\n".join(lines) + "\n", flush=True)
     return _run_daemon(d, web=True)
 
 
@@ -538,9 +578,31 @@ def cmd_self_update(args) -> int:
             path.write_text(release.version)
             print("`mcsm run` is managing a server; it will install the update and restart itself now")
             return 0
-    if not args.yes and (not sys.stdin.isatty() or input("install it? [y/N] ").strip().lower() not in ("y", "yes")):
+    if not args.yes and (not interactive() or input("install it? [y/N] ").strip().lower() not in ("y", "yes")):
         return 1
     print(selfupdate.install(release))
+    return 0
+
+
+def cmd_service(args) -> int:
+    from . import service
+
+    cfg = configmod.load(args.root)
+    try:
+        if args.action == "install":
+            if running_pid(Manager(cfg)):
+                print("mcsm is already running this server; stop it first (`mcsm stop`), then install the service")
+                return 1
+            for line in service.install(cfg.root):
+                print(line)
+            print(f"control panel: http://localhost:{cfg.web.port}/  (password: `mcsm web-password`)")
+        elif args.action == "uninstall":
+            print(service.uninstall(cfg.root))
+        else:
+            print(service.status(cfg.root))
+    except service.ServiceError as e:
+        print(f"error: {e}")
+        return 1
     return 0
 
 
@@ -593,6 +655,18 @@ def cmd_restore(args) -> int:
 NOTICE_EXEMPT = {"notice", "licenses", "stop", "status", "web-password"}  # never blocked by the notice
 
 
+def interactive() -> bool:
+    """True only when a person can answer prompts.
+
+    Both ends must be a terminal: on Windows the null device (a service's stdin)
+    claims to be one.
+    """
+    try:
+        return sys.stdin is not None and sys.stdin.isatty() and sys.stdout is not None and sys.stdout.isatty()
+    except (ValueError, OSError):
+        return False
+
+
 def _notice_ok(args) -> bool:
     """Show the first-run notice and require acceptance before anything else runs."""
     root = getattr(args, "dir", None) or args.root
@@ -602,9 +676,13 @@ def _notice_ok(args) -> bool:
     if args.accept_notice:
         notice.accept(root, by="cli")
         return True
-    if sys.stdin.isatty():
+    if interactive():
         print(notice.as_text() + "\n")
-        if input("Type 'yes' to accept and continue: ").strip().lower() in ("y", "yes"):
+        try:
+            answer = input("Type 'yes' to accept and continue: ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() in ("y", "yes"):
             notice.accept(root, by="cli")
             print()
             return True
@@ -637,6 +715,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("start", help="set up a server if needed, run it, and open the web UI (the default)")
     s.add_argument("--no-browser", action="store_true", help="don't open the web UI in a browser")
+    s.add_argument("--web-host", help='web UI address; "0.0.0.0" to allow other devices on your network')
+    s.add_argument("--web-port", type=int, help="web UI port (default 8765)")
     s.set_defaults(fn=cmd_start)
 
     s = sub.add_parser("init", help="create mcsm.toml")
@@ -742,6 +822,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-y", "--yes", action="store_true")
     s.set_defaults(fn=cmd_self_update)
 
+    s = sub.add_parser("service", help="Linux: run mcsm in the background at boot with systemd")
+    s.add_argument("action", choices=["install", "uninstall", "status"])
+    s.set_defaults(fn=cmd_service)
+
     s = sub.add_parser("cmd", help="send a console command over RCON")
     s.add_argument("command", nargs="+")
     s.set_defaults(fn=cmd_cmd)
@@ -759,6 +843,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:  # e.g. a Windows console code page that lacks "•"
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -768,9 +857,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _main(args)
     finally:
-        if selfupdate.frozen() and os.name == "nt" and args.command == "start" and not argv:
+        if selfupdate.frozen() and os.name == "nt" and args.command == "start" and not argv and interactive():
             # Double-clicked on Windows: keep the console open so messages can be read.
-            input("\nPress Enter to close this window...")
+            try:
+                input("\nPress Enter to close this window...")
+            except EOFError:
+                pass
 
 
 def _main(args) -> int:

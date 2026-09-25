@@ -112,13 +112,19 @@ xattr -d com.apple.quarantine mcsm-macos-arm64
 ./mcsm-macos-arm64
 ```
 
-**Linux:**
+**Linux:** the Linux downloads run on practically any distribution from 2014 onward
+(glibc 2.17 or newer: Ubuntu, Debian, Fedora, Rocky/Alma/RHEL 7+, Arch, openSUSE,
+Raspberry Pi OS 64-bit, and so on). Alpine and other musl-based systems need the
+[Python install](#with-python-instead) instead.
 
 ```sh
 curl -LO https://github.com/silverWRX03/mc-server-management/releases/latest/download/mcsm-linux-x64
 chmod +x mcsm-linux-x64
-./mcsm-linux-x64
+sudo mv mcsm-linux-x64 /usr/local/bin/mcsm     # optional: makes `mcsm` a command
+mcsm
 ```
+
+On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
 
 ### What happens when you run it
 
@@ -151,11 +157,37 @@ pipx install git+https://github.com/silverWRX03/mc-server-management
 mcsm
 ```
 
-### Running it as a background service
+### Linux servers (headless, over SSH)
 
-On a Linux server, use systemd with [`examples/mcsm.service`](examples/mcsm.service),
-pointing `ExecStart` at the downloaded file. Accept the notice once with
-`mcsm notice --accept`, or in the web UI.
+- **Reaching the control panel from your own PC.** The setup wizard asks whether to
+  allow other devices on your network; on a machine with no desktop the suggested
+  answer is yes. mcsm then prints the address to open, such as
+  `http://192.168.1.50:8765/`. If you'd rather keep it private to the server, answer
+  no and use an SSH tunnel: `ssh -L 8765:localhost:8765 you@server`, then open
+  <http://localhost:8765> on your PC. mcsm prints this command too.
+- **Keeping it running after you log out, and after reboots:**
+
+  ```sh
+  mcsm service install      # sets up a systemd service for this server and starts it
+  mcsm service status
+  journalctl --user -u mcsm-<folder> -f    # the server console (`mcsm service install` prints the exact command)
+  mcsm service uninstall
+  ```
+
+  As a normal user this creates a user service and enables "lingering" so it runs
+  without anyone logged in (if that needs admin rights, mcsm prints the
+  `sudo loginctl enable-linger` command). As root it creates a system service. A good
+  setup is a dedicated `minecraft` user: `sudo -u minecraft mcsm service install`.
+  [`examples/mcsm.service`](examples/mcsm.service) shows a hand-written unit if you prefer.
+- **Firewall:** open the Minecraft port for players (`sudo ufw allow 25565/tcp`, or
+  `sudo firewall-cmd --add-port=25565/tcp --permanent && sudo firewall-cmd --reload`),
+  and port 8765 only if you use the control panel from other devices.
+
+### Windows and macOS in the background
+
+Keep the window open while the server runs. To start it automatically, add
+`mcsm-windows-x64.exe` to Task Scheduler with the trigger *At log on*. On a Mac, add
+it to *System Settings → General → Login Items*.
 
 ## Quick start: build a new server
 
@@ -414,8 +446,14 @@ required = true
    executables, the Python wheel, and `SHA256SUMS.txt`.
 4. Running copies of mcsm notice the release within a day and offer to update.
 
-To build an executable yourself: `pip install pyinstaller && pyinstaller packaging/mcsm.spec`
-(the output is in `dist/`), then `python packaging/smoke_test.py dist/mcsm`.
+To build an executable yourself:
+
+- **Linux:** `packaging/build_linux.sh`. It uses a portable Python from
+  [python-build-standalone](https://github.com/astral-sh/python-build-standalone), so
+  the result runs on glibc 2.17+ and not just on your own distribution.
+  `packaging/check_linux_compat.sh dist/mcsm` proves it in a CentOS 7 container.
+- **Windows or macOS:** `pip install pyinstaller && pyinstaller packaging/mcsm.spec`.
+- Then run `python packaging/smoke_test.py dist/mcsm` (or `dist/mcsm.exe`).
 
 The executables aren't code-signed yet, which is why Windows and macOS show warnings.
 Signing needs a Windows code-signing certificate and an Apple Developer ID

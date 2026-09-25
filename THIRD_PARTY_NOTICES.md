@@ -29,6 +29,14 @@ following. Their full license texts ship inside each executable; print them with
 | [Python](https://www.python.org/) runtime and standard library | [PSF License 2.0](https://docs.python.org/3/license.html) | Python's license file also covers components it includes, such as OpenSSL (Apache-2.0), zlib (zlib license), libffi and expat (MIT), bzip2, SQLite (public domain), xz and mpdecimal. |
 | [PyInstaller](https://github.com/pyinstaller/pyinstaller) bootloader | GPL-2.0-or-later with the bootloader exception | The exception explicitly allows distributing programs built with PyInstaller under any license. |
 
+The Linux executables use Python from
+[python-build-standalone](https://github.com/astral-sh/python-build-standalone): an
+ordinary CPython build (PSF-2.0) made portable across Linux distributions. It includes
+the libraries Python depends on, each under its own open-source license: OpenSSL
+(Apache-2.0), libffi (MIT), SQLite (public domain), zlib (zlib), bzip2 (bzip2), xz/liblzma
+(0BSD/public domain), mpdecimal (BSD-2-Clause), expat (MIT), ncurses (X11-style) and
+libedit (BSD-3-Clause). Its build scripts are MPL-2.0, but none of them are included.
+
 ## Used only for development
 
 These are not installed for users.
@@ -39,6 +47,7 @@ These are not installed for users.
 | [setuptools](https://github.com/pypa/setuptools) | MIT | building the package |
 | [PyInstaller](https://github.com/pyinstaller/pyinstaller) | GPL-2.0-or-later with the bootloader exception | building the downloadable executables |
 | [build](https://github.com/pypa/build) | MIT | building the wheel for releases |
+| [uv](https://github.com/astral-sh/uv) | MIT / Apache-2.0 | fetching the portable Python for Linux builds |
 
 ## Software mcsm downloads for you
 

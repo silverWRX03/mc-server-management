@@ -15,6 +15,7 @@ import logging
 import re
 import secrets
 import shutil
+import socketserver
 import tempfile
 import threading
 import time
@@ -103,7 +104,7 @@ class WebUI:
 
         class Handler(RequestHandler):
             web = ui
-        self.httpd = ThreadingHTTPServer((self.host, self.port), Handler)
+        self.httpd = _Server((self.host, self.port), Handler)
         self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True, name="web").start()
         where = f"password in {self.d.m.config.state_dir / 'web-password'}" if self.generated \
@@ -141,6 +142,16 @@ class WebUI:
     def logout(self, token: str | None) -> None:
         with self.lock:
             self.sessions.pop(token or "", None)
+
+
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_bind(self):
+        # HTTPServer.server_bind() looks up the host's full DNS name, which can take
+        # many seconds on macOS. The name isn't needed, so skip the lookup.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class RequestHandler(BaseHTTPRequestHandler):

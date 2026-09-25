@@ -37,7 +37,9 @@ def test_binary_is_replaced_after_checksum(tmp_path, http):
     assert exe.read_bytes() == b"new version"
     if os.name != "nt":
         assert os.access(exe, os.X_OK)
-    assert [p.name for p in folder.iterdir()] == ["mcsm"]  # no temp files left behind
+    left = sorted(p.name for p in folder.iterdir())
+    # No temp files left behind (Windows keeps the old copy until the next start).
+    assert left == (["mcsm", "mcsm.old"] if os.name == "nt" else ["mcsm"])
 
 
 def test_tampered_binary_is_rejected(tmp_path, http):
@@ -87,7 +89,8 @@ def test_wizard_builds_a_server(tmp_path, http, modrinth, fake_java, monkeypatch
     monkeypatch.setattr(cli, "Manager", fake_manager)
     monkeypatch.setattr(cli, "HttpClient", lambda: http)
 
-    answers = iter(["", "1.21.1", "6G", "lithium", "yes"])  # loader: default fabric
+    # loader (default fabric), version, memory, mods, network access, EULA
+    answers = iter(["", "1.21.1", "6G", "lithium", "yes", "yes"])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     root = tmp_path / "home" / "mcsm"
     assert cli._wizard(root)
@@ -96,10 +99,11 @@ def test_wizard_builds_a_server(tmp_path, http, modrinth, fake_java, monkeypatch
     assert 'memory = "6G"' in toml
     assert "eula=true" in (root / "server" / "eula.txt").read_text()
     assert (root / "server" / "mods" / "LITH-1.0.jar").exists()
+    assert 'host = "0.0.0.0"' in toml  # reachable from other devices, as asked
 
 
 def test_wizard_stops_without_eula(tmp_path, monkeypatch):
-    answers = iter(["fabric", "latest", "4G", "", "no"])
+    answers = iter(["fabric", "latest", "4G", "", "no", "no"])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     assert not cli._wizard(tmp_path / "x")
     assert not (tmp_path / "x").exists()
@@ -108,3 +112,54 @@ def test_wizard_stops_without_eula(tmp_path, monkeypatch):
 def test_start_defaults_to_home_folder(tmp_path, monkeypatch):
     monkeypatch.setenv("MCSM_HOME", str(tmp_path / "home"))
     assert cli.default_home() == (tmp_path / "home").resolve()
+
+
+def test_headless_linux_has_no_browser(monkeypatch):
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert not cli.has_display()
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert cli.has_display()
+
+
+# ------------------------------------------------------------------ service
+def test_service_unit_user_and_system(tmp_path, monkeypatch):
+    from mcsm import service
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setattr(service, "mcsm_command", lambda: ["/opt/my apps/mcsm"])
+    root = tmp_path / "My Server"
+    user = service.plan(root, system=False)
+    assert user.name == "mcsm-my-server.service"
+    assert user.path == tmp_path / "cfg" / "systemd" / "user" / "mcsm-my-server.service"
+    assert 'ExecStart="/opt/my apps/mcsm" run --web' in user.text
+    assert f"WorkingDirectory={root}" in user.text and "WantedBy=default.target" in user.text
+    system = service.plan(root, system=True)
+    assert str(system.path).replace("\\", "/") == "/etc/systemd/system/mcsm-my-server.service"
+    assert "WantedBy=multi-user.target" in system.text and system.systemctl == ["systemctl"]
+
+
+def test_service_install_and_uninstall(tmp_path, monkeypatch):
+    import subprocess
+
+    from mcsm import notice, service
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setattr(service, "supported", lambda: True)
+    calls = []
+
+    def runner(args, **kw):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1 if args[0] == "loginctl" else 0, "", "not allowed")
+    root = tmp_path / "srv"
+    root.mkdir()
+    messages = service.install(root, runner, system=False)
+    unit = tmp_path / "cfg" / "systemd" / "user" / "mcsm-srv.service"
+    assert unit.exists()
+    assert ["systemctl", "--user", "enable", "--now", "mcsm-srv.service"] in calls
+    assert any("sudo loginctl enable-linger" in m for m in messages)  # linger failed -> tell the user
+    assert notice.accepted(root)  # the service can't answer the prompt, so it's recorded for this server
+
+    assert service.uninstall(root, runner, system=False) == "removed mcsm-srv.service"
+    assert not unit.exists()
+    with pytest.raises(service.ServiceError):
+        service.uninstall(root, runner, system=False)

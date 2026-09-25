@@ -15,6 +15,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,18 +40,30 @@ jobs:
             asset: mcsm-windows-x64.exe
           - os: macos-latest          # Apple silicon
             asset: mcsm-macos-arm64
-          - os: ubuntu-22.04          # older glibc = runs on more Linux distributions
+          # Linux builds use a portable Python (packaging/build_linux.sh), so they run
+          # on glibc 2.17+ (CentOS 7 onwards) whatever the runner's own version.
+          - os: ubuntu-latest
             asset: mcsm-linux-x64
-          - os: ubuntu-22.04-arm
+          - os: ubuntu-24.04-arm
             asset: mcsm-linux-arm64   # e.g. Raspberry Pi 4/5 (64-bit OS)
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install "pyinstaller>=6,<7"
-      - run: pyinstaller --noconfirm packaging/mcsm.spec
+      - name: Build (Linux, portable)
+        if: runner.os == 'Linux'
+        run: packaging/build_linux.sh
+      - name: Build
+        if: runner.os != 'Linux'
+        run: |
+          pip install "pyinstaller>=6,<7"
+          pyinstaller --noconfirm packaging/mcsm.spec
+      - name: Check it runs on an old Linux (CentOS 7, glibc 2.17)
+        if: runner.os == 'Linux'
+        run: packaging/check_linux_compat.sh dist/mcsm
       - name: Name the executable
         shell: bash
         run: |

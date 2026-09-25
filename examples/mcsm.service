@@ -1,7 +1,10 @@
-# systemd unit for a forever server.
+# A hand-written systemd unit for a forever server.
+# Easier: run `mcsm service install` in the server folder, which writes one for you.
+#
+#   mcsm notice --accept            # (as the User below) a service can't answer the prompt
 #   sudo cp mcsm.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now mcsm
-#   journalctl -u mcsm -f         # server console + mcsm messages
+#   journalctl -u mcsm -f           # server console + mcsm messages
 [Unit]
 Description=Minecraft server managed by mcsm
 After=network-online.target

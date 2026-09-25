@@ -43,7 +43,7 @@ def test_new_notice_version_needs_new_acceptance(tmp_path, monkeypatch):
 
 
 def test_cli_refuses_until_accepted(tmp_path, fresh_user, capsys, monkeypatch):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(cli, "interactive", lambda: False)
     root = tmp_path / "srv"
     assert cli.main(["-C", str(root), "init"]) == 2
     err = capsys.readouterr().err
@@ -57,7 +57,7 @@ def test_cli_refuses_until_accepted(tmp_path, fresh_user, capsys, monkeypatch):
 
 
 def test_cli_interactive_prompt(tmp_path, fresh_user, monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(cli, "interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "no")
     assert cli.main(["-C", str(tmp_path), "init"]) == 2
     monkeypatch.setattr("builtins.input", lambda _: "yes")
