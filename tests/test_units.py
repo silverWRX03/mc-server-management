@@ -215,3 +215,35 @@ def test_host_allowlist():
         assert host_allowed(ok, ["proxy.example.com"]), ok
     for bad in ("evil.example", "evil.example:8765", "localhost.evil.example", "127.0.0.1.nip.io"):
         assert not host_allowed(bad, []), bad
+
+
+def test_http_waits_out_rate_limits(monkeypatch):
+    import io
+    import urllib.error
+    from email.message import Message
+    from mcsm import http as httpmod
+
+    def limited(retry_after=None):
+        headers = Message()
+        if retry_after:
+            headers["Retry-After"] = retry_after
+        return urllib.error.HTTPError("https://api.mojang.com/x", 429, "Too Many Requests", headers, io.BytesIO())
+
+    replies = [limited("12"), limited(), limited(), limited(), io.BytesIO(b'{"id": "abc"}')]
+    slept = []
+    monkeypatch.setattr(httpmod.time, "sleep", slept.append)
+
+    def urlopen(req, timeout):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        reply.headers = {}
+        return reply
+    monkeypatch.setattr(httpmod.urllib.request, "urlopen", urlopen)
+    assert httpmod.HttpClient(cache_ttl=0).get_json("https://api.mojang.com/x") == {"id": "abc"}
+    assert slept == [12, 10, 20, 30]  # Retry-After first, then growing waits
+
+    # Other client errors still fail at once, and plain failures stop after the normal retries.
+    replies[:] = [urllib.error.HTTPError("u", 404, "nope", Message(), io.BytesIO())]
+    with pytest.raises(httpmod.HttpError):
+        httpmod.HttpClient(cache_ttl=0).get_json("https://api.mojang.com/y")

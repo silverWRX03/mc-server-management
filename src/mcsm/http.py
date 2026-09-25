@@ -39,6 +39,19 @@ def with_query(url: str, params: dict[str, Any] | None) -> str:
     return f"{url}?{urllib.parse.urlencode(params)}"
 
 
+RATE_LIMIT_DELAYS = (5, 10, 20, 30)
+RATE_LIMIT_RETRIES = len(RATE_LIMIT_DELAYS)
+MAX_RATE_LIMIT_DELAY = 60
+
+
+def _retry_after(e: urllib.error.HTTPError) -> float | None:
+    try:
+        value = float((e.headers or {}).get("Retry-After", ""))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 class HttpClient:
     """GET/POST JSON and verified downloads, with retries and a short-lived GET cache.
 
@@ -57,7 +70,8 @@ class HttpClient:
 
     def _open(self, req: urllib.request.Request):
         last: Exception | None = None
-        for attempt in range(self.retries):
+        attempt = limited = 0
+        while attempt < self.retries:
             try:
                 return urllib.request.urlopen(req, timeout=self.timeout)
             except urllib.error.HTTPError as e:
@@ -65,11 +79,21 @@ class HttpClient:
                 if e.code != 429 and e.code < 500:
                     raise HttpError(req.full_url, e.code, f"HTTP {e.code}") from e
                 last = e
+                if e.code == 429 and limited < RATE_LIMIT_RETRIES:
+                    # Rate limited (Mojang's lookup API does this readily): wait as asked, or long
+                    # enough for the limit to reset, without using up the normal retries.
+                    delay = min(_retry_after(e) or RATE_LIMIT_DELAYS[limited], MAX_RATE_LIMIT_DELAY)
+                    limited += 1
+                    log.info("%s is busy (rate limited); trying again in %ss", req.host, delay)
+                    time.sleep(delay)
+                    continue
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                 last = e
             delay = 2**attempt
-            log.debug("request to %s failed (%s); retrying in %ss", req.full_url, last, delay)
-            time.sleep(delay)
+            attempt += 1
+            if attempt < self.retries:
+                log.debug("request to %s failed (%s); retrying in %ss", req.full_url, last, delay)
+                time.sleep(delay)
         status = last.code if isinstance(last, urllib.error.HTTPError) else None
         raise HttpError(req.full_url, status, f"request failed: {last}")
 
