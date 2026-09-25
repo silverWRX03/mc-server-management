@@ -436,6 +436,22 @@ required = true
 > version, older versions can't load it. That's why every upgrade makes a full backup
 > first. `mcsm restore` puts back the latest one (or a named one).
 
+## Testing a build before a release
+
+- **Test builds:** every CI run builds the Windows, macOS and Linux executables. Open
+  the run under the repository's **Actions** tab (workflow **test**), scroll to
+  **Artifacts**, and download `test-build-…` for your system. It's a zip containing the
+  executable; you need to be signed in to GitHub.
+- **Real end-to-end test:** the **e2e** workflow ([`packaging/e2e_test.py`](packaging/e2e_test.py))
+  uses a built executable against the real services:
+  - it creates real Fabric, NeoForge, Forge and vanilla servers with real Modrinth
+    mods, downloads Java, and boots Minecraft;
+  - it upgrades the Fabric server to the newest version its mods support;
+  - it drives the web UI, RCON and player commands, then stops cleanly.
+
+  It runs on Linux, plus Fabric on Windows and macOS, on every pull request and every
+  Monday. You can also start it by hand under **Actions → e2e → Run workflow**.
+
 ## Releasing (for maintainers)
 
 1. Set `__version__` in `src/mcsm/__init__.py`, e.g. `"0.2.0"`, and commit.

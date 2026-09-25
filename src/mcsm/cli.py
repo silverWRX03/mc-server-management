@@ -610,7 +610,7 @@ def cmd_cmd(args) -> int:
     m = _manager(args)
     try:
         with Rcon.from_server_dir(m.server_dir) as rcon:
-            print(rcon.command(" ".join(args.command)))
+            print(rcon.command(" ".join(args.words)))
     except (RconError, OSError) as e:
         print(f"error: {e}")
         return 1
@@ -827,7 +827,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_service)
 
     s = sub.add_parser("cmd", help="send a console command over RCON")
-    s.add_argument("command", nargs="+")
+    # Not "command": that name holds which subcommand was chosen.
+    s.add_argument("words", nargs="+", metavar="command", help="the console command, e.g. say hello")
     s.set_defaults(fn=cmd_cmd)
 
     s = sub.add_parser("backup", help="back up the server directory")

@@ -1,0 +1,74 @@
+# End-to-end tests against the real services: builds the executable, then creates,
+# boots, upgrades and stops real Minecraft servers with real mods and Java.
+# Runs on pull requests, weekly (to catch changes in Mojang/Modrinth/loader APIs),
+# and on demand from the Actions tab.
+name: e2e
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }}, ${{ matrix.loader }} ${{ matrix.minecraft }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Fabric with real Modrinth mods, then an upgrade to the newest version they support.
+          - os: ubuntu-latest
+            loader: fabric
+            minecraft: "1.21.1"
+            args: --mod fabric-api --mod lithium --mod ferrite-core --upgrade
+          - os: ubuntu-latest
+            loader: neoforge
+            minecraft: "1.21.1"
+            args: --mod ferrite-core
+          - os: ubuntu-latest
+            loader: forge
+            minecraft: "1.20.1"        # needs Java 17
+            args: --mod ferrite-core
+          - os: ubuntu-latest
+            loader: vanilla
+            minecraft: latest
+            args: ""
+          - os: windows-latest
+            loader: fabric
+            minecraft: "1.21.1"
+            args: --mod fabric-api --mod lithium
+          - os: macos-latest
+            loader: fabric
+            minecraft: "1.21.1"
+            args: --mod fabric-api --mod lithium
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build (Linux, portable)
+        if: runner.os == 'Linux'
+        run: packaging/build_linux.sh
+      - name: Build
+        if: runner.os != 'Linux'
+        run: |
+          pip install "pyinstaller>=6,<7"
+          pyinstaller --noconfirm packaging/mcsm.spec
+      - name: End-to-end test
+        shell: bash
+        run: |
+          exe=dist/mcsm
+          if [ -f dist/mcsm.exe ]; then exe=dist/mcsm.exe; fi
+          python packaging/e2e_test.py "$exe" --loader ${{ matrix.loader }} --minecraft ${{ matrix.minecraft }} ${{ matrix.args }}
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.os }}-${{ matrix.loader }}
+          path: e2e-logs/

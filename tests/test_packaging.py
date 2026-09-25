@@ -163,3 +163,10 @@ def test_service_install_and_uninstall(tmp_path, monkeypatch):
     assert not unit.exists()
     with pytest.raises(service.ServiceError):
         service.uninstall(root, runner, system=False)
+
+
+def test_cmd_goes_through_the_real_parser(tmp_path, capsys):
+    """`mcsm cmd` once crashed: its argument clashed with the subcommand's name."""
+    assert cli.main(["-C", str(tmp_path), "--accept-notice", "init"]) == 0
+    assert cli.main(["-C", str(tmp_path), "cmd", "say", "hello"]) == 1  # RCON is off: a clean error
+    assert "RCON is disabled" in capsys.readouterr().out
