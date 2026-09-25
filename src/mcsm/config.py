@@ -66,7 +66,8 @@ class WebConfig:
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8765
-    password: str = ""   # empty = generate one into .mcsm/web-password
+    password: str = ""   # empty = chosen in the web UI (starts as PASSWORD); set here to lock it
+    allowed_hosts: list[str] = field(default_factory=list)  # extra host names, e.g. behind a proxy
 
 
 @dataclass
@@ -212,6 +213,7 @@ def parse(root: Path, data: dict) -> Config:
             host=str(data.get("web", {}).get("host", "127.0.0.1")),
             port=int(data.get("web", {}).get("port", 8765)),
             password=str(data.get("web", {}).get("password", "")),
+            allowed_hosts=[str(x).lower() for x in data.get("web", {}).get("allowed_hosts", [])],
         ),
         discord_webhook=data.get("notify", {}).get("discord_webhook", ""),
         curseforge_api_key=(data.get("curseforge", {}).get("api_key", "")
@@ -270,7 +272,8 @@ update_check = true            # tell you when a new version of mcsm is out (it 
 enabled = false                # or start with `mcsm run --web`
 host = "127.0.0.1"             # only this machine; use "0.0.0.0" behind an HTTPS reverse proxy
 port = 8765
-password = ""                  # empty = a random one is generated into .mcsm/web-password
+password = ""                  # empty = starts as PASSWORD and you choose your own when you sign in
+# allowed_hosts = ["mc.example.com"]  # host names used to reach the panel through a reverse proxy
 
 [downloads]
 # Some CurseForge authors block third-party downloads. mcsm prints a link for each;

@@ -127,9 +127,11 @@ def main() -> int:
         log = open(work / "run.log", "w", encoding="utf-8")
         daemon = subprocess.Popen([exe, "-C", str(root), "run", "--web", "--web-port", str(PORT)], env=env,
                                   stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-        pw_file = root / ".mcsm" / "web-password"
-        wait("the web UI", lambda: pw_file.exists() and Web(pw_file.read_text().strip()), 120)
-        web = Web(pw_file.read_text().strip())
+        web = wait("the web UI", lambda: Web("PASSWORD"), 120)  # the default until it's changed
+        assert web.call("GET", "/api/status")["auth"]["default"], "expected the default password"
+        web.call("POST", "/api/auth/change", {"mode": "pin", "secret": "2468"})
+        web = Web("2468")
+        print("signed in with the default password, then switched to a PIN")
         status = wait("the server to finish starting", lambda: (s := web.call("GET", "/api/status"))["state"] == "running" and s, 900, 5)
         print(f"web UI: {status['state']}, Minecraft {status['minecraft']}, {status['mods']} mods")
 

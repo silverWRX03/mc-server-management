@@ -91,11 +91,26 @@ function every(ms, fn) { fn(); timers.push(setInterval(fn, ms)); }
 function clearTimers() { timers.forEach(clearInterval); timers = []; }
 
 // -------------------------------------------------------------------- login
-function showLogin() {
+const PROMPT_KEY = "mcsm-password-prompt-dismissed";
+async function showLogin() {
   clearTimers();
   $("#app").classList.add("hidden");
   $("#login").classList.remove("hidden");
-  $("#login-password").focus();
+  let a = null;
+  try { a = await (await fetch("/api/auth", { credentials: "same-origin" })).json(); } catch (_) { /* offline */ }
+  const input = $("#login-password");
+  const pin = a && a.mode === "pin";
+  $("#login-label").textContent = pin ? "PIN" : "Password";
+  input.setAttribute("inputmode", pin ? "numeric" : "text");
+  input.setAttribute("autocomplete", pin ? "off" : "current-password");
+  $("#login-fields").classList.toggle("hidden", !!(a && a.mode === "none"));
+  $("#login-hint").replaceChildren(...(
+    !a ? [] :
+    a.mode === "none" ? ["This control panel has no password, so it only opens on the server's own computer. To use it from here, set a PIN or password there (Settings → Sign-in)."] :
+    a.managed ? ["The password is set in mcsm.toml under ", h("code", {}, "[web] password"), "."] :
+    a.default ? ["First time? The password is ", h("strong", {}, "PASSWORD"), ". You'll choose your own next."] :
+    ["Forgot it? Run ", h("code", {}, "mcsm web-password --reset"), " on the server to go back to PASSWORD."]));
+  input.focus();
 }
 
 $("#login-form").addEventListener("submit", async (e) => {
@@ -104,6 +119,7 @@ $("#login-form").addEventListener("submit", async (e) => {
   try {
     await api("/api/login", { method: "POST", body: { password: $("#login-password").value } });
     $("#login-password").value = "";
+    try { sessionStorage.removeItem(PROMPT_KEY); } catch (_) {}
     start();
   } catch (err) { $("#login-error").textContent = err.message; }
 });
@@ -141,6 +157,65 @@ async function showNotice() {
       h("div", { class: "row" }, accept, decline))));
   accept.focus();
 }
+
+// ------------------------------------------------------------ sign-in settings
+const AUTH_MODES = [
+  ["password", "Password", "At least 4 characters."],
+  ["pin", "PIN", "4 to 8 digits. Quick to type on a phone."],
+  ["none", "No password", "Opens without signing in, but only on the server's own computer."],
+];
+async function showSecurity(firstTime = false) {
+  if ($("#security")) return;
+  let local = false;
+  try { local = !!(await (await fetch("/api/auth", { credentials: "same-origin" })).json()).local; } catch (_) {}
+  if ($("#security")) return;
+  let mode = status && status.auth && !status.auth.default ? status.auth.mode : "password";
+  if (mode === "none" && !local) mode = "pin";
+  const close = () => { const m = $("#security"); if (m) m.remove(); };
+  const box = h("div", { class: "modal compact" });
+  const render = (error) => {
+    const pin = mode === "pin";
+    const kind = pin ? "PIN" : "password";
+    const extra = pin ? { inputmode: "numeric", maxlength: 8, autocomplete: "off" } : { autocomplete: "new-password" };
+    const secret = h("input", { type: "password", ...extra });
+    const again = h("input", { type: "password", ...extra });
+    const save = async (e) => {
+      e.preventDefault();
+      if (mode !== "none" && secret.value !== again.value) return render(`The two ${kind}s don't match.`);
+      try {
+        await api("/api/auth/change", { method: "POST", body: { mode, secret: mode === "none" ? "" : secret.value } });
+        close();
+        toast(mode === "none" ? "Password turned off for this computer" : `Your new ${kind} is saved`);
+        refreshStatus();
+      } catch (err) { if (!(err instanceof Unauthorized)) render(err.message); }
+    };
+    fill(box,
+      h("h2", { id: "security-title" }, firstTime ? "Choose your own password" : "Sign-in"),
+      firstTime ? h("p", {}, "You're signed in with the default password, PASSWORD, which anyone could guess. Pick how you'd like to protect this control panel.") : null,
+      h("div", { class: "choices" }, AUTH_MODES.map(([m, label, desc]) => h("button", {
+        type: "button", class: "choice" + (mode === m ? " selected" : ""), disabled: m === "none" && !local,
+        onclick: () => { mode = m; render(); },
+      }, h("strong", {}, label), h("span", { class: "small muted" }, m === "none" && !local ? "Only available on the server's own computer." : desc)))),
+      h("form", { class: "mt", onsubmit: save },
+        mode === "none"
+          ? h("p", { class: "muted" }, "Anyone using this computer can open the panel. Other devices won't be able to use it at all until you set a password or PIN again.")
+          : h("div", { class: "grid" }, h("label", {}, `New ${kind}`, secret), h("label", {}, `Type it again`, again)),
+        h("p", { class: "error" }, error || ""),
+        h("div", { class: "row" },
+          h("button", { class: "btn primary", type: "submit" }, "Save"),
+          h("button", { class: "btn ghost", type: "button", onclick: () => {
+            if (firstTime) { try { sessionStorage.setItem(PROMPT_KEY, "1"); } catch (_) {} }
+            close();
+          } }, firstTime ? "Not now" : "Cancel")),
+        h("p", { class: "muted small" }, "Everyone else is signed out when this changes. Forgot it later? Run ",
+          h("code", {}, "mcsm web-password --reset"), " on the server.")));
+    const first = box.querySelector("input");
+    if (first) first.focus();
+  };
+  render();
+  document.body.append(h("div", { class: "modal-backdrop", id: "security", role: "dialog", "aria-modal": "true", "aria-labelledby": "security-title" }, box));
+}
+function promptDismissed() { try { return !!sessionStorage.getItem(PROMPT_KEY); } catch (_) { return false; } }
 
 // ------------------------------------------------------------ mcsm self-update
 const DISMISS_KEY = "mcsm-dismissed-update";
@@ -195,8 +270,12 @@ async function refreshStatus() {
   document.body.classList.toggle("setup-mode", !!s.setup_pending);
   if (s.notice_accepted && s.setup_pending && currentName !== "setup") { location.hash = "#setup"; return; }
   if (!s.setup_pending && currentName === "setup") { location.hash = "#dashboard"; return; }
+  $("#logout").classList.toggle("hidden", !!(s.auth && s.auth.mode === "none"));
   if (!s.notice_accepted) showNotice();
-  else offerSelfUpdate(s.self_update);
+  else {
+    offerSelfUpdate(s.self_update);
+    if (s.auth && s.auth.default && !s.auth.managed && !promptDismissed()) showSecurity(true);
+  }
   if (current && current.onStatus) current.onStatus(s);
 }
 
@@ -663,10 +742,20 @@ views.settings = () => {
           x.url.startsWith("http") ? h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" }, "terms ↗") : h("span", { class: "muted small" }, x.url)))))),
     );
   };
-  fill($("#main"), h("h2", { class: "view-title" }, "Settings"), form, about);
+  const security = h("div", { class: "mb" });
+  const renderSecurity = () => {
+    const a = (status && status.auth) || {};
+    const label = { password: "Password", pin: "PIN", none: "No password (this computer only)" }[a.mode] || "…";
+    fill(security, card("Sign-in",
+      h("div", { class: "row" },
+        h("span", { class: "grow" }, a.managed ? "Password set in mcsm.toml ([web] password)" : a.default ? "Default password (PASSWORD) — please change it" : label),
+        a.managed ? null : h("button", { class: "btn", onclick: () => showSecurity(false) }, "Change"))));
+  };
+  renderSecurity();
+  fill($("#main"), h("h2", { class: "view-title" }, "Settings"), security, form, about);
   load();
   loadAbout();
-  return {};
+  return { onStatus: renderSecurity };
 };
 
 // ------------------------------------------------------------------- setup

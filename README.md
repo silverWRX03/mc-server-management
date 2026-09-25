@@ -128,7 +128,8 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
 
 ### What happens when you run it
 
-1. Your browser opens mcsm's control panel. The password is shown in the window.
+1. Your browser opens mcsm's control panel. Sign in with `PASSWORD`; you're then asked
+   to choose your own password, a PIN, or no password (this computer only).
 2. It shows [what mcsm does and doesn't do](#what-mcsm-does-and-doesnt-do) and asks you to accept.
 3. The **setup page** asks for:
    - the server type: Fabric, NeoForge, Forge, Quilt or vanilla;
@@ -251,7 +252,7 @@ delete the old jar, or leave it unmanaged if the mod never needs updating.
 
 ```sh
 mcsm run --web          # or set [web] enabled = true in mcsm.toml
-mcsm web-password       # prints the generated login password
+mcsm web-password       # shows how the panel is protected (--set, --pin, --none, --reset)
 ```
 
 Then open <http://localhost:8765>.
@@ -275,9 +276,19 @@ CurseForge's checksum before it's accepted.
 
 ![Updates page](docs/web-updates.png)
 
+**Signing in.** The first password is `PASSWORD`, and the panel asks you to change
+it right after you sign in. You can pick a password, a 4–8 digit PIN, or no password.
+No password only works in a browser on the server's own computer; other devices
+can't use the panel at all until you set a password or PIN again. Change it later
+under Settings → Sign-in. Forgot it? Run `mcsm web-password --reset` on the server
+to go back to `PASSWORD`. To fix the password in the config instead, set
+`[web] password` in mcsm.toml. Passwords and PINs are stored only as salted hashes.
+
 **Security.** By default it only listens on `127.0.0.1`. Every request needs a
-password login (rate limited; sessions are HttpOnly, SameSite=Strict cookies), and
-changes need a CSRF header. The page runs under a strict Content Security Policy
+login (rate limited; sessions are HttpOnly, SameSite=Strict cookies), and
+changes need a CSRF header. Requests must address this machine by IP, `localhost`,
+a `.local` name, or its host name, which blocks DNS-rebinding attacks. If you use a
+reverse proxy with its own domain, add that domain to `[web] allowed_hosts`. The page runs under a strict Content Security Policy
 with no third-party scripts. The console gives full operator control of your
 server, so to reach it from elsewhere, put it behind an HTTPS reverse proxy (Caddy,
 nginx) or a VPN such as Tailscale rather than exposing the port directly.

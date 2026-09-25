@@ -174,3 +174,44 @@ def test_memory_setting(tmp_path, monkeypatch):
     m.config = configmod.parse(tmp_path, {"server": {"loader": "fabric", "memory": "auto"}})
     argv = m.launch_argv(Lock(minecraft="1.21.1", launch=["-jar", "server.jar"]), java="java")
     assert argv[:3] == ["java", "-Xms6G", "-Xmx6G"]
+
+
+def test_web_auth_store(tmp_path):
+    from mcsm import webauth
+    cfg = configmod.parse(tmp_path, {"server": {"loader": "fabric"}})
+    store = webauth.AuthStore(cfg)
+    auth = store.get()
+    assert auth.default and auth.check("PASSWORD") and not auth.check("password")
+    store.set("pin", "0042")
+    assert webauth.AuthStore(cfg).get().check("0042")  # saved
+    for mode, secret in (("pin", "123"), ("pin", "123456789"), ("password", "abc"), ("password", "PASSWORD"),
+                         ("magic", "x")):
+        with pytest.raises(ConfigError):
+            store.set(mode, secret)
+    assert store.get().mode == "none" or store.get().check("0042")  # failed changes keep the old one
+
+    # mcsm 0.1's plain-text password keeps working and is replaced by a hash.
+    legacy = tmp_path / "old"
+    (legacy / ".mcsm").mkdir(parents=True)
+    (legacy / ".mcsm" / "web-password").write_text("s3cret-from-0.1\n")
+    old = webauth.AuthStore(configmod.parse(legacy, {"server": {"loader": "fabric"}})).get()
+    assert old.check("s3cret-from-0.1") and not old.default
+    assert not (legacy / ".mcsm" / "web-password").exists()
+
+    # [web] password in mcsm.toml wins and can't be changed from the UI.
+    cfg.web.password = "from-config"
+    assert store.get().managed and store.get().check("from-config")
+    with pytest.raises(ConfigError, match="mcsm.toml"):
+        store.set("pin", "1234")
+    cfg.web.password = ""
+    assert store.get().check("0042") and not store.get().managed
+
+
+def test_host_allowlist():
+    import socket
+    from mcsm.web import host_allowed
+    for ok in ("localhost:8765", "127.0.0.1:8765", "[::1]:8765", "10.0.0.5", "pc.local", "a.localhost",
+               socket.gethostname(), None, "proxy.example.com"):
+        assert host_allowed(ok, ["proxy.example.com"]), ok
+    for bad in ("evil.example", "evil.example:8765", "localhost.evil.example", "127.0.0.1.nip.io"):
+        assert not host_allowed(bad, []), bad
