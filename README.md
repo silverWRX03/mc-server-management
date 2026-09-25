@@ -128,10 +128,23 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
 
 ### What happens when you run it
 
-1. It shows [what mcsm does and doesn't do](#what-mcsm-does-and-doesnt-do) and asks you to accept.
-2. A few questions set up your server: loader, Minecraft version, memory, mods, and Mojang's EULA.
-3. It downloads and builds everything, starts the server, and opens the control panel in
-   your browser. The password is shown in the window.
+1. Your browser opens mcsm's control panel. The password is shown in the window.
+2. It shows [what mcsm does and doesn't do](#what-mcsm-does-and-doesnt-do) and asks you to accept.
+3. The **setup page** asks for:
+   - the server type: Fabric, NeoForge, Forge, Quilt or vanilla;
+   - the Minecraft version: "newest" for a server that keeps upgrading itself, or a
+     specific version to stay on;
+   - mods, found with a Modrinth search, each marked required or optional;
+   - the server name, players, difficulty, game mode and memory;
+   - the Minecraft EULA.
+4. **Create my server** downloads Java, the mod loader, Minecraft and your mods, starts
+   the server, and takes you to the dashboard. If a choice can't work, for example a
+   mod that doesn't support the chosen version, the page says why so you can change it
+   and try again.
+
+![Setup page](docs/web-setup.png)
+
+Prefer the terminal? `mcsm setup` asks the same questions there.
 
 Next time, run it the same way: it goes straight to starting your server. Keep the
 window open while the server runs, and press Ctrl+C to stop it cleanly.

@@ -192,6 +192,9 @@ async function refreshStatus() {
   } else if (lastJobSeen === null) {
     lastJobSeen = s.last_job ? s.last_job.finished : 0;
   }
+  document.body.classList.toggle("setup-mode", !!s.setup_pending);
+  if (s.notice_accepted && s.setup_pending && currentName !== "setup") { location.hash = "#setup"; return; }
+  if (!s.setup_pending && currentName === "setup") { location.hash = "#dashboard"; return; }
   if (!s.notice_accepted) showNotice();
   else offerSelfUpdate(s.self_update);
   if (current && current.onStatus) current.onStatus(s);
@@ -666,10 +669,153 @@ views.settings = () => {
   return {};
 };
 
+// ------------------------------------------------------------------- setup
+// Kept outside the view so choices survive re-renders and a failed attempt.
+const setupState = { loader: "fabric", minecraft: "latest", mods: new Map(), motd: "A Minecraft server",
+  max_players: 20, difficulty: "normal", gamemode: "survival", port: 25565, memory_gb: null,
+  network_access: null, accept_eula: false, submitted: false };
+
+views.setup = () => {
+  const main = h("div", { class: "setup" });
+  let opts = null;
+  const st = setupState;
+
+  const field = (label, input, hint) => h("label", {}, label, input, hint ? h("span", { class: "muted small" }, hint) : null);
+
+  const renderForm = (error) => {
+    const loaderCards = h("div", { class: "choices" }, opts.loaders.map((l) => h("button", {
+      type: "button", class: "choice" + (st.loader === l.name ? " selected" : ""),
+      onclick: () => { st.loader = l.name; if (!l.mods) st.mods.clear(); renderForm(); },
+    }, h("strong", {}, l.label), h("span", { class: "small muted" }, l.description))));
+
+    const version = h("select", { onchange: (e) => { st.minecraft = e.target.value; } },
+      h("option", { value: "latest" }, st.loader === "vanilla" ? "Newest release (recommended)" : "Newest version your mods support (recommended)"),
+      opts.versions.map((v) => h("option", { value: v }, `Minecraft ${v}`)));
+    version.value = st.minecraft;
+
+    // Mods
+    const results = h("div");
+    const selected = h("div");
+    const renderSelected = () => fill(selected, st.mods.size ? h("ul", { class: "list" }, [...st.mods].map(([slug, m]) => h("li", {},
+      h("div", { class: "grow" }, h("strong", {}, m.name), h("span", { class: "tag" }, slug)),
+      h("label", { class: "row", title: "Required mods hold back Minecraft upgrades until they support the new version" },
+        h("input", { type: "checkbox", checked: m.required, onchange: (e) => { m.required = e.target.checked; } }), "required"),
+      h("button", { type: "button", class: "btn small danger", onclick: () => { st.mods.delete(slug); renderSelected(); search(); } }, "Remove"))))
+      : h("p", { class: "empty" }, "No mods yet. Search above, or leave empty for an unmodded server."));
+    const q = h("input", { type: "search", placeholder: "Search Modrinth, e.g. lithium, create, farmer's delight" });
+    let timer;
+    const search = async () => {
+      const term = q.value.trim();
+      if (!term) { fill(results); return; }
+      const r = await api(`/api/mods/search?loader=${encodeURIComponent(st.loader)}&q=${encodeURIComponent(term)}`).catch((e) => { toast(e.message, true); return null; });
+      if (!r) return;
+      fill(results, r.results.length ? r.results.slice(0, 8).map((m) => h("div", { class: "mod" },
+        m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
+        h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
+        st.mods.has(m.slug) ? h("span", { class: "tag ok" }, "added")
+          : h("button", { type: "button", class: "btn small primary", onclick: () => { st.mods.set(m.slug, { name: m.name, required: true }); renderSelected(); search(); } }, "Add"),
+      )) : [h("p", { class: "empty" }, `No ${st.loader} server mods found.`)]);
+    };
+    q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
+    renderSelected();
+    const modsCard = opts.loaders.find((l) => l.name === st.loader).mods ? card("3. Mods",
+      q, results, h("h3", { class: "mt" }, "Your mods"), selected,
+      st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null) : null;
+
+    // Settings
+    const inp = (key, attrs = {}) => h("input", { value: st[key], ...attrs, oninput: (e) => { st[key] = attrs.type === "number" ? Number(e.target.value) : e.target.value; } });
+    const sel = (key, choices) => { const el = h("select", { onchange: (e) => { st[key] = e.target.value; } }, choices.map((c) => h("option", { value: c }, c[0].toUpperCase() + c.slice(1)))); el.value = st[key]; return el; };
+    const maxMem = Math.max(2, Math.floor(opts.total_ram_gb || 16));
+    const mem = h("select", { onchange: (e) => { st.memory_gb = Number(e.target.value); } },
+      Array.from({ length: Math.min(maxMem, 32) }, (_, i) => i + 1).map((g) => h("option", { value: String(g) }, `${g} GB${g === opts.memory_gb ? " (suggested)" : ""}`)));
+    mem.value = String(st.memory_gb);
+
+    const eula = h("input", { type: "checkbox", checked: st.accept_eula, onchange: (e) => { st.accept_eula = e.target.checked; } });
+    const lan = h("input", { type: "checkbox", checked: st.network_access, onchange: (e) => { st.network_access = e.target.checked; } });
+
+    const submit = async (e) => {
+      e.preventDefault();
+      if (!st.accept_eula) { toast("Please read and accept the Minecraft EULA first.", true); return; }
+      const mods = [...st.mods].filter(([, m]) => m.required).map(([slug]) => slug);
+      const optional = [...st.mods].filter(([, m]) => !m.required).map(([slug]) => slug);
+      const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
+        motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
+        network_access: st.network_access, accept_eula: true };
+      const r = await act(() => api("/api/setup", { method: "POST", body }));
+      if (r) { st.submitted = true; renderProgress(); }
+    };
+
+    fill(main,
+      h("h2", { class: "view-title" }, "Set up your server"),
+      h("p", { class: "muted" }, "Choose what kind of server you want. mcsm downloads everything it needs (Minecraft, the mod loader, mods and Java), starts it, and keeps it up to date from then on."),
+      error ? h("div", { class: "notice bad" }, h("strong", {}, "Setup didn't finish: "), error, h("div", { class: "small mt-s" }, "Change your choices below and try again.")) : null,
+      h("form", { onsubmit: submit },
+        card("1. Server type", loaderCards),
+        h("div", { class: "mt" }, card("2. Minecraft version", field("Version", version,
+          "\"Newest\" picks the newest Minecraft that all your required mods work on, and keeps upgrading as they catch up: a forever server. " +
+          "Picking a specific version keeps the server on that version (mods still update); you can change this later in Settings."))),
+        modsCard ? h("div", { class: "mt" }, modsCard) : null,
+        h("div", { class: "mt" }, card(modsCard ? "4. Settings" : "3. Settings",
+          h("div", { class: "grid" },
+            field("Server name (shown in the server list)", inp("motd", { maxlength: 59 })),
+            field("Max players", inp("max_players", { type: "number", min: 1, max: 1000 })),
+            field("Difficulty", sel("difficulty", opts.difficulties)),
+            field("Game mode", sel("gamemode", opts.gamemodes)),
+            field("Memory", mem, opts.total_ram_gb ? `This computer has ${opts.total_ram_gb} GB.` : null),
+            field("Port", inp("port", { type: "number", min: 1024, max: 65535 }), "25565 is Minecraft's usual port.")),
+          h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")))),
+        h("div", { class: "mt" }, card("Almost done",
+          h("label", { class: "row" }, eula, h("span", {}, "I accept the ",
+            h("a", { href: "https://aka.ms/MinecraftEULA", target: "_blank", rel: "noopener noreferrer" }, "Minecraft EULA ↗"),
+            ", which every Minecraft server must follow.")),
+          h("p", { class: "muted small" }, `Your server will be created in ${opts.server_dir}`),
+          h("button", { type: "submit", class: "btn primary big" }, "Create my server")))));
+  };
+
+  const renderProgress = () => {
+    const events = h("div", { class: "events" });
+    let seq = 0;
+    fill(main,
+      h("h2", { class: "view-title" }, "Creating your server…"),
+      h("div", { class: "notice" }, h("div", { class: "row" }, h("span", { class: "spinner" }),
+        h("span", { class: "grow" }, "Downloading Java, the mod loader, Minecraft and your mods, then starting the server for the first time. This usually takes a few minutes."))),
+      card("What's happening", events));
+    every(1500, async () => {
+      const r = await api(`/api/events?since=${seq}`).catch(() => null);
+      if (!r) return;
+      seq = r.last;
+      for (const e of r.events) events.prepend(h("div", { class: "ev " + e.level }, h("time", {}, fmtClock(e.time)), h("span", {}, e.message)));
+    });
+  };
+
+  (async () => {
+    opts = await api("/api/setup").catch((e) => { toast(e.message, true); return null; });
+    if (!opts) return;
+    if (st.memory_gb === null) st.memory_gb = opts.memory_gb;
+    if (st.network_access === null) st.network_access = opts.network_access;
+    if (opts.versions_error) toast(opts.versions_error, true);
+    const s = status || {};
+    if (s.job && s.job.name === "set up server") renderProgress();
+    else renderForm();
+  })();
+
+  $("#main").replaceChildren(main);
+  return {
+    onJobDone: () => {
+      const last = status && status.last_job;
+      if (!last || last.name !== "set up server") return;
+      if (last.ok) location.hash = "#dashboard";  // the job's own toast says it's ready
+      else { st.submitted = false; clearTimers(); every(2000, refreshStatus); renderForm(last.message); }
+    },
+  };
+};
+
 // ------------------------------------------------------------------- router
+let currentName = null;
 function route() {
   const name = (location.hash || "#dashboard").slice(1);
   const view = views[name] ? name : "dashboard";
+  currentName = view;
   clearTimers();
   every(2000, refreshStatus);
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));

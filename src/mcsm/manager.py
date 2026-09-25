@@ -99,7 +99,10 @@ class Manager:
 
         new = configmod.load(self.config.root)
         if new.server.loader != self.config.server.loader:
-            raise UpgradeError("changing the loader needs a restart of mcsm")
+            if self.lock.installed:
+                raise UpgradeError("changing the loader of an installed server isn't supported")
+            # Nothing installed yet (first-time setup): just switch.
+            self.loader = get_loader(new.server.loader, self.http, self.mojang)
         self.config = new
         self.java.config = new
         self.notifier.discord_webhook = new.discord_webhook

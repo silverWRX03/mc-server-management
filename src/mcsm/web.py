@@ -27,7 +27,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, backup, config as configmod, licenses, notice
+from . import __version__, backup, config as configmod, licenses, notice, setup as setupmod
 from .config import ConfigError, ModSpec
 from .daemon import Daemon
 from .http import sha1_file
@@ -265,6 +265,8 @@ class Api:
         post("/api/updates/check", lambda q, b: self._job("update check", self.d.check_only, b.get("target")))
         post("/api/updates/apply", lambda q, b: self._job(
             "update", self.d.check_for_updates, True, b.get("target") or None))
+        get("/api/setup", self.setup_options)
+        post("/api/setup", self.setup_apply)
         get("/api/mods", self.mods)
         get("/api/mods/search", self.search)
         post("/api/mods/add", self.add_mod)
@@ -318,6 +320,7 @@ class Api:
             "auto_upgrade": m.config.updates.auto_upgrade,
             "update": self._update_summary(),
             "notice_accepted": notice.accepted(m.config.root),
+            "setup_pending": d.setup_pending,
             "self_update": d.self_update,
         }
 
@@ -361,6 +364,34 @@ class Api:
         self.d.send_command(command)
         return {"ok": True}
 
+    # --------------------------------------------------------------- setup
+    def setup_options(self, q, b) -> dict:
+        versions, error = [], None
+        try:
+            versions = list(reversed(self.m.mojang.releases()))[:40]
+        except Exception as e:  # offline: "latest" still works once the network is back
+            error = f"couldn't load the list of Minecraft versions: {e}"
+        total = setupmod.total_ram_gb()
+        return {
+            "pending": self.d.setup_pending,
+            "loaders": [{"name": n, "label": label, "description": desc, "mods": mods}
+                        for n, label, desc, mods in setupmod.LOADER_INFO],
+            "versions": versions,
+            "versions_error": error,
+            "total_ram_gb": round(total, 1) if total else None,
+            "memory_gb": setupmod.suggested_memory_gb(total),
+            "difficulties": setupmod.DIFFICULTIES,
+            "gamemodes": setupmod.GAMEMODES,
+            "server_dir": str(self.m.server_dir),
+            "network_access": self.m.config.web.host in ("0.0.0.0", "::"),
+        }
+
+    def setup_apply(self, q, b) -> dict:
+        if not self.d.setup_pending:
+            raise ApiError(409, "this server is already set up")
+        spec = setupmod.SetupSpec.from_dict(b)
+        return self._job("set up server", self.d.run_setup, spec)
+
     # ---------------------------------------------------------------- mods
     def mods(self, q, b) -> dict:
         lk = self.m.lock
@@ -381,7 +412,11 @@ class Api:
         query = q.get("q", "").strip()
         if not query:
             return {"results": []}
-        results = self._modrinth().search(query, self.m.loader.mod_loaders)
+        loader_name = q.get("loader") or self.m.config.server.loader
+        from .loaders import LOADERS
+        if loader_name not in LOADERS:
+            raise ApiError(400, "unknown loader")
+        results = self._modrinth().search(query, LOADERS[loader_name].mod_loaders)
         listed = {s.id for s in self.m.config.mods if s.source == "modrinth"}
         for r in results:
             r["listed"] = r["id"] in listed or r["slug"] in listed

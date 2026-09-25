@@ -12,6 +12,7 @@ import webbrowser
 from pathlib import Path
 
 from . import __version__, backup, config as configmod, licenses, lock as lockmod, notice, selfupdate
+from . import setup as setupmod
 from .config import ConfigError, ModSpec
 from .daemon import Daemon, request_path, request_stop, running_pid, self_update_request_path
 from .manager import Manager, UpgradeError
@@ -312,7 +313,8 @@ def _wizard(root: Path) -> bool:
     ns = argparse.Namespace(
         root=root, dir=root, loader=loader, minecraft=minecraft, mod=mods, optional_mod=[], curseforge=[],
         memory=memory, java=None, port=25565, motd="A Minecraft server managed by mcsm", max_players=20,
-        difficulty="normal", gamemode="survival", seed=None, rcon=False, accept_eula=True, force=False, quiet=True)
+        difficulty="normal", gamemode="survival", seed=None, rcon=False, accept_eula=True,
+        force=setupmod.is_pending(root), quiet=True)  # replace a placeholder left by `mcsm start`
     if cmd_create(ns) != 0:
         return False
     if remote:
@@ -338,17 +340,34 @@ def lan_ip() -> str | None:
         return None
 
 
+def cmd_setup(args) -> int:
+    """Set up a new server by answering questions in the terminal (the web UI does the same)."""
+    root = args.root if (args.root / configmod.CONFIG_NAME).exists() else default_home()
+    if lockmod.load(root).installed:
+        print(f"a server is already set up in {root}")
+        return 1
+    if not interactive():
+        print("`mcsm setup` asks questions, so it needs a terminal; `mcsm start` sets up in the browser instead")
+        return 1
+    if not _wizard(root):
+        return 1
+    setupmod.clear_pending(root)
+    print("done - start it with `mcsm start`")
+    return 0
+
+
 def cmd_start(args) -> int:
     """The double-click entry point: set up a server if needed, run it, and open the web UI."""
     from .web import load_password
 
     root = args.root if (args.root / configmod.CONFIG_NAME).exists() else default_home()
-    if not (root / configmod.CONFIG_NAME).exists():
-        if not interactive():
-            print(f"no server set up in {root}; run `mcsm start` in a terminal to set one up")
-            return 1
-        if not _wizard(root):
-            return 1
+    first_run = not (root / configmod.CONFIG_NAME).exists()
+    if first_run:
+        # Set up in the browser: a placeholder config now, the real choices on the setup page.
+        scaffold(root, "fabric", "latest")
+        if not has_display():  # headless: the setup page must be reachable from another device
+            configmod.set_value(root / configmod.CONFIG_NAME, "web", "host", '"0.0.0.0"')
+        setupmod.mark_pending(root)
     m = Manager(configmod.load(root))
     if args.web_host:
         m.config.web.host = args.web_host
@@ -365,7 +384,8 @@ def cmd_start(args) -> int:
     d = Daemon(m)
     d.open_browser = browser
     password, _ = load_password(d)
-    lines = [f"  Server folder:  {root}", f"  Control panel:  http://localhost:{port}/"]
+    lines = (["  Welcome to mcsm! Finish setting up your server in the browser."] if setupmod.is_pending(root) else [])
+    lines += [f"  Server folder:  {root}", f"  Control panel:  http://localhost:{port}/"]
     if m.config.web.host in ("0.0.0.0", "::") and (ip := lan_ip()):
         lines.append(f"  From other devices on your network:  http://{ip}:{port}/")
     elif not has_display():
@@ -673,6 +693,8 @@ def _notice_ok(args) -> bool:
     root = root.resolve() if (root / configmod.CONFIG_NAME).exists() else None
     if args.command in NOTICE_EXEMPT or notice.accepted(root):
         return True
+    if args.command == "start":
+        return True  # the web UI shows the notice before anything is set up or downloaded
     if args.accept_notice:
         notice.accept(root, by="cli")
         return True
@@ -718,6 +740,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--web-host", help='web UI address; "0.0.0.0" to allow other devices on your network')
     s.add_argument("--web-port", type=int, help="web UI port (default 8765)")
     s.set_defaults(fn=cmd_start)
+
+    s = sub.add_parser("setup", help="set up a new server by answering questions in the terminal")
+    s.set_defaults(fn=cmd_setup)
 
     s = sub.add_parser("init", help="create mcsm.toml")
     s.add_argument("--loader", choices=configmod.LOADERS, default="fabric")

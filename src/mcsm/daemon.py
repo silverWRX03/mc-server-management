@@ -19,7 +19,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from . import notice, selfupdate
+from . import notice, selfupdate, setup as setupmod
 from .manager import Manager, ManualDownloadRequired
 from .process import JOINED, LEFT, READY, ServerProcess
 
@@ -298,7 +298,10 @@ class Daemon:
                     stop_request_path(self.m).unlink(missing_ok=True)
                     return self.exit_code
             log.info("notice accepted")
-        self.submit("start", self._boot)
+        if self.setup_pending:
+            log.info("waiting for the server to be set up in the web UI")
+        else:
+            self.submit("start", self._boot)
         # Let the first start finish before the first scheduled update check.
         self.next_check = time.monotonic() + 60
 
@@ -314,6 +317,9 @@ class Daemon:
                 self._handle_crash()
             req = request_path(self.m)
             requested = req.exists()
+            if self.setup_pending:  # nothing to check or restart until the server exists
+                self.stop_requested.wait(self.tick)
+                continue
             if idle and (requested or time.monotonic() >= self.next_check):
                 target = (req.read_text().strip() or None) if requested else None
                 req.unlink(missing_ok=True)
@@ -430,6 +436,35 @@ class Daemon:
         if not result.ok:
             raise RuntimeError(result.message)
         return result.message
+
+    # ------------------------------------------------------------ setup
+    @property
+    def setup_pending(self) -> bool:
+        return setupmod.is_pending(self.m.config.root)
+
+    def run_setup(self, spec: "setupmod.SetupSpec") -> str:
+        """First-time setup from the web UI: write the config, then install and boot the server."""
+        if self.m.lock.installed:
+            raise RuntimeError("this server is already set up")
+        setupmod.configure(self.m.config.root, spec)
+        self.m.reload_config()
+        log.info("setting up a %s server (Minecraft %s, %d mod(s))", spec.loader, spec.minecraft,
+                 len(spec.mods) + len(spec.optional_mods))
+        self.check_only()
+        if not self.last_check or not self.last_check.get("target"):
+            blocked = self.last_check.get("blocked", []) if self.last_check else []
+            reasons = [f"{b['name']}: {b['reason']}" for p in blocked[:1] for b in p["blockers"]]
+            if blocked and blocked[0].get("loader_missing"):
+                reasons.insert(0, f"{spec.loader} has no build for Minecraft {blocked[0]['minecraft']} yet")
+            raise RuntimeError("no Minecraft version works with these choices"
+                               + (": " + "; ".join(reasons) if reasons else ""))
+        if self.last_check.get("manual"):
+            names = ", ".join(m["name"] for m in self.last_check["manual"])
+            raise RuntimeError(f"these mods must be downloaded by hand first (see the Updates page): {names}")
+        self.start_server()
+        setupmod.clear_pending(self.m.config.root)
+        self.next_check = time.monotonic() + self.m.config.updates.check_interval
+        return f"your server is ready: Minecraft {self.m.lock.minecraft}"
 
     # ------------------------------------------------------- self-update
     def check_self_update(self) -> str:
