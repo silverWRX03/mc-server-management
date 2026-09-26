@@ -559,10 +559,8 @@ The test suite runs the full install → upgrade → crash → rollback cycle ag
 ### Roadmap ideas
 
 - Paper/Purpur plugin servers (Hangar/Modrinth plugins)
-- Proper TOML writing for `mcsm add --pin <version>`
-- Pre-upgrade world optimisation (`--forceUpgrade`) and a pre-generated test world for the verification boot
 - Docker image
-- Multiple servers from one web UI
+
 
 ## License
 
