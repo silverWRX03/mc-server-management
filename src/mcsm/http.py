@@ -27,6 +27,23 @@ class HttpError(Exception):
         super().__init__(f"{message} ({url})")
         self.url = url
         self.status = status
+        self.reason = message
+
+    @property
+    def friendly(self) -> str:
+        """For people: which site, and what went wrong, without the full URL."""
+        host = urllib.parse.urlsplit(self.url).hostname or "the internet"
+        if self.status == 404:
+            return f"{host} doesn't have that (not found)"
+        if self.status == 429:
+            return f"{host} is busy (too many requests); try again in a minute"
+        if self.status is not None and self.status >= 500:
+            return f"{host} is having trouble (HTTP {self.status}); try again in a few minutes"
+        if "timed out" in self.reason.lower():
+            return f"{host} took too long to answer; check your internet connection and try again"
+        if self.status is None:
+            return f"couldn't reach {host}; check your internet connection and try again"
+        return f"{host} refused the request (HTTP {self.status})"
 
 
 class HashMismatch(Exception):
@@ -107,8 +124,15 @@ class HttpClient:
             return hit[1]
         req = urllib.request.Request(full, headers={"User-Agent": USER_AGENT, "Accept": "application/json",
                                                     **(headers or {})})
-        with self._open(req) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        for attempt in range(self.retries):
+            try:
+                with self._open(req) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                break
+            except (TimeoutError, ConnectionError) as e:  # the answer stopped part way
+                if attempt + 1 >= self.retries:
+                    raise HttpError(full, None, f"request failed: {e}") from e
+                time.sleep(2**attempt)
         self._cache[full] = (time.monotonic(), data)
         return data
 

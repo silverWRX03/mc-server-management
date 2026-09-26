@@ -534,3 +534,11 @@ main > * { animation: rise .25s ease-out; }
 .key-panel ol { padding-left: 18px; margin: 6px 0 10px; }
 .key-panel .row input { flex: 1; min-width: 0; }
 .row.center { justify-content: center; }
+
+/* the mod tester's progress: in its dialog and in a toast */
+.tester-step { display: grid; gap: 8px; margin: 10px 0 14px; }
+.bar.indeterminate .bar-fill { width: 30%; animation: bar-slide 1.4s ease-in-out infinite; }
+@keyframes bar-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+#tester-toast { display: grid; gap: 6px; max-width: 380px; }
+@media (prefers-reduced-motion: reduce) { .bar.indeterminate .bar-fill { animation: none; width: 100%; opacity: .5; } }
+#tester-toast .bar, .tester-step .bar { background: var(--border); }

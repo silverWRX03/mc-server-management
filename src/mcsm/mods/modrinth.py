@@ -35,11 +35,14 @@ class ModrinthProvider(ModProvider):
         data = self.http.get_json(f"{API}/projects", params={"ids": json.dumps(sorted(set(ids)))})
         return {p["id"]: p for p in data}
 
-    def _versions(self, project_id: str, loaders: tuple[str, ...]) -> list[dict]:
+    def _versions(self, project_id: str, loaders: tuple[str, ...], minecraft: str | None = None) -> list[dict]:
         # One request per project; filtering by game version happens locally so that
-        # checking many candidate Minecraft versions stays cheap.
-        return self.http.get_json(f"{API}/project/{project_id}/version",
-                                  params={"loaders": json.dumps(list(loaders))})
+        # checking many candidate Minecraft versions stays cheap. With ``minecraft``, only
+        # that version's builds are fetched: much smaller for mods with long histories.
+        params = {"loaders": json.dumps(list(loaders))}
+        if minecraft:
+            params["game_versions"] = json.dumps([minecraft])
+        return self.http.get_json(f"{API}/project/{project_id}/version", params=params)
 
     @staticmethod
     def _acceptable(version: dict, channel: str) -> bool:

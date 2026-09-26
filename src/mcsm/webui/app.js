@@ -970,7 +970,7 @@ views.mods = () => {
     h("div", { class: "mt" }, configsCard),
     h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured,
       h("div", { class: "row mt-s" }, testButton({
-        quick: () => api("/api/mods/check", { method: "POST", body: {} }),
+        check: ["/api/mods/check", {}],
         trial: { server },
         keepWorking: async (res) => {
           for (const o of res.outliers) await api("/api/mods/remove", { method: "POST", body: { source: o.source, id: o.id } }).catch((e) => toast(e.message, true));
@@ -1245,7 +1245,7 @@ views.friends = () => {
         d.mods.length ? h("ul", { class: "list" }, d.mods.map((x) => h("li", {}, h("strong", { class: "grow" }, x),
           h("button", { class: "btn small danger", onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`).then(search) }, "Remove"))))
           : h("p", { class: "empty" }, "None yet. Add some below, or leave it: players get the server's mods either way."),
-        h("div", { class: "row mt-s" }, testButton({ quick: () => api("/api/client/check", { method: "POST", body: {} }), trial: null }),
+        h("div", { class: "row mt-s" }, testButton({ check: ["/api/client/check", {}], trial: null }),
           h("span", { class: "muted small" }, "Checks the server's mods and these together.")),
         h("h3", { class: "mt" }, "Find mods"), q, results)),
     );
@@ -1633,19 +1633,54 @@ function testButton(opts) {
   return h("button", { type: "button", class: "btn", onclick: () => openTester(opts) }, "🧪 Test these mods");
 }
 function openTester(opts) {
-  if ($("#tester")) return;
-  const body = h("div", {}, h("p", { class: "muted" }, "Checking…"));
+  if ($("#tester")) { $("#tester").classList.remove("hidden"); return; }
+  const body = h("div", {});
   let poll = null, running = null, quickResult = null;
+  const clock = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  // What it's doing right now: in the dialog, and in a toast that stays while the dialog is hidden.
+  const stepText = h("span", { class: "grow" }, "Starting…");
+  const bar = h("div", { class: "bar" }, h("span", { class: "bar-fill" }));
+  const toastText = h("span", { class: "small" }, "Starting…");
+  const toastBar = h("div", { class: "bar" }, h("span", { class: "bar-fill" }));
+  const setStep = (text, fraction = null) => {
+    stepText.textContent = toastText.textContent = text;
+    for (const b of [bar, toastBar]) {
+      b.classList.toggle("indeterminate", fraction === null);
+      b.firstChild.style.width = fraction === null ? "" : `${Math.round(fraction * 100)}%`;
+    }
+  };
+  const hide = () => $("#tester").classList.add("hidden");
+  const show = () => $("#tester").classList.remove("hidden");
   const close = () => {
     if (running && !confirm("Stop the test?")) return;
     if (running) api("/api/hub/trial/cancel", { method: "POST", body: { id: running } }).catch(() => {});
     clearInterval(poll);
     $("#tester").remove();
+    closeToast("tester-toast");
+  };
+  const finished = (text) => {
+    closeToast("tester-toast");
+    if (!$("#tester") || !$("#tester").classList.contains("hidden")) return;
+    stickyToast("tester-toast", [h("strong", {}, "Mod test finished"), h("span", { class: "small" }, text),
+      h("div", { class: "row mt-s" }, h("button", { class: "btn small primary", onclick: () => { closeToast("tester-toast"); show(); } }, "See the results"),
+        h("button", { class: "btn small ghost", onclick: close }, "Close"))]);
   };
   const box = h("div", { class: "modal tester" },
-    h("div", { class: "row" }, h("h2", { id: "tester-title", class: "grow" }, "Test these mods"), h("button", { class: "btn ghost small", onclick: close }, "Close")),
+    h("div", { class: "row" }, h("h2", { id: "tester-title", class: "grow" }, "Test these mods"),
+      h("button", { class: "btn ghost small", title: "The test keeps going; its progress stays in a message at the bottom", onclick: hide }, "Keep working"),
+      h("button", { class: "btn ghost small", onclick: close }, "Close")),
+    h("div", { class: "tester-step" }, h("div", { class: "row" }, h("span", { class: "spinner" }), stepText,
+      h("span", { class: "muted small tester-time" })), bar),
     body);
   document.body.append(h("div", { class: "modal-backdrop", id: "tester", role: "dialog", "aria-modal": "true", "aria-labelledby": "tester-title" }, box));
+  const stepBox = box.querySelector(".tester-step");
+  const idle = () => stepBox.classList.add("hidden");
+  const busy = () => stepBox.classList.remove("hidden");
+  stickyToast("tester-toast", [h("strong", {}, "Testing mods"),
+    h("span", { class: "small" }, "This can take a long time: looking the mods up takes seconds, but a test boot takes a few minutes, and finding which mods break it can take much longer. You can keep using mcsm meanwhile."),
+    toastText, toastBar,
+    h("div", { class: "row mt-s" }, h("button", { class: "btn small", onclick: show }, "Show"),
+      h("button", { class: "btn small ghost", onclick: hide }, "Hide the dialog"))]);
 
   const issues = (r) => [
     ...r.conflicts.map((c) => h("li", {}, h("strong", {}, c.mods.join(" + ")), h("div", { class: "small muted" }, c.reason))),
@@ -1653,13 +1688,14 @@ function openTester(opts) {
 
   const runTrial = async (bisect) => {
     const log = h("pre", { class: "log" });
-    const head = h("div", { class: "row" }, h("span", { class: "spinner" }),
-      h("span", { class: "grow" }, bisect ? "Finding which mods don't work together…" : "Test boot: installing the mods in a throwaway server and starting it…"),
-      h("span", { class: "muted small tester-time" }));
-    fill(body, head, log, h("p", { class: "muted small" }, "Your servers aren't touched. The test server is deleted afterwards."));
+    busy();
+    setStep(bisect ? "Finding which mods don't work together…" : "Test boot: installing the mods in a throwaway server and starting it…");
+    fill(body, log, h("p", { class: "muted small" }, "Your servers aren't touched. The test server is deleted afterwards."));
+    if (!$("#tester-toast")) stickyToast("tester-toast", [h("strong", {}, "Testing mods"), toastText, toastBar,
+      h("div", { class: "row mt-s" }, h("button", { class: "btn small", onclick: show }, "Show"))]);
     let r;
     try { r = await api("/api/hub/trial", { method: "POST", body: { ...opts.trial, bisect } }); }
-    catch (e) { fill(body, h("div", { class: "notice bad" }, e.message)); return; }
+    catch (e) { idle(); fill(body, h("div", { class: "notice bad" }, e.message)); finished(e.message); return; }
     running = r.id;
     let seen = 0;
     poll = setInterval(async () => {
@@ -1668,11 +1704,17 @@ function openTester(opts) {
       seen = t.next;
       log.textContent += t.log.map((x) => x + "\n").join("");
       log.scrollTop = log.scrollHeight;
-      head.querySelector(".tester-time").textContent = `${Math.floor(t.elapsed / 60)}:${String(t.elapsed % 60).padStart(2, "0")}`;
+      box.querySelector(".tester-time").textContent = clock(t.elapsed);
+      const last = t.log.filter((x) => x.startsWith("Test ")).pop();
+      if (last) setStep(last + (bisect ? ` (${t.tests} test${t.tests === 1 ? "" : "s"} so far)` : ""));
       if (t.state === "running") return;
       clearInterval(poll);
       running = null;
+      idle();
       report(t, log.textContent);
+      const res = t.result || {};
+      finished(t.state === "cancelled" ? "The test was stopped." : res.ok ? "✓ The server started with these mods."
+        : res.bisected ? `${(res.outliers || []).length} mod(s) don't work.` : "✗ The server didn't start.");
     }, 1500);
   };
 
@@ -1712,9 +1754,26 @@ function openTester(opts) {
       details);
   };
 
+  // The quick check runs in the background too, so it can say which mod it's looking at.
+  const quick = async () => {
+    const [path, payload] = opts.check;
+    setStep("Looking the mods up on Modrinth…");
+    const started = await api(path, { method: "POST", body: { ...payload, background: true } });
+    for (;;) {
+      await new Promise((ok) => setTimeout(ok, 500));
+      if (!$("#tester")) throw new Error("closed");
+      const j = await api(`/api/hub/mods/check?id=${started.id}`);
+      box.querySelector(".tester-time").textContent = clock(j.elapsed);
+      if (j.total) setStep(`Checked ${j.current} (${j.done} of ${j.total})`, j.done / j.total);
+      if (j.state === "done") return j.result;
+      if (j.state === "failed") throw new Error(j.error || "the check failed");
+    }
+  };
+
   (async () => {
     let r;
-    try { r = await opts.quick(); } catch (e) { fill(body, h("div", { class: "notice bad" }, e.message)); return; }
+    try { r = await quick(); } catch (e) { idle(); fill(body, h("div", { class: "notice bad" }, e.message)); finished(e.message); return; }
+    idle();
     quickResult = r;
     const found = issues(r);
     fill(body,
@@ -1726,6 +1785,9 @@ function openTester(opts) {
         h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => runTrial(false) }, "Start a test boot"))]
         : h("p", { class: "muted small mt" }, "These mods run on players' computers, and a game can't be started here to try them, so this checks versions and known conflicts. " +
           "The server's own mods can be test-booted on its Mods page."));
+    const summary = found.length ? `Found ${found.length} problem(s).` : "✓ No known problems.";
+    if (opts.trial) setStep(`${summary} Next: a test boot, which takes a few minutes.`, 1);  // the toast stays till you're done
+    else finished(summary);
   })();
 }
 
@@ -2380,8 +2442,8 @@ views.setup = () => {
     const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card(plugins ? "3. Plugins" : "3. Mods",
       sources, packCard, h("h3", { class: "mt" }, "Quick add"), q, results, h("h3", { class: "mt" }, "Your mods"), selected,
       h("div", { class: "row mt-s" }, testButton({
-        quick: () => api("/api/hub/mods/check", { method: "POST", body: { loader: st.loader, minecraft: setupModVersion(),
-          mods: [...st.mods].filter(([k, m]) => m.explicit && !k.startsWith("curseforge:")).map(([k]) => k) } }),
+        check: ["/api/hub/mods/check", { loader: st.loader, minecraft: setupModVersion(),
+          mods: [...st.mods].filter(([k, m]) => m.explicit && !k.startsWith("curseforge:")).map(([k]) => k) }],
         trial: { loader: st.loader, minecraft: st.minecraft, mods: [...st.mods].filter(([, m]) => m.explicit).map(([k]) => k) },
         keepWorking: (res) => { for (const o of res.outliers) setupRemoveMod(o.source === "curseforge" ? `curseforge:${o.id}` : o.id); },
       }), h("span", { class: "muted small" }, "Check that these mods work together before creating the server.")),

@@ -110,6 +110,7 @@ class Hub:
         self.http = http or HttpClient()
         self.make_manager = make_manager or (lambda cfg: Manager(cfg, http=self.http, echo=False))
         self.trials: dict = {}  # test boots (trial.Trial) by id
+        self.checks: dict = {}  # quick mod checks running in the background (trial.CheckJob) by id
         self.tick = tick
         self._single: Daemon | None = None
         self.daemons: dict[str, Daemon] = {}

@@ -383,6 +383,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return self._json(200, handler(q, body))
         except ApiError as e:
             self._json(e.status, {"error": str(e)})
+        except HttpError as e:  # a website mcsm depends on didn't answer
+            log.warning("web request needed %s, which failed: %s", e.url, e)
+            self._json(502, {"error": e.friendly})
         except (ConfigError, ModError, JavaError, PlayerError, RuntimeError, ValueError, OSError) as e:
             self._json(400, {"error": str(e)})
         except Exception as e:  # pragma: no cover - last resort
@@ -436,12 +439,26 @@ def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_l
     return {"results": results}
 
 
+def run_check(hub, b: dict, work) -> dict:
+    """A quick mod check: in the background with ``"background": true`` (poll GET
+    /api/hub/mods/check?id=...), otherwise answered straight away."""
+    from . import trial
+    if not b.get("background"):
+        return work(None)
+    hub.checks = {k: v for k, v in hub.checks.items() if v.state == "running" or time.time() - v.started < 600}
+    if len(hub.checks) >= 20:
+        raise ApiError(429, "too many checks at once; wait for one to finish")
+    job = trial.CheckJob(work).start()
+    hub.checks[job.id] = job
+    return {"ok": True, "id": job.id}
+
+
 def mod_requirements(provider: ModrinthProvider, mod_id: str, loaders: tuple[str, ...], minecraft: str | None,
                      channel: str = "release", limit: int = 30) -> dict:
     """Whether a Modrinth mod has a build for ``minecraft`` (any version when None), and the
     mods it needs (their dependencies too), so pickers can select them along with it."""
     def newest(project_id: str):
-        ok = [v for v in provider._versions(project_id, loaders) if provider._acceptable(v, channel)
+        ok = [v for v in provider._versions(project_id, loaders, minecraft) if provider._acceptable(v, channel)
               and (minecraft is None or minecraft in v.get("game_versions", []))]
         return max(ok, key=lambda v: v.get("date_published", "")) if ok else None
 
@@ -553,6 +570,7 @@ class HubApi:
         r[("POST", "/api/hub/curseforge")] = self.save_curseforge
         r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
         r[("POST", "/api/hub/mods/check")] = self.check_mods
+        r[("GET", "/api/hub/mods/check")] = self.check_status
         r[("POST", "/api/hub/trial")] = self.start_trial
         r[("GET", "/api/hub/trial")] = self.trial_status
         r[("POST", "/api/hub/trial/cancel")] = self.cancel_trial
@@ -600,7 +618,15 @@ class HubApi:
             raise ApiError(400, "that server type doesn't run mods")
         mods = [str(x) for x in (b.get("mods") or []) if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", str(x))]
         minecraft = str(b.get("minecraft") or "") or None
-        return trial.check(ModrinthProvider(self.hub.http), LOADERS[loader].mod_loaders, minecraft, mods)
+        provider = ModrinthProvider(self.hub.http)
+        return run_check(self.hub, b, lambda progress: trial.check(provider, LOADERS[loader].mod_loaders, minecraft, mods,
+                                                                    progress=progress))
+
+    def check_status(self, q, b) -> dict:
+        job = self.hub.checks.get(q.get("id", ""))
+        if job is None:
+            raise ApiError(404, "that check isn't running any more")
+        return job.to_dict()
 
     def start_trial(self, q, b) -> dict:
         """A test boot of a set of mods, in a throwaway server; ``bisect`` finds culprits."""
@@ -971,7 +997,8 @@ class Api:
         if client:
             mods += list(self.m.config.client.mods)
         minecraft = self.m.lock.minecraft or (None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft)
-        return trial.check(self._modrinth(), loaders, minecraft, mods)
+        provider = self._modrinth()
+        return run_check(self.web.hub, b, lambda progress: trial.check(provider, loaders, minecraft, mods, progress=progress))
 
     def _configured_with_deps(self) -> list[dict]:
         """The mods in mcsm.toml, each with the dependencies installed for it (several mods can share one)."""

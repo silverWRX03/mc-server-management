@@ -20,10 +20,12 @@ import secrets
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import config as configmod, setup as setupmod
 from .config import ModSpec
+from .http import HttpError
 from .mods.base import ModError
 from .mods.modrinth import ModrinthProvider
 
@@ -31,24 +33,53 @@ log = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------- quick check
+CHECK_WORKERS = 6
+
+
 def check(provider: ModrinthProvider, loaders: tuple[str, ...], minecraft: str | None, mod_ids: list[str],
-          channel: str = "release") -> dict:
-    """Problems that can be seen without starting anything."""
+          channel: str = "release", progress=None) -> dict:
+    """Problems that can be seen without starting anything.
+
+    Mods are looked up several at a time; one that can't be looked up (Modrinth slow or
+    down) is reported as a problem with that mod rather than failing the whole check.
+    ``progress(done, total, name)`` is called as each mod is checked."""
+    ids = list(dict.fromkeys(mod_ids))
+
+    def one(mod_id: str) -> dict:
+        try:
+            project = provider.project(mod_id)
+            versions = provider._versions(project.id, loaders, minecraft)
+        except ModError as e:
+            return {"mod": mod_id, "reason": str(e)}
+        except HttpError as e:
+            return {"mod": mod_id, "reason": f"couldn't check it: {e.friendly}"}
+        ok = [v for v in versions if provider._acceptable(v, channel)
+              and (not minecraft or minecraft in v.get("game_versions", []))]
+        if not ok:
+            return {"mod": project.name, "reason": f"no {'/'.join(loaders)} build for Minecraft {minecraft or '(any)'}"}
+        version = max(ok, key=lambda v: v.get("date_published", ""))
+        return {"project": project, "version": version}
+
+    found: dict[str, dict] = {}
+    if ids:
+        with ThreadPoolExecutor(max_workers=min(CHECK_WORKERS, len(ids))) as pool:
+            futures = {pool.submit(one, mod_id): mod_id for mod_id in ids}
+            for n, fut in enumerate(as_completed(futures), 1):
+                mod_id = futures[fut]
+                found[mod_id] = fut.result()
+                if progress:
+                    r = found[mod_id]
+                    progress(n, len(ids), r["project"].name if "project" in r else r["mod"])
+
     mods, conflicts, problems = [], [], []
     picked: dict[str, dict] = {}   # project id -> info
     incompatible: dict[str, set[str]] = {}
-    for mod_id in dict.fromkeys(mod_ids):
-        try:
-            project = provider.project(mod_id)
-        except ModError as e:
-            problems.append({"mod": mod_id, "reason": str(e)})
+    for mod_id in ids:  # in the order given
+        r = found[mod_id]
+        if "project" not in r:
+            problems.append(r)
             continue
-        ok = [v for v in provider._versions(project.id, loaders) if provider._acceptable(v, channel)
-              and (not minecraft or minecraft in v.get("game_versions", []))]
-        if not ok:
-            problems.append({"mod": project.name, "reason": f"no {'/'.join(loaders)} build for Minecraft {minecraft or '(any)'}"})
-            continue
-        version = max(ok, key=lambda v: v.get("date_published", ""))
+        project, version = r["project"], r["version"]
         picked[project.id] = {"id": project.id, "slug": project.slug, "name": project.name, "version": version.get("version_number", "")}
         incompatible[project.id] = {d["project_id"] for d in version.get("dependencies", [])
                                     if d.get("dependency_type") == "incompatible" and d.get("project_id")}
@@ -61,6 +92,44 @@ def check(provider: ModrinthProvider, loaders: tuple[str, ...], minecraft: str |
                 conflicts.append(entry)
     return {"ok": not conflicts and not problems, "mods": mods, "conflicts": conflicts, "problems": problems,
             "minecraft": minecraft}
+
+
+class CheckJob:
+    """A quick check running in the background, so the page can show which mod it's on."""
+
+    def __init__(self, work):
+        self.id = secrets.token_hex(6)
+        self.state = "running"
+        self.done = self.total = 0
+        self.current = ""
+        self.result: dict | None = None
+        self.error = ""
+        self.started = time.time()
+        self._work = work
+        self.thread = threading.Thread(target=self._run, daemon=True, name=f"check:{self.id}")
+
+    def start(self) -> "CheckJob":
+        self.thread.start()
+        return self
+
+    def progress(self, done: int, total: int, name: str) -> None:
+        self.done, self.total, self.current = done, total, name
+
+    def _run(self) -> None:
+        try:
+            self.result = self._work(self.progress)
+            self.state = "done"
+        except HttpError as e:
+            self.error = e.friendly
+            self.state = "failed"
+        except Exception as e:
+            log.exception("mod check failed")
+            self.error = str(e)
+            self.state = "failed"
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "state": self.state, "done": self.done, "total": self.total, "current": self.current,
+                "result": self.result, "error": self.error, "elapsed": int(time.time() - self.started)}
 
 
 # ------------------------------------------------------------------ test boots

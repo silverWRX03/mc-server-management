@@ -52,6 +52,8 @@ class FakeHttp:
                 value = self.json[key]
                 if isinstance(value, Exception):
                     raise value
+                if callable(value):  # answers depending on the query
+                    value = value(params or {})
                 return json.loads(json.dumps(value))
         raise HttpError(full, 404, "HTTP 404")
 
@@ -157,6 +159,13 @@ class ModrinthFixture:
     def _publish(self, pid):
         url = f"{MODRINTH}/project/{pid}/version?" + urllib.parse.urlencode({"loaders": json.dumps(["fabric"])})
         self.http.json[url] = list(reversed(self.versions[pid]))
+
+        def serve(params, pid=pid):  # like Modrinth: filtered by loaders and game_versions
+            loaders = set(json.loads(params.get("loaders", "[]")))
+            games = set(json.loads(params.get("game_versions", "[]")))
+            return [v for v in reversed(self.versions[pid]) if (not loaders or loaders & set(v["loaders"]))
+                    and (not games or games & set(v["game_versions"]))]
+        self.http.json[f"{MODRINTH}/project/{pid}/version"] = serve
 
 
 @pytest.fixture(autouse=True)

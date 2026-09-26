@@ -90,3 +90,42 @@ def test_backups_made_in_the_same_second_are_both_kept(tmp_path):
     second = backup.create(sd, tmp_path / "b", "same", [])
     assert first != second and first.exists() and second.exists()
     assert backup.list_backups(tmp_path / "b") == [first, second]  # still in order
+
+
+def test_check_runs_in_the_background_and_survives_a_slow_modrinth(hub_env, modrinth):
+    from mcsm.http import HttpError
+    from mcsm.mods.modrinth import API
+    hub, c = hub_env
+    login(c)
+    modrinth.project("AAA", "goodmod", "Good Mod")
+    modrinth.version("AAA", "1.0", ["1.21.1"])
+    modrinth.project("SLO", "slowmod", "Slow Mod")
+    hub.http.json[f"{API}/project/SLO/version"] = HttpError(
+        f"{API}/project/SLO/version", None, "request failed: The read operation timed out")
+    body = {"loader": "fabric", "minecraft": "1.21.1", "mods": ["goodmod", "slowmod"]}
+    # answered straight away (as before), with the slow mod reported rather than failing it all
+    r = c.post("/api/hub/mods/check", body)[1]
+    assert [m["name"] for m in r["mods"]] == ["Good Mod"]
+    assert r["problems"] == [{"mod": "slowmod", "reason": "couldn't check it: api.modrinth.com took too long to "
+                                                          "answer; check your internet connection and try again"}]
+    # in the background, with progress
+    status, started, _ = c.post("/api/hub/mods/check", {**body, "background": True})
+    assert status == 200 and started["id"]
+    wait_for(lambda: c.get(f"/api/hub/mods/check?id={started['id']}")[1]["state"] != "running")
+    job = c.get(f"/api/hub/mods/check?id={started['id']}")[1]
+    assert job["state"] == "done" and job["done"] == job["total"] == 2
+    assert job["result"]["problems"] == r["problems"]
+    assert c.get("/api/servers/alpha/mods/check")[0] == 404  # (POST only)
+    assert c.get("/api/hub/mods/check?id=nope")[0] == 404
+
+
+def test_a_failed_download_is_explained_not_an_internal_error(hub_env):
+    from mcsm.http import HttpError
+    from mcsm.mods.modrinth import API
+    hub, c = hub_env
+    login(c)
+    url = f"{API}/project/x1/version"
+    hub.http.json[f"{API}/project/x1"] = {"id": "x1", "slug": "x1", "title": "X"}
+    hub.http.json[url] = HttpError(url, None, "request failed: The read operation timed out")
+    status, body, _ = c.get("/api/hub/mods/requires?id=x1&loader=fabric&version=1.21.1")
+    assert status == 502 and body["error"].startswith("api.modrinth.com took too long")
