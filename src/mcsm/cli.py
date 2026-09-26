@@ -358,55 +358,91 @@ def cmd_setup(args) -> int:
 
 
 def cmd_start(args) -> int:
-    """The double-click entry point: set up a server if needed, run it, and open the web UI."""
-    from . import webauth
+    """The double-click entry point: open the control panel, which lists your servers.
 
-    root = args.root if (args.root / configmod.CONFIG_NAME).exists() else default_home()
-    first_run = not (root / configmod.CONFIG_NAME).exists()
-    if first_run:
-        # Set up in the browser: a placeholder config now, the real choices on the setup page.
-        scaffold(root, "fabric", "latest")
-        if not has_display():  # headless: the setup page must be reachable from another device
-            configmod.set_value(root / configmod.CONFIG_NAME, "web", "host", '"0.0.0.0"')
-        setupmod.mark_pending(root)
-    m = Manager(configmod.load(root))
-    if not first_run and not m.lock.installed and not setupmod.is_pending(root) and not running_pid(m):
-        # Configured but never installed (e.g. an earlier attempt failed): finish setup in the browser.
-        setupmod.mark_pending(root)
+    Nothing starts by itself: each server waits for its Start button in the web UI.
+    """
+    from . import webauth
+    from .hub import Hub, running_hub
+
+    home = default_home()
+    home.mkdir(parents=True, exist_ok=True)
+    here = args.root.resolve() if (args.root / configmod.CONFIG_NAME).exists() else None
+    hub = Hub(home)
+    if here and here != home:
+        hub.add_folder(here)  # list the server in this folder too
+    if not has_display() and "web" not in hub._hub_file() and not (home / configmod.CONFIG_NAME).exists():
+        hub.save_web(host="0.0.0.0")  # headless: the panel must be reachable from another device
+        hub._web = hub._load_web()
     if args.web_host:
-        m.config.web.host = args.web_host
+        hub.web.host = args.web_host
     if args.web_port:
-        m.config.web.port = args.web_port
+        hub.web.port = args.web_port
     browser = not args.no_browser and has_display()
-    port = m.config.web.port
-    if running_pid(m):
-        url = f"http://localhost:{port}/"
-        print(f"mcsm is already running this server: {url}")
+    port = hub.web.port
+    url = f"http://localhost:{port}/"
+    if pid := running_hub(home):
+        print(f"mcsm is already running (pid {pid}): {url}")
         if browser:
             webbrowser.open(url)
         return 0
-    d = Daemon(m)
-    d.open_browser = browser
-    sign_in = webauth.describe(webauth.AuthStore(m.config).get())
-    lines = (["  Welcome to mcsm! Finish setting up your server in the browser."] if setupmod.is_pending(root) else [])
-    lines += [f"  Server folder:  {root}", f"  Control panel:  http://localhost:{port}/"]
-    if m.config.web.host in ("0.0.0.0", "::") and (ip := lan_ip()):
+    # A server kept in the home folder by mcsm 0.1-0.3 that never finished installing
+    # goes back to its setup page instead of trying (and failing) to install again.
+    if (home / configmod.CONFIG_NAME).exists() and not lockmod.load(home).installed \
+            and not setupmod.is_pending(home):
+        setupmod.mark_pending(home)
+    servers = hub.discover()
+    lines = [f"  Your servers:   {len(servers) or 'none yet - create one in the browser'}"
+             if servers else "  Welcome to mcsm! Create your first server in the browser.",
+             f"  Control panel:  {url}"]
+    if hub.web.host in ("0.0.0.0", "::") and (ip := lan_ip()):
         lines.append(f"  From other devices on your network:  http://{ip}:{port}/")
     elif not has_display():
         lines.append(f"  From your own PC, tunnel over SSH:  ssh -L {port}:localhost:{port} "
                      f"{getpass.getuser()}@<this server>  then open http://localhost:{port}/")
-    lines += [f"  Password:       {sign_in}", "",
-              "  Keep this window open while the server runs, and press Ctrl+C to stop it.",
-              "  (On Linux, `mcsm service install` keeps it running in the background instead.)"
-              if sys.platform.startswith("linux") else ""]
+    lines += [f"  Password:       {webauth.describe(webauth.AuthStore(hub).get())}", "",
+              "  Servers only start when you press Start in the control panel.",
+              "  Keep this window open while they run, and press Ctrl+C to stop everything."]
     print("\n" + "\n".join(lines) + "\n", flush=True)
-    return _run_daemon(d, web=True)
+    _tag_log_lines()
+    hub.open_browser = browser
+    code = hub.run()
+    if hub.restart_requested:
+        argv = selfupdate.restart_argv()
+        print("restarting mcsm on the new version...", flush=True)
+        os.execv(argv[0], argv)
+    return code
+
+
+def _auth_target(args):
+    """Whose sign-in `mcsm web-password` changes: a server folder run with `mcsm run`, or the
+    control panel that `mcsm start` opens (kept in the mcsm home folder)."""
+    from .hub import Hub
+    home = default_home()
+    root = args.root.resolve()
+    if (root / configmod.CONFIG_NAME).exists() and root != home:
+        return configmod.load(root)
+    return Hub(home)
+
+
+def _tag_log_lines() -> None:
+    """With several servers in one window, say which server each message is about."""
+    from .daemon import current_server
+
+    class Tag(logging.Filter):
+        def filter(self, record):
+            sid = current_server()
+            record.server_tag = f"{sid}: " if sid else ""
+            return True
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(Tag())
+        handler.setFormatter(logging.Formatter("[mcsm] %(server_tag)s%(message)s"))
 
 
 def cmd_web_password(args) -> int:
     from . import webauth
 
-    cfg = configmod.load(args.root)
+    cfg = _auth_target(args)
     store = webauth.AuthStore(cfg)
     if cfg.web.password:
         print("the web UI password is set in mcsm.toml under [web] password; change it there")
@@ -438,6 +474,13 @@ def cmd_web_password(args) -> int:
 
 
 def cmd_stop(args) -> int:
+    from .hub import hub_stop_path, running_hub
+    home = default_home()
+    if not (args.root / configmod.CONFIG_NAME).exists() or args.root.resolve() == home:
+        if pid := running_hub(home):
+            hub_stop_path(home).write_text("stop")
+            print(f"asked mcsm (pid {pid}) to stop its servers and exit")
+            return 0
     m = _manager(args)
     pid = running_pid(m)
     if not pid:
@@ -761,7 +804,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command")
     p.set_defaults(fn=None)
 
-    s = sub.add_parser("start", help="set up a server if needed, run it, and open the web UI (the default)")
+    s = sub.add_parser("start", help="open the control panel with your servers (the default); "
+                                     "servers only start when you press Start")
     s.add_argument("--no-browser", action="store_true", help="don't open the web UI in a browser")
     s.add_argument("--web-host", help='web UI address; "0.0.0.0" to allow other devices on your network')
     s.add_argument("--web-port", type=int, help="web UI port (default 8765)")

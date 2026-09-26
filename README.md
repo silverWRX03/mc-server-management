@@ -128,34 +128,44 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
 
 ### What happens when you run it
 
-1. Your browser opens mcsm's control panel. Sign in with `PASSWORD`; you're then asked
-   to choose your own password, a PIN, or no password (this computer only).
+1. Your browser opens mcsm's control panel. Sign in with `PASSWORD` (the eye button
+   shows what you typed); you're then asked to choose your own password, a PIN, or no
+   password (this computer only).
 2. It shows [what mcsm does and doesn't do](#what-mcsm-does-and-doesnt-do) and asks you to accept.
-3. The **setup page** asks for:
+3. **Your servers** lists every server you've made. Nothing starts by itself: press
+   **Start** on the one you want to play, and **Stop** when you're done (closing mcsm
+   stops them too). Several can run at once, each on its own port.
+4. **New server** asks for:
    - the server type: Fabric, NeoForge, Forge, Quilt or vanilla;
    - the Minecraft version: "newest" for a server that keeps upgrading itself, or a
      specific version to stay on;
    - mods, found with a Modrinth search, each marked required or optional;
-   - the server name, players, difficulty, game mode and memory;
+   - the server name, players, difficulty, game mode, memory and port;
    - the Minecraft EULA.
-4. **Create my server** downloads Java, the mod loader, Minecraft and your mods, starts
-   the server, and takes you to the dashboard. If a choice can't work, for example a
-   mod that doesn't support the chosen version, the page says why so you can change it
-   and try again.
+5. **Create my server** downloads Java, the mod loader, Minecraft and your mods, checks
+   that the server starts, and adds it to the list, ready for you to start. If a
+   choice can't work, for example a mod that doesn't support the chosen version, the
+   page says why so you can change it and try again.
 
-![Setup page](docs/web-setup.png)
+![Your servers](docs/web-servers.png)
+
+![New server](docs/web-setup.png)
 
 Prefer the terminal? `mcsm setup` asks the same questions there.
 
-Next time, run it the same way: it goes straight to starting your server. Keep the
-window open while the server runs, and press Ctrl+C to stop it cleanly.
+Keep the mcsm window open while servers run, and press Ctrl+C (or close it) to stop
+them all cleanly.
 
-Your server lives in a folder called `mcsm` in your home folder (`C:\Users\<you>\mcsm`
-on Windows). To keep it somewhere else, set the `MCSM_HOME` environment variable, or run
-mcsm from a folder that already contains an `mcsm.toml`.
+Servers live in a folder called `mcsm` in your home folder (`C:\Users\<you>\mcsm\servers\`
+on Windows), one folder each. To keep them somewhere else, set the `MCSM_HOME`
+environment variable. A folder that already contains an `mcsm.toml` (for example from
+an older mcsm) shows up in the list too.
 
-**For friends outside your home network,** forward TCP port 25565 on your router to
-this computer.
+**Forgot the password?** On the server's own computer, the sign-in page has a
+**Reset it to PASSWORD** link (or run `mcsm web-password --reset`).
+
+**For friends outside your home network,** forward the server's port (25565 for the
+first one; see its Settings) on your router to this computer.
 
 **Verifying a download (optional):** every release includes `SHA256SUMS.txt`. Compare it with
 `sha256sum mcsm-linux-x64` (Linux), `shasum -a 256 mcsm-macos-arm64` (Mac), or

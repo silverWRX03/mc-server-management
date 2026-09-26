@@ -33,13 +33,15 @@ from typing import Any, Callable
 
 from . import __version__, backup, config as configmod, licenses, notice, setup as setupmod, stats, webauth
 from .config import ConfigError, ModSpec
-from .daemon import Daemon
+from .daemon import Daemon, set_current_server
+from .hub import Hub
+from .minecraft import Mojang
 from .http import sha1_file
 from .java import JavaError
 from .mods import ModError
 from .mods.modrinth import ModrinthProvider
 from .players import PlayerError, Players
-from .properties import read_properties
+from .properties import read_properties, write_properties
 from .skins import SkinError, Skins
 
 log = logging.getLogger(__name__)
@@ -61,7 +63,8 @@ SECURITY_HEADERS = {
 
 
 # Reachable before the first-run notice has been accepted.
-NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses", "/api/auth/change"}
+NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses", "/api/auth/change", "/api/hub"}
+SERVER_PATH = re.compile(r"^/api/servers/([a-z0-9][a-z0-9-]{0,63})(/.*)$")
 
 
 class ApiError(Exception):
@@ -99,28 +102,39 @@ def is_loopback(address: str) -> bool:
 
 
 class WebUI:
-    def __init__(self, daemon: Daemon, host: str | None = None, port: int | None = None):
-        self.d = daemon
-        cfg = daemon.m.config.web
+    def __init__(self, hub: Hub, host: str | None = None, port: int | None = None):
+        self.hub = hub
+        cfg = hub.web
         self.host = host or cfg.host
         self.port = cfg.port if port is None else port
-        self._store = webauth.AuthStore(daemon.m.config)
+        self.store = webauth.AuthStore(hub)   # the hub has the state_dir and [web] settings
         self.sessions: dict[str, float] = {}
         self.failures: dict[str, list[float]] = {}
         self.lock = threading.Lock()
         self.httpd: ThreadingHTTPServer | None = None
-        self.api = Api(self)
+        self._apis: dict[str, Api] = {}
+        self.hub_api = HubApi(self)
 
     @property
     def auth(self) -> webauth.Auth:
-        if self._store.config is not self.d.m.config:  # the config was reloaded
-            self._store = webauth.AuthStore(self.d.m.config)
-        return self._store.get()
+        return self.store.get()
+
+    def api_for(self, sid: str) -> Api:
+        d = self.hub.get(sid)
+        if d is None:
+            raise ApiError(404, "there's no server with that id (it may have been removed)")
+        api = self._apis.get(sid)
+        if api is None or api.d is not d:
+            api = self._apis[sid] = Api(self, d, sid)
+        return api
 
     @property
-    def store(self) -> webauth.AuthStore:
-        self.auth  # noqa: B018 - refresh after a config reload
-        return self._store
+    def api(self) -> Api:
+        """The server's API when there is only one (`mcsm run`)."""
+        only = self.hub.only()
+        if not only:
+            raise ApiError(404, "pick a server first")
+        return self.api_for(only[0])
 
     @property
     def url(self) -> str:
@@ -174,6 +188,13 @@ class WebUI:
         with self.lock:
             self.sessions.clear()
             return self._new_session(time.time())
+
+    def reset_to_default(self) -> None:
+        self.store.reset()
+        log.info("web UI password reset to the default from this computer")
+        with self.lock:
+            self.sessions.clear()
+            self.failures.clear()
 
     def valid(self, token: str | None, local: bool = False) -> bool:
         if local and self.auth.mode == "none":
@@ -246,7 +267,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.headers.get("X-Forwarded-For") or self.headers.get("Forwarded") or self.headers.get("X-Real-IP"))
 
     def _host_ok(self) -> bool:
-        if host_allowed(self.headers.get("Host"), self.web.d.m.config.web.allowed_hosts):
+        if host_allowed(self.headers.get("Host"), self.web.hub.web.allowed_hosts):
             return True
         self._send(421, b"This address isn't allowed. If you reach mcsm through a reverse proxy or a custom "
                         b"host name, add it to [web] allowed_hosts in mcsm.toml.\n", "text/plain; charset=utf-8")
@@ -281,6 +302,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             if path == "/api/login" and method == "POST":
                 token = self.web.login(str(self._body().get("password", "")), self.client_address[0])
                 return self._json(200, {"ok": True}, {"Set-Cookie": self._cookie(token)})
+            if path == "/api/auth/reset-local" and method == "POST":
+                # Forgot the password? Whoever sits at the server's own computer can go back to
+                # the default (the same as `mcsm web-password --reset`); never over the network.
+                if not local:
+                    raise ApiError(403, "this only works in a browser on the server's own computer")
+                self.web.reset_to_default()
+                return self._json(200, {"ok": True, **self.web.auth.info()})
             if not self.web.valid(self._token(), local):
                 raise ApiError(401, "login required")
             if path == "/api/auth/change" and method == "POST":
@@ -291,17 +319,30 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.web.logout(self._token())
                 return self._json(200, {"ok": True},
                                   {"Set-Cookie": f"{SESSION_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict"})
-            if path not in NOTICE_EXEMPT and not notice.accepted(self.web.d.m.config.root):
+            q = {k: v[-1] for k, v in query.items()}
+            handler = self.web.hub_api.routes.get((method, path))
+            if handler is not None:
+                if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
+                    raise ApiError(428, "accept the notice first")
+                return self._json(200, handler(q, self._body() if method == "POST" else {}))
+            if m := SERVER_PATH.match(path):
+                sid, path = m.group(1), "/api" + m.group(2)
+            elif only := self.web.hub.only():  # single server: the short URLs still work
+                sid = only[0]
+            else:
+                raise ApiError(404, "not found")
+            if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
                 raise ApiError(428, "accept the notice first")
-            handler = self.web.api.routes.get((method, path))
+            api = self.web.api_for(sid)
+            set_current_server(api.d.server_id)  # so this server's activity feed shows what happens
+            handler = api.routes.get((method, path))
             if handler is None:
                 raise ApiError(404, "not found")
-            q = {k: v[-1] for k, v in query.items()}
             if path == "/api/manual/upload":
-                return self._json(200, self.web.api.upload(self, q))
+                return self._json(200, api.upload(self, q))
             if path == "/api/players/skin":
                 try:
-                    png = self.web.api.skins.png(q.get("name", ""))
+                    png = api.skins.png(q.get("name", ""))
                 except SkinError as e:
                     raise ApiError(404, str(e)) from None
                 return self._send(200, png, "image/png", {"Cache-Control": "private, max-age=3600"})
@@ -316,20 +357,125 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": f"internal error: {e}"})
 
 
-class Api:
+def setup_options(mojang: Mojang) -> dict:
+    """The choices on the setup page."""
+    versions, error = [], None
+    try:
+        versions = list(reversed(mojang.releases()))[:40]
+    except Exception as e:  # offline: "latest" still works once the network is back
+        error = f"couldn't load the list of Minecraft versions: {e}"
+    total = setupmod.total_ram_gb()
+    return {
+        "loaders": [{"name": n, "label": label, "description": desc, "mods": mods}
+                    for n, label, desc, mods in setupmod.LOADER_INFO],
+        "versions": versions,
+        "versions_error": error,
+        "total_ram_gb": round(total, 1) if total else None,
+        "memory_gb": setupmod.suggested_memory_gb(total),
+        "difficulties": setupmod.DIFFICULTIES,
+        "gamemodes": setupmod.GAMEMODES,
+    }
+
+
+def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_loader: str) -> dict:
+    query = q.get("q", "").strip()
+    if not query:
+        return {"results": []}
+    loader_name = q.get("loader") or default_loader
+    from .loaders import LOADERS
+    if loader_name not in LOADERS:
+        raise ApiError(400, "unknown loader")
+    results = provider.search(query, LOADERS[loader_name].mod_loaders)
+    for r in results:
+        r["listed"] = r["id"] in listed or r["slug"] in listed
+    return {"results": results}
+
+
+class HubApi:
+    """The parts of the API that aren't about one server: the server list, new servers,
+    the first-run notice, licenses and mcsm's own updates."""
+
     def __init__(self, web: WebUI):
         self.web = web
-        self.d: Daemon = web.d
+        self.hub = web.hub
+        self._mojang: Mojang | None = None
+        r: dict[tuple[str, str], Callable[[dict, dict], Any]] = {}
+        r[("GET", "/api/hub")] = self.overview
+        r[("GET", "/api/hub/setup")] = self.new_server_options
+        r[("GET", "/api/hub/mods/search")] = lambda q, b: search_mods(ModrinthProvider(self.hub.http), q, set(), "fabric")
+        r[("POST", "/api/hub/create")] = self.create
+        r[("POST", "/api/hub/network")] = self.network
+        r[("POST", "/api/hub/remove")] = lambda q, b: {"ok": True, "moved_to": self.hub.discard(str(b.get("id", "")))}
+        r[("GET", "/api/notice")] = lambda q, b: {"accepted": notice.accepted(self.hub.root), "version": notice.NOTICE_VERSION,
+                                                  "title": notice.TITLE, "points": notice.POINTS}
+        r[("POST", "/api/notice/accept")] = self.accept_notice
+        r[("GET", "/api/licenses")] = lambda q, b: licenses.as_dict()
+        r[("POST", "/api/self-update/check")] = lambda q, b: {"ok": True, "message": self.hub.check_self_update()}
+        r[("POST", "/api/self-update/apply")] = self.apply_self_update
+        self.routes = r
+
+    def overview(self, q, b) -> dict:
+        hub = self.hub
+        return {
+            "version": __version__,
+            "single": hub.is_single,
+            "notice_accepted": notice.accepted(hub.root),
+            "self_update": hub.self_update_info(),
+            "auth": self.web.auth.info(),
+            "home": str(hub.home),
+            "network_access": hub.web.host in ("0.0.0.0", "::"),
+            "servers": hub.summary(),
+        }
+
+    def new_server_options(self, q, b) -> dict:
+        if self._mojang is None:
+            self._mojang = Mojang(self.hub.http)
+        return {**setup_options(self._mojang), "pending": True, "network_option": False,
+                "port": self.hub.free_port(),
+                "server_dir": str(self.hub.home / "servers" / "<name>"), "current": None}
+
+    def create(self, q, b) -> dict:
+        spec = setupmod.SetupSpec.from_dict(b)
+        return {"ok": True, "id": self.hub.create(spec)}
+
+    def network(self, q, b) -> dict:
+        if self.hub.is_single:
+            raise ApiError(400, "set [web] host in mcsm.toml for `mcsm run`")
+        enabled = b.get("enabled") is True
+        self.hub.save_web(host="0.0.0.0" if enabled else "127.0.0.1")
+        log.info("network access to the control panel turned %s (applies when mcsm restarts)", "on" if enabled else "off")
+        return {"ok": True, "restart_needed": enabled != (self.web.host in ("0.0.0.0", "::"))}
+
+    def accept_notice(self, q, b) -> dict:
+        if b.get("version") != notice.NOTICE_VERSION:
+            raise ApiError(409, "the notice has changed; reload the page")
+        notice.accept(self.hub.root, by="web")
+        log.info("first-run notice accepted in the web UI")
+        return {"ok": True}
+
+    def apply_self_update(self, q, b) -> dict:
+        info = self.hub.self_update_info()
+        if not info:
+            raise ApiError(404, "no mcsm update is available")
+        if not info.get("can_install"):
+            raise ApiError(400, info.get("reason") or "mcsm can't update itself here")
+        if b.get("version") != info["version"]:
+            raise ApiError(409, "a different version is available now; reload the page")
+        self.hub.run_job(f"update mcsm to {info['version']}", self.hub.apply_self_update)
+        return {"ok": True}
+
+
+class Api:
+    """One server's part of the API: /api/servers/<id>/... (or /api/... with a single server)."""
+
+    def __init__(self, web: WebUI, daemon: Daemon, sid: str):
+        self.web = web
+        self.d = daemon
+        self.sid = sid
         r: dict[tuple[str, str], Callable[[dict, dict], Any]] = {}
         get = lambda p, f: r.__setitem__(("GET", p), f)    # noqa: E731
         post = lambda p, f: r.__setitem__(("POST", p), f)  # noqa: E731
         get("/api/status", self.status)
-        get("/api/notice", lambda q, b: {"accepted": notice.accepted(self.m.config.root), "version": notice.NOTICE_VERSION,
-                                         "title": notice.TITLE, "points": notice.POINTS})
-        post("/api/notice/accept", self.accept_notice)
-        get("/api/licenses", lambda q, b: licenses.as_dict())
-        post("/api/self-update/check", lambda q, b: self._job("mcsm update check", self.d.check_self_update))
-        post("/api/self-update/apply", self.apply_self_update)
         get("/api/console", self.console)
         get("/api/events", self.events)
         post("/api/command", self.command)
@@ -403,9 +549,10 @@ class Api:
             "strategy": m.config.updates.strategy,
             "auto_upgrade": m.config.updates.auto_upgrade,
             "update": self._update_summary(),
-            "notice_accepted": notice.accepted(m.config.root),
+            "notice_accepted": notice.accepted(self.web.hub.root),
             "setup_pending": d.setup_pending,
-            "self_update": d.self_update,
+            "self_update": self.web.hub.self_update_info(),
+            "id": self.sid,
             "auth": self.web.auth.info(),
             "resources": self._resources(),
         }
@@ -421,23 +568,6 @@ class Api:
         return {**usage,
                 "memory_max_bytes": stats.heap_bytes(self.m.config.server.memory, setupmod.suggested_memory_gb()),
                 "system_memory_bytes": int(total * 1024 ** 3) if total else None}
-
-    def accept_notice(self, q, b) -> dict:
-        if b.get("version") != notice.NOTICE_VERSION:
-            raise ApiError(409, "the notice has changed; reload the page")
-        notice.accept(self.m.config.root, by="web")
-        log.info("first-run notice accepted in the web UI")
-        return {"ok": True}
-
-    def apply_self_update(self, q, b) -> dict:
-        info = self.d.self_update
-        if not info:
-            raise ApiError(404, "no mcsm update is available")
-        if not info.get("can_install"):
-            raise ApiError(400, info.get("reason") or "mcsm can't update itself here")
-        if b.get("version") != info["version"]:
-            raise ApiError(409, "a different version is available now; reload the page")
-        return self._job(f"update mcsm to {info['version']}", self.d.apply_self_update)
 
     def _update_summary(self) -> dict | None:
         c = self.d.last_check
@@ -464,26 +594,11 @@ class Api:
 
     # --------------------------------------------------------------- setup
     def setup_options(self, q, b) -> dict:
-        versions, error = [], None
-        try:
-            versions = list(reversed(self.m.mojang.releases()))[:40]
-        except Exception as e:  # offline: "latest" still works once the network is back
-            error = f"couldn't load the list of Minecraft versions: {e}"
-        total = setupmod.total_ram_gb()
-        return {
-            "pending": self.d.setup_pending,
-            "loaders": [{"name": n, "label": label, "description": desc, "mods": mods}
-                        for n, label, desc, mods in setupmod.LOADER_INFO],
-            "versions": versions,
-            "versions_error": error,
-            "total_ram_gb": round(total, 1) if total else None,
-            "memory_gb": setupmod.suggested_memory_gb(total),
-            "difficulties": setupmod.DIFFICULTIES,
-            "gamemodes": setupmod.GAMEMODES,
-            "server_dir": str(self.m.server_dir),
-            "network_access": self.m.config.web.host in ("0.0.0.0", "::"),
-            "current": self._current_setup(),
-        }
+        return {**setup_options(self.m.mojang), "pending": self.d.setup_pending,
+                "server_dir": str(self.m.server_dir),
+                "network_option": self.web.hub.is_single,  # with several servers it's an mcsm setting
+                "network_access": self.m.config.web.host in ("0.0.0.0", "::"),
+                "current": self._current_setup()}
 
     def _current_setup(self) -> dict | None:
         """What an existing mcsm.toml already asks for, so the setup page can start from it."""
@@ -519,18 +634,8 @@ class Api:
         return self.m.providers.get("modrinth") or ModrinthProvider(self.m.http)
 
     def search(self, q, b) -> dict:
-        query = q.get("q", "").strip()
-        if not query:
-            return {"results": []}
-        loader_name = q.get("loader") or self.m.config.server.loader
-        from .loaders import LOADERS
-        if loader_name not in LOADERS:
-            raise ApiError(400, "unknown loader")
-        results = self._modrinth().search(query, LOADERS[loader_name].mod_loaders)
         listed = {s.id for s in self.m.config.mods if s.source == "modrinth"}
-        for r in results:
-            r["listed"] = r["id"] in listed or r["slug"] in listed
-        return {"results": results}
+        return search_mods(self._modrinth(), q, listed, self.m.config.server.loader)
 
     def add_mod(self, q, b) -> dict:
         source = b.get("source", "modrinth")
@@ -724,10 +829,23 @@ class Api:
             "warn_minutes": c.updates.warn_minutes, "wait_for_empty": c.updates.wait_for_empty,
             "verify_boot": c.updates.verify_boot, "backups_keep": c.backups.keep,
             "discord_webhook": c.discord_webhook,
+            "port": int(read_properties(self.m.server_dir / "server.properties").get("server-port", "25565") or 25565),
             "choices": {"strategy": configmod.STRATEGIES, "mod_channel": configmod.CHANNELS},
         }
 
     def save_settings(self, q, b) -> dict:
+        b = dict(b)
+        port = b.pop("port", None)
+        if port is not None:
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                raise ApiError(400, "the port must be a number") from None
+            if not 1024 <= port <= 65535:
+                raise ApiError(400, "the port must be between 1024 and 65535")
+            clash = self.web.hub.ports(exclude=self.sid).get(port)
+            if clash:
+                raise ApiError(400, f"port {port} is already used by another server here ({clash})")
         path = self.m.config.path
         original = path.read_text()
         try:
@@ -751,5 +869,10 @@ class Api:
         except Exception:
             path.write_text(original)
             raise
+        if port is not None:
+            props = self.m.server_dir / "server.properties"
+            if str(port) != read_properties(props).get("server-port"):
+                self.m.server_dir.mkdir(parents=True, exist_ok=True)
+                write_properties(props, {"server-port": str(port)})
         log.info("settings saved")
         return {"ok": True}

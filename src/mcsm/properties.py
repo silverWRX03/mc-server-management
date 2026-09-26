@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -26,4 +27,7 @@ def write_properties(path: Path, updates: dict[str, str]) -> None:
                 lines[i] = f"{key}={remaining.pop(key)}"
     lines += [f"{k}={v}" for k, v in remaining.items()]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n")
+    # Replace the file in one step, so nothing ever reads it half-written.
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text("\n".join(lines) + "\n")
+    os.replace(tmp, path)

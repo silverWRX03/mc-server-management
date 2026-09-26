@@ -31,6 +31,19 @@ EMPTY_RETRY = 300       # seconds between "is anyone online?" checks when waitin
 SELF_CHECK_INTERVAL = 24 * 3600
 
 
+# Which server the current thread is working for, so that with several servers in one
+# process (the hub) each one's activity feed only shows its own messages.
+_context = threading.local()
+
+
+def current_server() -> str | None:
+    return getattr(_context, "server", None)
+
+
+def set_current_server(server_id: str | None) -> None:
+    _context.server = server_id
+
+
 def pid_path(manager: Manager) -> Path:
     return manager.config.state_dir / "daemon.pid"
 
@@ -104,11 +117,14 @@ class LogBuffer:
 
 
 class _EventHandler(logging.Handler):
-    def __init__(self, buffer: LogBuffer):
+    def __init__(self, buffer: LogBuffer, server_id: str | None = None):
         super().__init__(logging.INFO)
         self.buffer = buffer
+        self.server_id = server_id
 
     def emit(self, record: logging.LogRecord) -> None:
+        if self.server_id is not None and current_server() != self.server_id:
+            return  # another server's message
         try:
             self.buffer.append(level=record.levelname.lower(), message=record.getMessage())
         except Exception:
@@ -137,9 +153,15 @@ def decision_to_dict(m: Manager, decision, changes) -> dict:
 
 
 class Daemon:
-    def __init__(self, manager: Manager, tick: float = 2.0):
+    def __init__(self, manager: Manager, tick: float = 2.0, autostart: bool = True,
+                 server_id: str | None = None, hub_managed: bool = False):
         self.m = manager
         self.tick = tick
+        #: start the server when mcsm starts (``mcsm run``); the hub waits for a click instead
+        self.autostart = autostart
+        self.server_id = server_id
+        #: one of several servers run by the hub, which handles the terminal and self-updates
+        self.hub_managed = hub_managed
         self.proc: ServerProcess | None = None
         self.stop_requested = threading.Event()
         self.exit_code = 0
@@ -147,7 +169,7 @@ class Daemon:
         self.next_check = 0.0
         self.announced: set[str] = set()
 
-        self.want_running = True        # False after a deliberate stop (no crash restarts)
+        self.want_running = autostart   # False after a deliberate stop (no crash restarts)
         self.web_enabled = False
         self.ui = None
         self.open_browser = False
@@ -200,6 +222,7 @@ class Daemon:
         self.job = {"name": name, "started": time.time()}
 
         def runner():
+            set_current_server(self.server_id)
             ok, message = True, ""
             try:
                 message = fn(*args) or "done"
@@ -214,9 +237,13 @@ class Daemon:
         return True
 
     def start_server(self) -> str:
-        self.want_running = True
         if self.proc and self.proc.running:
+            self.want_running = True
             return "already running"
+        hub = getattr(self, "hub", None)
+        if hub is not None:
+            hub.check_port(self)
+        self.want_running = True
         if not self.m.lock.installed:
             log.info("no server installed yet; installing")
             self.check_for_updates(force=True)
@@ -224,6 +251,14 @@ class Daemon:
                 raise RuntimeError("no server could be installed yet; see the Updates page")
             if self.proc and self.proc.running:  # the install left it running
                 return "installed and started"
+        elif not self.autostart and self.m.config.updates.auto_upgrade:
+            # Started by hand after sitting stopped: bring it up to date on the way up.
+            try:
+                self.check_for_updates(allow_stopped=True)
+            except Exception as e:
+                log.warning("update before starting failed (%s); starting the current version", e)
+            if self.proc and self.proc.running:
+                return "updated and started"
         self.m.start_server()
         self.m.notifier.send(f"Server is up (Minecraft {self.m.lock.minecraft})")
         return "started"
@@ -242,6 +277,7 @@ class Daemon:
 
     # -------------------------------------------------------- lifecycle
     def run(self, web: bool = False) -> int:
+        set_current_server(self.server_id)
         state = self.m.config.state_dir
         state.mkdir(parents=True, exist_ok=True)
         if (pid := running_pid(self.m)) and pid != os.getpid():
@@ -249,7 +285,7 @@ class Daemon:
             return 1
         pid_path(self.m).write_text(str(os.getpid()))
         stop_request_path(self.m).unlink(missing_ok=True)
-        handler = _EventHandler(self.events)
+        handler = _EventHandler(self.events, self.server_id)
         mcsm_log = logging.getLogger("mcsm")
         mcsm_log.addHandler(handler)
         if mcsm_log.getEffectiveLevel() > logging.INFO:
@@ -260,8 +296,9 @@ class Daemon:
         ui = None
         try:
             if web:
+                from .hub import Hub
                 from .web import WebUI
-                ui = WebUI(self)
+                ui = WebUI(Hub.single(self))
                 ui.start()
                 self.ui = ui
                 self.web_enabled = True
@@ -290,7 +327,8 @@ class Daemon:
             raise
 
     def _loop(self) -> int:
-        self._forward_console()
+        if not self.hub_managed:
+            self._forward_console()
         if not notice.accepted(self.m.config.root):
             log.info("waiting for the first-run notice to be accepted in the web UI")
             while not notice.accepted(self.m.config.root):
@@ -300,7 +338,7 @@ class Daemon:
             log.info("notice accepted")
         if self.setup_pending:
             log.info("waiting for the server to be set up in the web UI")
-        else:
+        elif self.autostart:
             self.submit("start", self._boot)
         # Let the first start finish before the first scheduled update check.
         self.next_check = time.monotonic() + 60
@@ -325,6 +363,9 @@ class Daemon:
                 req.unlink(missing_ok=True)
                 self.submit("update check", self.check_for_updates, requested, target)
             sreq = self_update_request_path(self.m)
+            if self.hub_managed:  # the hub checks for and installs mcsm updates
+                self.stop_requested.wait(self.tick)
+                continue
             if idle and sreq.exists():
                 sreq.unlink(missing_ok=True)
                 self.check_self_update()
@@ -386,7 +427,8 @@ class Daemon:
             return f"update available: Minecraft {decision.plan.minecraft}"
         return "no installable combination found"
 
-    def check_for_updates(self, force: bool = False, target: str | None = None) -> str:
+    def check_for_updates(self, force: bool = False, target: str | None = None,
+                          allow_stopped: bool = False) -> str:
         cfg = self.m.config.updates
         self.next_check = time.monotonic() + cfg.check_interval
         try:
@@ -405,6 +447,10 @@ class Daemon:
         if not decision.plan or not changes or changes.empty:
             return "up to date" if decision.plan else "no installable combination found"
         summary = "\n".join(changes.summary())
+        running = bool(self.proc and self.proc.running)
+        if not (force or allow_stopped or self.autostart or running):
+            # A server you start by hand isn't booted just to update it; it updates when you start it.
+            return "update available (applies the next time the server starts)"
         if not (cfg.auto_upgrade or force):
             if decision.plan.fingerprint not in self.announced:
                 self.announced.add(decision.plan.fingerprint)
@@ -464,10 +510,18 @@ class Daemon:
         if self.last_check.get("manual"):
             names = ", ".join(m["name"] for m in self.last_check["manual"])
             raise RuntimeError(f"these mods must be downloaded by hand first (see the Updates page): {names}")
-        self.start_server()
+        if self.autostart:
+            self.start_server()
+        else:
+            # Install (with a test boot) but leave starting it to the person.
+            self.check_for_updates(force=True)
+            if not self.m.lock.installed:
+                raise RuntimeError("the server couldn't be installed; see the activity log")
         setupmod.clear_pending(self.m.config.root)
         self.next_check = time.monotonic() + self.m.config.updates.check_interval
-        return f"your server is ready: Minecraft {self.m.lock.minecraft}"
+        if self.autostart:
+            return f"your server is ready: Minecraft {self.m.lock.minecraft}"
+        return f"your server is ready (Minecraft {self.m.lock.minecraft}); press Start to play"
 
     # ------------------------------------------------------- self-update
     def check_self_update(self) -> str:

@@ -8,6 +8,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+STATE_DIR = ".mcsm"
 CONFIG_NAME = "mcsm.toml"
 LOADERS = ("fabric", "quilt", "neoforge", "forge", "vanilla")
 MOD_SOURCES = ("modrinth", "curseforge")
@@ -95,7 +96,7 @@ class Config:
 
     @property
     def state_dir(self) -> Path:
-        return self.root / ".mcsm"
+        return self.root / STATE_DIR
 
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$")

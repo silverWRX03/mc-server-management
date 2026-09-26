@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from mcsm import cli, config as configmod, lock as lockmod, setup as setupmod
+from mcsm import config as configmod, lock as lockmod, setup as setupmod
 from mcsm.config import ConfigError
 from mcsm.daemon import Daemon
 from mcsm.properties import read_properties
@@ -128,34 +128,3 @@ def test_failed_setup_can_be_retried(pending_daemon):
 
     assert c.post("/api/setup", {"loader": "fabric", "mods": ["goodmod"], "accept_eula": True})[0] == 200
     wait_for(lambda: d.state == "running" and not d.setup_pending, timeout=30)
-
-
-def test_start_on_a_new_machine_opens_setup(tmp_path, monkeypatch):
-    home = tmp_path / "home" / "mcsm"
-    monkeypatch.setenv("MCSM_HOME", str(home))
-    monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    ran = []
-    monkeypatch.setattr(cli, "_run_daemon", lambda d, web: ran.append((d, web)) or 0)
-    empty = tmp_path / "elsewhere"
-    empty.mkdir()
-    assert cli.main(["-C", str(empty), "start", "--no-browser"]) == 0
-    assert (home / "mcsm.toml").exists() and setupmod.is_pending(home)
-    d, web = ran[0]
-    assert web and d.m.config.root == home.resolve()
-    if cli.has_display() is False and __import__("sys").platform.startswith("linux"):
-        assert d.m.config.web.host == "0.0.0.0"  # headless: reachable from another device
-    # Running start again reuses the same (still pending) server rather than making a new one.
-    assert cli.main(["-C", str(empty), "start", "--no-browser"]) == 0
-    assert len(ran) == 2 and ran[1][0].m.config.root == home.resolve()
-
-    # A folder that was configured but never installed (like an mcsm 0.1 first run whose
-    # install failed) goes back to the setup page, starting from what it already asks for.
-    setupmod.clear_pending(home)
-    configmod.append_mod(home / "mcsm.toml", configmod.ModSpec("modrinth", "lithium"))
-    assert cli.main(["-C", str(empty), "start", "--no-browser"]) == 0
-    assert setupmod.is_pending(home)
-    from mcsm.web import Api
-    api = Api.__new__(Api)
-    api.d = ran[2][0]
-    assert api._current_setup()["mods"] == [{"slug": "lithium", "required": True}]
