@@ -37,6 +37,28 @@ class Mojang:
     def latest_release(self) -> str:
         return self._manifest()["latest"]["release"]
 
+    def release_time(self, version: str) -> float | None:
+        """When a version came out (seconds since the epoch)."""
+        from datetime import datetime
+        entry = next((v for v in self._manifest()["versions"] if v["id"] == version), None)
+        try:
+            return datetime.fromisoformat(entry["releaseTime"].replace("Z", "+00:00")).timestamp() if entry else None
+        except (KeyError, ValueError):
+            return None
+
+    def betas(self, limit: int = 15) -> list[str]:
+        """Snapshots, pre-releases and release candidates newer than the newest release, newest first.
+
+        They're for trying what's coming next: worlds opened in one can't go back, and most
+        mods don't support them yet.
+        """
+        manifest = self._manifest()
+        latest = manifest["latest"]["release"]
+        since = next((v["releaseTime"] for v in manifest["versions"] if v["id"] == latest), "")
+        found = [v for v in manifest["versions"] if v["type"] == "snapshot" and v["releaseTime"] > since]
+        found.sort(key=lambda v: v["releaseTime"], reverse=True)
+        return [v["id"] for v in found[:limit]]
+
     def is_release(self, version: str) -> bool:
         return version in self.releases()
 

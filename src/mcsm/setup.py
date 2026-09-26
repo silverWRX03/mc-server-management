@@ -100,6 +100,11 @@ class SetupSpec:
     accept_eula: bool = False
     properties: dict[str, str] = field(default_factory=dict)  # advanced server.properties settings
     friends: bool = False          # make a download that sets up friends' Minecraft for this server
+    port_chosen: bool = False      # the port was picked by the person (not just the default)
+    modpack_version: str = ""      # a Modrinth modpack version to build the server from
+    local_mods: list[str] = field(default_factory=list)  # uploaded jars waiting in the hub's staging area
+    world: str = ""                # an existing world: an upload's staging id, or "save:<id>" (singleplayer)
+    world_source: Path | None = None  # where that world is, found by the hub (never from the form)
 
     @classmethod
     def from_dict(cls, d: dict) -> SetupSpec:
@@ -111,7 +116,7 @@ class SetupSpec:
             out = []
             for item in items:
                 item = str(item).strip()
-                if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", item):
+                if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}|curseforge:\d{1,10}", item):
                     raise ConfigError(f"{item!r} is not a valid mod id")
                 if item not in out:
                     out.append(item)
@@ -141,14 +146,24 @@ class SetupSpec:
             accept_eula=d.get("accept_eula") is True,
             properties=serverprops.validate(d.get("properties")),
             friends=d.get("friends") is True,
+            port_chosen="port" in d,
+            modpack_version=str(d.get("modpack_version") or ""),
+            local_mods=[str(x) for x in (d.get("local_mods") or []) if isinstance(x, str)],
+            world=str(d.get("world") or ""),
         )
         if spec.loader not in configmod.LOADERS:
             raise ConfigError(f"unknown server type {spec.loader!r}")
-        if not re.fullmatch(r"latest|\d+(\.\d+){1,3}(-[A-Za-z0-9.]+)?", spec.minecraft):
+        if not re.fullmatch(r"latest|\d+(\.\d+){1,3}(-[A-Za-z0-9.]+)?|\d{2}w\d{2}[a-z]", spec.minecraft):
             raise ConfigError(f"{spec.minecraft!r} is not a Minecraft version")
         if spec.difficulty not in DIFFICULTIES or spec.gamemode not in GAMEMODES:
             raise ConfigError("invalid difficulty or game mode")
-        if spec.loader == "vanilla" and (spec.mods or spec.optional_mods):
+        if spec.modpack_version and not re.fullmatch(r"[A-Za-z0-9]{8}", spec.modpack_version):
+            raise ConfigError("that isn't a Modrinth modpack version")
+        if spec.world and not re.fullmatch(r"(save:)?[a-f0-9]{16}", spec.world):
+            raise ConfigError("that world choice isn't valid; pick the world again")
+        if not all(re.fullmatch(r"[a-f0-9]{16}", x) for x in spec.local_mods):
+            raise ConfigError("bad uploaded file reference")
+        if spec.loader == "vanilla" and (spec.mods or spec.optional_mods or spec.local_mods):
             raise ConfigError("vanilla servers can't run mods; pick a mod loader or remove the mods")
         if not spec.accept_eula:
             raise ConfigError("you need to accept the Minecraft EULA to run a server")
@@ -157,6 +172,13 @@ class SetupSpec:
                 and "fabric-api" not in spec.mods + spec.optional_mods:
             spec.mods.insert(0, "fabric-api")
         return spec
+
+
+def _mod_spec(item: str, required: bool) -> ModSpec:
+    """A mod from the setup form: a Modrinth slug, or ``curseforge:<project id>``."""
+    if item.startswith("curseforge:"):
+        return ModSpec("curseforge", item.split(":", 1)[1], required=required)
+    return ModSpec("modrinth", item, required=required)
 
 
 def configure(root: Path, spec: SetupSpec) -> configmod.Config:
@@ -178,9 +200,9 @@ def configure(root: Path, spec: SetupSpec) -> configmod.Config:
         configmod.set_value(path, "client", "enabled", "true")
         configmod.set_value(path, "client", "token", json.dumps(new_token()))
     for slug in spec.mods:
-        configmod.append_mod(path, ModSpec("modrinth", slug, required=True))
+        configmod.append_mod(path, _mod_spec(slug, required=True))
     for slug in spec.optional_mods:
-        configmod.append_mod(path, ModSpec("modrinth", slug, required=False))
+        configmod.append_mod(path, _mod_spec(slug, required=False))
     cfg = configmod.load(root)
     cfg.server.dir.mkdir(parents=True, exist_ok=True)
     write_properties(cfg.server.dir / "server.properties", {

@@ -20,8 +20,10 @@ from mcsm.mods.modrinth import API as MODRINTH
 FAKE_SERVER = textwrap.dedent("""\
     import sys, pathlib
     mods = pathlib.Path("mods")
-    if mods.is_dir() and any(p.name.startswith("crash") for p in mods.iterdir()):
+    bad = [p.name for p in mods.iterdir() if p.name.startswith("crash")] if mods.is_dir() else []
+    if bad:
         print("[Server thread/ERROR]: mod failed to load", flush=True)
+        print(f"\tat com.example.Mod.init(Mod.java:1) [{bad[0]}:?]", flush=True)
         sys.exit(1)
     print("[12:00:00] [Server thread/INFO]: Done (0.1s)! For help, type \\"help\\"", flush=True)
     for line in sys.stdin:
@@ -86,7 +88,10 @@ class FakeMojang(Mojang):
                              "releaseTime": f"2025-01-{i + 1:02d}T00:00:00+00:00"})
             self.http.json[url] = {"javaVersion": {"majorVersion": 21},
                                    "downloads": {"server": {"url": f"https://files.test/{v}/server.jar"}}}
-        versions.append({"id": "99w01a", "type": "snapshot", "url": "x", "releaseTime": "2026-01-01T00:00:00+00:00"})
+        versions.append({"id": "99w01a", "type": "snapshot", "url": "https://meta.test/99w01a.json",
+                         "releaseTime": "2026-01-01T00:00:00+00:00"})
+        self.http.json["https://meta.test/99w01a.json"] = {
+            "javaVersion": {"majorVersion": 21}, "downloads": {"server": {"url": "https://files.test/99w01a/server.jar"}}}
         self.http.json[MANIFEST_URL] = {"latest": {"release": releases[-1]}, "versions": list(reversed(versions))}
 
 
@@ -233,3 +238,34 @@ def fake_template(monkeypatch, fake_java):
         return text.replace("warn_minutes = [10, 5, 1]", "warn_minutes = []") \
                    .replace('startup_timeout = "10m"', 'startup_timeout = "30s"')
     monkeypatch.setattr(configmod, "render_template", render)
+
+
+@pytest.fixture
+def hub_env(tmp_path, http, modrinth, fake_template):
+    """A running hub with an installed server (alpha) and an unfinished one (main)."""
+    import threading
+    from mcsm import config as configmod, setup as setupmod
+    from mcsm.hub import Hub
+    from test_manager import manager, update
+    from test_web import Client, wait_for
+    modrinth.project("FAPI", "fabric-api", "Fabric API")
+    modrinth.version("FAPI", "0.1", ["1.21.1"])
+    modrinth.project("AAA", "goodmod", "Good Mod")
+    modrinth.version("AAA", "1.0", ["1.21.1"])
+    home = tmp_path / "home"
+    # An installed server in servers/alpha, and a never-finished one in the home folder (mcsm 0.1-0.3).
+    alpha = home / "servers" / "alpha"
+    setupmod.configure(alpha, setupmod.SetupSpec.from_dict({"loader": "fabric", "minecraft": "1.21.1",
+                                                            "motd": "Alpha", "accept_eula": True}))
+    assert update(manager(configmod.load(alpha), http, ["1.21.1"])).ok
+    setupmod.configure(home, setupmod.SetupSpec.from_dict({"loader": "fabric", "accept_eula": True}))
+    setupmod.mark_pending(home)
+
+    hub = Hub(home, make_manager=lambda cfg: manager(cfg, http, ["1.21.1"]), http=http, tick=0.1)
+    hub.web.port = 0
+    t = threading.Thread(target=hub.run, daemon=True)
+    t.start()
+    wait_for(lambda: hub.ui is not None and hub.ui.httpd is not None)
+    yield hub, Client(hub.ui.url.rstrip("/"))
+    hub.stop_requested.set()
+    t.join(30)

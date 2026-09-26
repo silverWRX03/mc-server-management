@@ -168,7 +168,7 @@ def test_join_runs_the_neoforge_installer(launcher, http):
     http.files["https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.1/neoforge-21.1.1-installer.jar"] = b"jar"
     ran = []
 
-    def run(cmd, cwd, capture_output, text):
+    def run(cmd, cwd, capture_output, text, **kw):  # kw: creationflags on Windows
         ran.append(cmd)
         vdir = launcher / "versions" / "neoforge-21.1.1"
         vdir.mkdir(parents=True)

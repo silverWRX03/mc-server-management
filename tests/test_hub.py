@@ -1,40 +1,11 @@
 """Several servers in one mcsm (`mcsm start`): listed in the web UI, and never started by themselves."""
 
 import json
-import threading
 
-import pytest
-
-from mcsm import cli, config as configmod, lock as lockmod, setup as setupmod, webauth
+from mcsm import cli, lock as lockmod, setup as setupmod, webauth
 from mcsm.hub import Hub
 
-from test_manager import manager, update
 from test_web import Client, wait_for
-
-
-@pytest.fixture
-def hub_env(tmp_path, http, modrinth, fake_template):
-    modrinth.project("FAPI", "fabric-api", "Fabric API")
-    modrinth.version("FAPI", "0.1", ["1.21.1"])
-    modrinth.project("AAA", "goodmod", "Good Mod")
-    modrinth.version("AAA", "1.0", ["1.21.1"])
-    home = tmp_path / "home"
-    # An installed server in servers/alpha, and a never-finished one in the home folder (mcsm 0.1-0.3).
-    alpha = home / "servers" / "alpha"
-    setupmod.configure(alpha, setupmod.SetupSpec.from_dict({"loader": "fabric", "minecraft": "1.21.1",
-                                                            "motd": "Alpha", "accept_eula": True}))
-    assert update(manager(configmod.load(alpha), http, ["1.21.1"])).ok
-    setupmod.configure(home, setupmod.SetupSpec.from_dict({"loader": "fabric", "accept_eula": True}))
-    setupmod.mark_pending(home)
-
-    hub = Hub(home, make_manager=lambda cfg: manager(cfg, http, ["1.21.1"]), http=http, tick=0.1)
-    hub.web.port = 0
-    t = threading.Thread(target=hub.run, daemon=True)
-    t.start()
-    wait_for(lambda: hub.ui is not None and hub.ui.httpd is not None)
-    yield hub, Client(hub.ui.url.rstrip("/"))
-    hub.stop_requested.set()
-    t.join(30)
 
 
 def login(c):
@@ -150,6 +121,13 @@ def test_create_a_server_from_the_web(hub_env):
     assert c.post("/api/hub/create", {"loader": "vanilla", "motd": "My World", "accept_eula": True})[1]["id"] == "my-world-2"
     ports = {s["id"]: s["port"] for s in c.get("/api/hub")[1]["servers"] if s["id"] != "main"}
     assert len(set(ports.values())) == 3 and ports["alpha"] == "25565"
+    # The setup page checks ports as you type, and a port picked by hand that's taken is refused.
+    info = c.get("/api/hub/port?port=25565")[1]
+    assert info["used_by"] == "Alpha" and info["suggestion"] not in (25565, int(ports["my-world"]), int(ports["my-world-2"]))
+    assert c.get("/api/hub/port?port=25590")[1]["used_by"] is None
+    assert c.get("/api/hub/port?port=80")[0] == 400
+    status, body, _ = c.post("/api/hub/create", {"loader": "vanilla", "motd": "Clash", "port": 25565, "accept_eula": True})
+    assert status == 400 and "already used" in body["error"]
     # Two servers can't be given the same port...
     status, body, _ = c.post("/api/servers/my-world/settings", {"port": 25565})
     assert status == 400 and "alpha" in body["error"]

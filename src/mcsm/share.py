@@ -43,6 +43,15 @@ HEADERS = {
 }
 
 
+def _is_local(host: str) -> bool:
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return host.endswith(".local") or host == "localhost"
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
 class ShareServer:
     def __init__(self, hub, port: int = DEFAULT_PORT, host: str = "0.0.0.0"):
         self.hub = hub
@@ -68,7 +77,10 @@ class ShareServer:
 
     def address(self, d, request_host: str) -> str:
         """host:port players connect Minecraft to."""
-        public = (self.hub.share_settings().get("address") or "").strip() or request_host
+        # A friend who opened the invite through this computer's local address is on the same
+        # network, so they join through it too; everyone else uses the public address.
+        public = request_host if _is_local(request_host) else \
+            (self.hub.share_settings().get("address") or "").strip() or request_host
         port = read_properties(d.m.server_dir / "server.properties").get("server-port", "25565")
         return public if port == "25565" else f"{public}:{port}"
 
@@ -199,10 +211,11 @@ h1{{margin:0;font-size:26px}} .muted{{color:#8b949e}} code{{background:#1e2328;p
 <div class="card"><strong>Download the setup for your computer</strong>
 <div class="btns">{btn("windows", "Windows")}{btn("macos", "Mac (Apple silicon)")}{btn("linux", "Linux")}</div>
 <ol>
-<li>You need the official <strong>Minecraft Launcher</strong> (Java Edition), opened and signed in at least once.</li>
-<li>Run the file you downloaded. It adds a <strong>{e(pack['name'])}</strong> installation to the launcher with the
-right Minecraft version and mods (your other worlds and installations aren't touched).</li>
-<li>In the Minecraft Launcher, pick <strong>{e(pack['name'])}</strong> and press Play.</li>
+<li>You need Minecraft: Java Edition and a launcher: the official <strong>Minecraft Launcher</strong>,
+<strong>Prism Launcher</strong>, the <strong>Modrinth App</strong> or <strong>CurseForge</strong>.</li>
+<li>Run the file you downloaded. A page opens where you tick your launchers; it adds <strong>{e(pack['name'])}</strong>
+to each with the right Minecraft version and mods (your other worlds and installations aren't touched).</li>
+<li>In your launcher, pick <strong>{e(pack['name'])}</strong> and press Play.</li>
 </ol>
 <p class="muted">Windows may say it "protected your PC", because this free app isn't code-signed: choose
 <em>More info → Run anyway</em>. On a Mac, right-click the file and choose <em>Open</em>. On Linux, run

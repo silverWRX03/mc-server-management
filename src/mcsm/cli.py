@@ -483,8 +483,7 @@ def cmd_join(args) -> int:
         m = Manager(configmod.load(args.from_server.resolve()), echo=False)
         port = read_properties(m.server_dir / "server.properties").get("server-port", "25565")
         pack = PackBuilder(m).build("localhost" if port == "25565" else f"localhost:{port}")
-        return join.run_interactive(None, confirm=not args.yes and interactive(), open_launcher=not args.no_launcher,
-                                    pack=pack, mc_dir=mc_dir)
+        return _join(args, None, pack, mc_dir)
     if args.invite:
         text = args.invite
     elif invite := join.invite_from_name(sys.executable if selfupdate.frozen() else sys.argv[0]):
@@ -499,8 +498,25 @@ def cmd_join(args) -> int:
     except join.JoinError as e:
         print(f"error: {e}")
         return 2
+    return _join(args, invite, None, mc_dir)
+
+
+def _join(args, invite, pack, mc_dir) -> int:
+    """The page in the browser when someone's there to use it; otherwise the console."""
+    from . import join, launchers
+    targets = [t.strip() for t in (args.launcher or "").split(",") if t.strip()]
+    if any(t not in launchers.KEYS for t in targets):
+        print(f"error: --launcher takes {', '.join(launchers.KEYS)}")
+        return 2
+    from . import desktop
+    if not (args.yes or args.console or targets or args.no_launcher) and (interactive() or desktop.windowless()):
+        from . import joinui
+        code = joinui.run(invite, pack=pack, mc_dir=mc_dir)
+        if code is not None:
+            return code
+        print("Couldn't open a browser; continuing here.\n")
     return join.run_interactive(invite, confirm=not args.yes and interactive(), open_launcher=not args.no_launcher,
-                                mc_dir=mc_dir)
+                                pack=pack, mc_dir=mc_dir, targets=targets or ["minecraft"])
 
 
 def cmd_stop(args) -> int:
@@ -848,6 +864,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from-server", type=Path, metavar="DIR",
                    help="set up for a server on this computer (its folder), instead of an invite")
     s.add_argument("--minecraft-dir", type=Path, metavar="DIR", help="the Minecraft Launcher's folder, if not the usual one")
+    s.add_argument("--launcher", metavar="LIST",
+                   help="launchers to add the server to, comma-separated: minecraft, prism, modrinth, curseforge "
+                        "(default: ask in the browser, or minecraft)")
+    s.add_argument("--console", action="store_true", help="ask in this window instead of opening a page in the browser")
     s.set_defaults(fn=cmd_join)
 
     s = sub.add_parser("setup", help="set up a new server by answering questions in the terminal")
@@ -982,6 +1002,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import desktop
+    desktop.setup()  # the Windows executable has no command window of its own
+    try:
+        return _entry(argv)
+    except Exception as e:  # pragma: no cover - last resort, so a windowless failure isn't silent
+        logging.getLogger(__name__).exception("mcsm stopped unexpectedly")
+        desktop.show_error(f"mcsm stopped unexpectedly: {e}\n\nDetails are in {desktop.log_path()}")
+        return 1
+
+
+def _entry(argv: list[str] | None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:  # e.g. a Windows console code page that lacks "•"
             stream.reconfigure(errors="replace")
@@ -999,8 +1030,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _main(args)
     finally:
+        from . import desktop
         if selfupdate.frozen() and os.name == "nt" and args.command in ("start", "join") and not argv \
-                and interactive():
+                and interactive() and not desktop.windowless():
             # Double-clicked on Windows: keep the console open so messages can be read.
             try:
                 input("\nPress Enter to close this window...")

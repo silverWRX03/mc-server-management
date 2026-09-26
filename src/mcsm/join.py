@@ -13,6 +13,9 @@ double-clicking it is enough. It then:
    multiplayer list (on Minecraft 1.20+ it joins straight away);
 5. opens the Minecraft Launcher.
 
+Prism Launcher, the Modrinth App and CurseForge are set up by launchers.py; the page
+where the friend picks launchers is joinui.py.
+
 Running it again brings the mods in line with the server (e.g. after it upgraded).
 """
 
@@ -225,7 +228,8 @@ class Joiner:
         with tempfile.TemporaryDirectory() as tmp:
             jar = Path(tmp) / "installer.jar"
             self.http.download(url, jar)
-            proc = self.run_cmd([java, "-jar", str(jar), "--installClient", str(self.mc)], cwd=tmp,
+            from .desktop import NO_WINDOW
+            proc = self.run_cmd([java, "-jar", str(jar), "--installClient", str(self.mc)], cwd=tmp, **NO_WINDOW,
                                 capture_output=True, text=True)
             if proc.returncode != 0:
                 tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-15:])
@@ -341,6 +345,7 @@ class Joiner:
 
     # ------------------------------------------------------------- all
     def run(self, pack: dict | None = None, open_launcher: bool = True) -> dict:
+        """Set up the official Minecraft Launcher."""
         pack = pack or self.fetch_pack()
         files = self.profiles()
         slug = slugify(pack["name"])
@@ -359,12 +364,47 @@ class Joiner:
                 "quick_play": _supports_quick_play(pack["minecraft"]), "address": pack["address"]}
 
 
+    def run_targets(self, pack: dict, targets: list[str], open_after: bool = True,
+                    prism_dir: Path | None = None, out_dir: Path | None = None) -> list[dict]:
+        """Add the server to each chosen launcher. One failing doesn't stop the others."""
+        from . import launchers, opener
+        slug = slugify(pack["name"])
+        out_dir = out_dir or opener.downloads_dir()
+        results = []
+        for key in [t for t in launchers.KEYS if t in targets]:
+            label = launchers.LABELS[key]
+            self.say(f"{label}:")
+            try:
+                if key == "minecraft":
+                    r = self.run(pack, open_launcher=open_after and len(targets) == 1)
+                    r = {**r, "launcher": key, "where": r["game_dir"],
+                         "message": f"added the \"{pack['name']}\" installation to the Minecraft Launcher"}
+                elif key == "prism":
+                    found = prism_dir or next((d for d in launchers.prism_dirs() if d.is_dir()), None)
+                    if found is None:
+                        raise JoinError("Prism Launcher isn't installed (or hasn't been opened yet)")
+                    r = launchers.install_prism(self, pack, slug, found)
+                    if open_after and len(targets) == 1:
+                        r["opened"] = launchers.open_prism(slug, pack["address"])
+                elif key == "modrinth":
+                    r = launchers.install_modrinth(self, pack, out_dir, open_it=open_after)
+                else:
+                    r = launchers.install_curseforge(self, pack, out_dir, open_it=open_after)
+                r["ok"] = True
+            except (JoinError, HttpError, OSError) as e:
+                r = {"launcher": key, "ok": False, "message": str(e)}
+            r["label"] = label
+            self.say(f"  {'done: ' if r['ok'] else 'failed: '}{r['message']}")
+            results.append(r)
+        return results
+
+
 def explain(pack: dict) -> str:
     n = len(pack.get("mods", []))
     loader = "plain Minecraft" if pack["loader"] == "vanilla" else f"{pack['loader'].capitalize()} {pack['loader_version']}"
     return "\n".join([
         f"This sets up your Minecraft to play on {pack['name']} ({pack['address']}):",
-        f"  - adds a \"{pack['name']}\" installation to the Minecraft Launcher: Minecraft {pack['minecraft']} with {loader}",
+        f"  - adds \"{pack['name']}\" to your launcher: Minecraft {pack['minecraft']} with {loader}",
         f"  - downloads {n} mod{'' if n == 1 else 's'} from Modrinth/CurseForge into its own folder "
         "(your other worlds and installations aren't touched)",
         "  - puts the server in that installation's multiplayer list",
@@ -374,7 +414,7 @@ def explain(pack: dict) -> str:
 
 
 def run_interactive(invite: Invite | None, confirm: bool = True, open_launcher: bool = True,
-                    pack: dict | None = None, mc_dir: Path | None = None) -> int:
+                    pack: dict | None = None, mc_dir: Path | None = None, targets: list[str] | None = None) -> int:
     """Set things up, printing progress. Either fetch the pack through ``invite``, or use
     ``pack`` (built from a server folder on this computer)."""
     joiner = Joiner(invite or Invite("localhost", 1, "local-" + "0" * 16), mc_dir=mc_dir)
@@ -396,6 +436,14 @@ def run_interactive(invite: Invite | None, confirm: bool = True, open_launcher: 
                 print("Nothing was changed.")
                 return 1
         started = time.monotonic()
+        if targets and targets != ["minecraft"]:
+            results = joiner.run_targets(pack, targets, open_after=open_launcher)
+            print(f"\nDone in {time.monotonic() - started:.0f}s.")
+            for r in results:
+                print(f"  {r['label']}: {r['message']}")
+            for m in pack.get("manual", []):
+                print(f"  ! {m['name']} can't be downloaded automatically: get it from {m['url']}")
+            return 0 if all(r["ok"] for r in results) else 1
         result = joiner.run(pack, open_launcher=open_launcher)
     except JoinError as e:
         print(f"\nCouldn't set things up: {e}")

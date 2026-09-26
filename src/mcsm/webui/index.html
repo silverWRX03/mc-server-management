@@ -4,11 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcsm</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%277%27 fill=%27%237ec850%27/%3E%3Crect y=%277%27 width=%2716%27 height=%279%27 fill=%27%238b5a2b%27/%3E%3C/svg%3E">
+  <link rel="icon" type="image/png" href="/icon.png">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div id="login" class="login hidden">
+    <button type="button" class="theme-toggle corner" data-theme-toggle aria-label="Switch between day and night" title="Day / night">
+          <span class="sun" aria-hidden="true"></span><span class="moon" aria-hidden="true"></span></button>
     <form id="login-form" class="login-card">
       <div class="brand big"><span class="logo"></span>mcsm</div>
       <p class="muted">Forever server control panel</p>
@@ -34,6 +36,7 @@
       <nav id="nav"></nav>
       <div class="sidebar-foot">
         <button id="logout" class="btn ghost small">Sign out</button>
+        <button id="quit" class="btn ghost small hidden" title="Stop every server and close mcsm">Quit</button>
         <span id="version" class="muted small"></span>
       </div>
     </aside>
@@ -51,6 +54,8 @@
           <button id="btn-restart" class="btn">Restart</button>
           <button id="btn-stop" class="btn danger">Stop</button>
         </div>
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch between day and night" title="Day / night">
+          <span class="sun" aria-hidden="true"></span><span class="moon" aria-hidden="true"></span></button>
       </header>
       <main id="main"></main>
     </div>

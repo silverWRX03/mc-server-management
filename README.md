@@ -1,5 +1,7 @@
 # mcsm: a forever Minecraft server
 
+<img src="docs/icon.png" alt="mcsm" width="128" align="right">
+
 `mcsm` runs your modded Minecraft server and **keeps it on the newest Minecraft
 release once your mods support it**. It watches for new releases and checks
 whether your loader and every mod you depend on (plus their dependencies) have
@@ -26,8 +28,12 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 
 - **Upgrades only when your mods are ready.** Every release newer than the one you run is
   checked against the loader and each mod, and you move to the newest one where
-  everything required is available. Mods marked `required = false` never hold an
-  upgrade back: they're left out and reinstalled once they catch up.
+  every mod is available (optional ones too; client-only mods don't count). Nothing is
+  removed behind your back.
+- **Monthly reminders about mods that fall behind.** A month after a new Minecraft
+  version comes out, and every month after, mcsm tells you which mods are still
+  holding it back (activity feed, Discord, and a banner in the web UI), and you can
+  choose **Remove them and update** or keep waiting.
 - **Safe upgrades.** All downloads are fetched and hash-checked in a staging area
   *before* the server is touched. After a backup, the new version gets a verification
   boot. If it crashes or times out, the backup is restored, the old version is
@@ -51,7 +57,31 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Player management:** kick, ban/pardon by name or IP, op/de-op and the whitelist,
   from the web UI or `mcsm player`, whether the server is running or stopped.
 - **Web control panel:** dashboard, live console, players, one-click updates, mod search,
-  uploads for blocked downloads, backups, Java and settings.
+  uploads for blocked downloads, backups, Java and settings, with **Open folder**
+  buttons for the server, world, mods, config, logs and backups.
+- **Dependencies come along:** picking a mod picks the mods it needs (shown under it),
+  and they're removed together. Mod lists only show mods that have a build for the
+  Minecraft version you chose.
+- **Edit mods' config files** from the Mods page in an editor with IDE-style colours
+  (TOML, JSON, YAML, .properties, .cfg, .ini); the previous version is kept on every save.
+- **Try before you buy:** when a server won't start, mcsm says which mod is to blame.
+  **Test these mods** checks a mod list for known conflicts, can start a throwaway
+  server with it, and if that fails, finds the culprits and tells you which mods work
+  together.
+- **Day and night themes**, switched with the sun/moon button.
+- **Try beta Minecraft versions** (snapshots and pre-releases) on a new server, or on a
+  copy of an existing one so your real world is never touched.
+- **Mods three ways:** `.jar` files from your computer (ones Modrinth recognises are
+  kept up to date), a **mod browser window** (search Modrinth and CurseForge with
+  filters and sorting, read each mod's page, tick as many as you like), or a whole
+  **Modrinth modpack**.
+- **Worlds:** pick the seed, world type, structures and hardcore when you create a
+  server, or **import any world**: a `.zip`, or a singleplayer world from the Minecraft
+  Launcher, Prism, the Modrinth App or CurseForge.
+- **Move a server to another computer:** export it to one file, import it there.
+- **Friend downloads:** friends run one file that adds your server, with the right
+  version and mods, to the Minecraft Launcher, Prism Launcher, the Modrinth App or
+  CurseForge.
 - **Discord notifications** for upgrades, blocked releases, crashes and rollbacks.
 - **Leaves your files alone.** Only files mcsm installed (tracked in `mcsm.lock.json`)
   are ever replaced. World, configs and hand-added jars are never touched.
@@ -97,7 +127,9 @@ right Java by itself).
 | Linux on ARM (Raspberry Pi 4/5 with a 64-bit OS) | [`mcsm-linux-arm64`](https://github.com/silverWRX03/mc-server-management/releases/latest/download/mcsm-linux-arm64) |
 
 **Windows:** put `mcsm-windows-x64.exe` in a folder of its own (for example
-`Documents\mcsm`) and double-click it.
+`Documents\mcsm`) and double-click it. There's no command window: mcsm opens in your
+browser, and **Quit** (bottom left) closes it. Double-clicking it again while it runs
+just opens the page again. Its log is in `mcsm\.mcsm\mcsm.log` in your user folder.
 - The first time, Windows SmartScreen may say *"Windows protected your PC"*, because
   the app isn't code-signed yet. Click **More info → Run anyway**.
 - When the server first starts, allow it through Windows Firewall so friends can connect.
@@ -139,12 +171,16 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
    - the server type: Fabric, NeoForge, Forge, Quilt or vanilla;
    - the Minecraft version: "newest" for a server that keeps upgrading itself, or a
      specific version to stay on;
-   - mods (only for server types that run them): the 20 most popular are listed, or
-     search Modrinth; each is marked required or optional;
-   - the server name, players, difficulty, game mode, memory and port;
-   - optionally, **Advanced settings**: world seed and type, PvP, spawn protection,
-     view distance, whitelist, idle kicks, resource pack and the rest of
-     `server.properties` (also on each server's Settings page later);
+   - mods (only for server types that run them): **Local files** (`.jar`s on your
+     computer), **Download mods** (opens the mod browser), **Modpacks** (build the server
+     from a Modrinth modpack), or quick-add from the 20 most popular;
+   - the world: a new one (seed, world type, structures, hardcore) or **Import a world**
+     (a `.zip`, or one of your singleplayer worlds);
+   - the server name, players, difficulty, game mode, memory and port (checked as you
+     type, so two servers never share one);
+   - optionally, **Advanced settings**: PvP, spawn protection, view distance,
+     whitelist, idle kicks, resource pack and the rest of `server.properties` (also on
+     each server's Settings page later);
    - the Minecraft EULA.
 5. **Create my server** downloads Java, the mod loader, Minecraft and your mods, checks
    that the server starts, and adds it to the list, ready for you to start. If a
@@ -155,10 +191,15 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
 
 ![New server](docs/web-setup.png)
 
+![The mod browser](docs/web-browse.png)
+
+![World options](docs/web-world.png)
+
 Prefer the terminal? `mcsm setup` asks the same questions there.
 
-Keep the mcsm window open while servers run, and press Ctrl+C (or close it) to stop
-them all cleanly.
+mcsm keeps running while servers run. To stop them all cleanly and close mcsm, press
+**Quit** at the bottom left of the control panel (or Ctrl+C in the terminal on a Mac or
+Linux).
 
 Servers live in a folder called `mcsm` in your home folder (`C:\Users\<you>\mcsm\servers\`
 on Windows), one folder each. To keep them somewhere else, set the `MCSM_HOME`
@@ -172,11 +213,15 @@ server's **Friends** page) and share the invite link. Your friends:
 
 1. open the link and download the setup for their computer (it's this same mcsm
    program, named after your server so it knows where to connect);
-2. run it. It adds a *Your Server* installation to their **official Minecraft
-   Launcher** with the right Minecraft version, mod loader (Fabric, Quilt, NeoForge or
-   Forge) and mods, in a folder of its own, and puts your server in its multiplayer list;
-3. pick that installation in the launcher and press Play. On Minecraft 1.20 and newer
-   it joins your server straight away.
+2. run it. A page opens in their browser where they tick their launchers: the
+   **Minecraft Launcher**, **Prism Launcher**, the **Modrinth App** and/or **CurseForge**
+   (ones found on their computer are ticked already). It adds *Your Server* to each,
+   with the right Minecraft version, mod loader (Fabric, Quilt, NeoForge or Forge) and
+   mods, in a folder of its own, with your server in its multiplayer list. Prism gets
+   an instance directly; the Modrinth App gets a `.mrpack` it imports; CurseForge gets
+   a modpack `.zip` to import (Create Custom Profile → Import);
+3. pick it in the launcher and press Play. On Minecraft 1.20 and newer it joins your
+   server straight away.
 
 Mods come straight from Modrinth or CurseForge (every file is checked against its
 checksum); only mods that run on players' computers are included, plus any
@@ -191,6 +236,21 @@ serves only the invite page, the mod list and the download, never the control pa
 To play on the server from this computer too: `mcsm join --from-server <server folder>`.
 
 ![What friends see](docs/web-join.png)
+
+![Picking launchers](docs/web-friend-setup.png)
+
+The Friends page has two invite links: a **local** one for friends on your Wi-Fi, and an
+**internet** one; **Use my public IP** finds your public address for it. If you tick
+"Make a download for my friends" when creating a server, mcsm offers to set up the
+friends' mods while the server installs (its progress stays at the bottom of the window).
+
+In a terminal, `mcsm join <invite> --launcher prism,modrinth` (or `--console`) does the
+same without the page.
+
+**Moving a server to another computer:** on its **Settings** page, **Export server**
+saves its worlds, mods, configs, settings and player lists (and optionally backups) in
+one `.zip` (it saves the world first, so the server can keep running). Install mcsm on
+the other computer and choose **Import a server…** on the server list.
 
 **Deleting a server:** use **Delete** on its card, or **Delete server…** at the bottom
 of its Settings. You choose whether to keep its files (it just leaves the list) or
@@ -244,7 +304,7 @@ mcsm
 
 ### Windows and macOS in the background
 
-Keep the window open while the server runs. To start it automatically, add
+mcsm runs until you press **Quit** in the control panel. To start it automatically, add
 `mcsm-windows-x64.exe` to Task Scheduler with the trigger *At log on*. On a Mac, add
 it to *System Settings → General → Login Items*.
 
@@ -306,20 +366,30 @@ Then open <http://localhost:8765>.
 
 | Page | What you can do |
 |---|---|
-| **Dashboard** | CPU and memory bars; who's online, with head icons and one-click message / op / kick / ban; the server console with a command box; server state, update status, live activity feed |
+| **Dashboard** | CPU and memory bars; who's online, with head icons and one-click message / op / kick / ban; the server console with a command box; server state, update status, live activity feed; the monthly reminder about mods holding back a new version |
 | **Console** | live server log (warnings and errors highlighted), send commands with history |
 | **Players** | who's online; kick, ban/pardon (by name or IP), op/de-op, whitelist on/off and add/remove; everyone who has joined before |
-| **Updates** | check now, see exactly what would change, which mods block newer versions, apply with one click |
-| **Mods** | search Modrinth for server-compatible mods and add them, add CurseForge mods, mark mods required/optional, remove them |
+| **Updates** | check now, see exactly what would change, which mods block newer versions, apply with one click, or remove the mods holding it back and update; test a beta Minecraft on a copy of the server |
+| **Mods** | add `.jar`s from your computer, open the mod browser (Modrinth and CurseForge), start a new server from a modpack, mark mods required/optional, remove them (with the dependencies nothing else needs), edit their config files |
 | **Backups** | back up now (with a proper `save-all`), restore any backup |
 | **Java** | see which runtime the server uses, download Temurin versions, pin a version |
-| **Settings** | update strategy, schedule, countdowns, memory, backups to keep, Discord webhook |
+| **Settings** | update strategy, schedule, countdowns, memory, port, backups to keep, Discord webhook, all of `server.properties`; replace the world; export the server; delete it |
 
 Mods whose authors block third-party downloads get a **Download** link and an
 **Upload** button right on the Updates page. The uploaded file is checked against
 CurseForge's checksum before it's accepted.
 
 ![Updates page](docs/web-updates.png)
+
+![A monthly reminder](docs/web-reminder.png)
+
+![Editing a mod's config file](docs/web-config-editor.png)
+
+![Testing a mod list](docs/web-mod-test.png)
+
+**Open folder** buttons (server, world, mods, config, logs, crash reports, backups,
+exports, manual downloads, Java) appear only in a browser on the server's own
+computer, where mcsm can open your file manager.
 
 **Signing in.** The first password is `PASSWORD`, and the panel asks you to change
 it right after you sign in. You can pick a password, a 4–8 digit PIN, or no password.
@@ -462,6 +532,8 @@ check_interval = "6h"
 warn_minutes = [10, 5, 1]
 wait_for_empty = false
 verify_boot = true
+wait_for_all_mods = true         # a new Minecraft only once every mod supports it
+remind_days = 30                 # then remind you monthly about the mods still behind
 
 [java]
 version = "auto"                 # or force a major version, e.g. 21
@@ -560,7 +632,6 @@ The test suite runs the full install → upgrade → crash → rollback cycle ag
 
 - Paper/Purpur plugin servers (Hangar/Modrinth plugins)
 - Docker image
-
 
 ## License
 

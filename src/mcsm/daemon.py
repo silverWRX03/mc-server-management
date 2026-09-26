@@ -132,7 +132,13 @@ class _EventHandler(logging.Handler):
 
 
 def decision_to_dict(m: Manager, decision, changes) -> dict:
+    from . import reminders
     plan = decision.plan
+    try:
+        lagging = reminders.lagging(m, decision)
+    except Exception as e:  # never let this break the update check
+        log.debug("couldn't work out which mods are behind: %s", e)
+        lagging = None
     return {
         "checked_at": time.time(),
         "installed": m.lock.minecraft,
@@ -147,8 +153,9 @@ def decision_to_dict(m: Manager, decision, changes) -> dict:
         "blocked": [{
             "minecraft": p.minecraft,
             "loader_missing": p.loader_version is None,
-            "blockers": [{"name": b.name, "reason": b.reason} for b in p.blockers],
+            "blockers": [{"name": b.name, "reason": b.reason, "waiting": b.waiting} for b in p.blockers],
         } for p in decision.blocked],
+        "lagging": lagging,
     }
 
 
@@ -383,6 +390,11 @@ class Daemon:
         while self.crashes and now - self.crashes[0] > CRASH_WINDOW:
             self.crashes.popleft()
         tail = "\n".join(self.proc.tail(15))
+        from .diagnose import diagnose
+        blame = diagnose(self.proc.tail(400), self.m.server_dir, self.m.lock.mods).summary
+        if blame:  # say which mod it was, where people look
+            log.error("%s", blame)
+            tail = f"{blame}\n{tail}"
         self.proc.stopping = True  # handled; don't count this exit twice
         if not self.m.config.restart_on_crash or len(self.crashes) > MAX_CRASHES:
             self.m.notifier.send(f"Server stopped unexpectedly (exit {self.proc.returncode}); not restarting.\n{tail}")
@@ -421,7 +433,13 @@ class Daemon:
     def check_only(self, target: str | None = None) -> str:
         decision, changes = self.m.check(target, retry_failed=True)
         self.last_check = decision_to_dict(self.m, decision, changes)
+        from . import reminders
+        reminders.remind(self.m, self.last_check.get("lagging"))
         if self.last_check["up_to_date"]:
+            lag = self.last_check.get("lagging")
+            if lag:
+                return (f"up to date on Minecraft {self.m.lock.minecraft}; {lag['version']} waits for "
+                        f"{len(lag['mods'])} mod(s) to support it")
             return f"up to date (Minecraft {self.m.lock.minecraft})"
         if decision.plan:
             return f"update available: Minecraft {decision.plan.minecraft}"
@@ -437,6 +455,8 @@ class Daemon:
             log.warning("update check failed: %s", e)
             return f"update check failed: {e}"
         self.last_check = decision_to_dict(self.m, decision, changes)
+        from . import reminders
+        reminders.remind(self.m, self.last_check.get("lagging"))
         for plan in decision.blocked:
             if plan.minecraft == decision.latest and plan.fingerprint not in self.announced:
                 self.announced.add(plan.fingerprint)
@@ -486,6 +506,16 @@ class Daemon:
             raise RuntimeError(result.message)
         return result.message
 
+    def remove_and_upgrade(self, version: str, mods: list[str]) -> str:
+        """The admin's answer to a reminder: drop the mods that haven't caught up, then update."""
+        from . import config as configmod
+        for item in mods:
+            source, _, mod_id = item.partition(":")
+            if configmod.remove_mod(self.m.config.path, source, mod_id):
+                log.info("removed %s from mcsm.toml so the server can move to Minecraft %s", mod_id, version)
+        self.m.reload_config()
+        return self.check_for_updates(force=True, target=version)
+
     # ------------------------------------------------------------ setup
     @property
     def setup_pending(self) -> bool:
@@ -496,9 +526,19 @@ class Daemon:
         if self.m.lock.installed:
             raise RuntimeError("this server is already set up")
         setupmod.configure(self.m.config.root, spec)
+        if spec.modpack_version:
+            from . import modpack
+            log.info("downloading the modpack")
+            modpack.apply(self.m.config.root, spec.modpack_version, self.m.http)
         self.m.reload_config()
-        log.info("setting up a %s server (Minecraft %s, %d mod(s))", spec.loader, spec.minecraft,
-                 len(spec.mods) + len(spec.optional_mods))
+        if spec.world_source is not None:
+            from . import world
+            from .properties import read_properties
+            level = read_properties(self.m.server_dir / "server.properties").get("level-name") or "world"
+            log.info("bringing in your world")
+            world.install(spec.world_source, self.m.server_dir / level)
+        log.info("setting up a %s server (Minecraft %s, %d mod(s))", self.m.config.server.loader,
+                 self.m.config.server.minecraft, len(self.m.config.mods))
         self.check_only()
         if not self.last_check or not self.last_check.get("target"):
             blocked = self.last_check.get("blocked", []) if self.last_check else []

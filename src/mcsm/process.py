@@ -11,6 +11,8 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
+from .desktop import NO_WINDOW
+
 log = logging.getLogger(__name__)
 
 READY = re.compile(r"\]: Done \([\d.,]+s\)!|^Done \([\d.,]+s\)!")
@@ -52,7 +54,7 @@ class ServerProcess:
         self.lines.clear()
         self.proc = subprocess.Popen(
             self.argv, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace")
+            stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace", **NO_WINDOW)
         self._reader = threading.Thread(target=self._read, daemon=True, name="server-output")
         self._reader.start()
 

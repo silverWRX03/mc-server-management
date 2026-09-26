@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import sys
 import threading
@@ -64,6 +65,39 @@ def _rmtree(path: Path) -> None:
         shutil.rmtree(path, onerror=retry)
 
 
+def receive(handler, dest: Path, max_bytes: int) -> Path:
+    """Stream a request body into ``dest`` (atomically)."""
+    length = int(handler.headers.get("Content-Length") or 0)
+    if not 0 < length <= max_bytes:
+        raise ValueError("the file is empty or too large")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.part")
+    try:
+        with open(tmp, "wb") as out:
+            remaining = length
+            while remaining:
+                chunk = handler.rfile.read(min(1 << 16, remaining))
+                if not chunk:
+                    raise ValueError("the upload was interrupted")
+                out.write(chunk)
+                remaining -= len(chunk)
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return dest
+
+
+def port_free(port: int) -> bool:
+    """Whether nothing on this computer is listening on a TCP port."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+            return True
+        except OSError:
+            return False
+
+
 def slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "server"
 
@@ -74,6 +108,7 @@ class Hub:
         self.home = home.resolve()
         self.http = http or HttpClient()
         self.make_manager = make_manager or (lambda cfg: Manager(cfg, http=self.http, echo=False))
+        self.trials: dict = {}  # test boots (trial.Trial) by id
         self.tick = tick
         self._single: Daemon | None = None
         self.daemons: dict[str, Daemon] = {}
@@ -103,6 +138,8 @@ class Hub:
         hub.ui = None
         hub.share = None
         hub.share_error = None
+        hub.trials = {}
+        hub.make_manager = lambda cfg: Manager(cfg, http=hub.http, echo=False)
         return hub
 
     # --------------------------------------------------------- settings
@@ -193,6 +230,25 @@ class Hub:
             except OSError as e:
                 self.share_error = f"port {port} is busy ({e.strerror or e}); pick another in mcsm settings"
                 log.warning("couldn't start sharing: %s", self.share_error)
+
+    PUBLIC_IP_SERVICES = ("https://api.ipify.org?format=json", "https://api64.ipify.org?format=json",
+                          "https://ifconfig.co/json")
+
+    def public_ip(self) -> str:
+        """This network's address on the internet, as other sites see it."""
+        import ipaddress
+        errors = []
+        for url in self.PUBLIC_IP_SERVICES:
+            try:
+                ip = str(self.http.get_json(url, headers={"Accept": "application/json"}).get("ip", "")).strip()
+                addr = ipaddress.ip_address(ip)
+            except Exception as e:
+                errors.append(str(e))
+                continue
+            if addr.is_global:
+                return str(addr)
+        raise RuntimeError("couldn't find your public address (" + (errors[-1] if errors else "no answer") + "); "
+                           "check the internet connection, or type it in under mcsm settings → Sharing")
 
     def share_status(self) -> dict:
         from .cli import lan_ip
@@ -286,9 +342,30 @@ class Hub:
     def free_port(self, start: int = 25565) -> int:
         taken = self.ports()
         port = start
-        while port in taken:
+        while port in taken or port in self.reserved_ports() or not port_free(port):
             port += 1
         return port
+
+    def reserved_ports(self) -> set[int]:
+        """Ports mcsm itself listens on (the control panel and the friends' download)."""
+        out = {self.web.port}
+        if self.ui is not None and self.ui.httpd is not None:
+            out.add(self.ui.httpd.server_address[1])
+        if not self.is_single:
+            out.add(self.share_settings()["port"])
+        return out
+
+    def port_info(self, port: int, exclude: str | None = None) -> dict:
+        """Whether a Minecraft port can be used: by another server here, by mcsm, or by another program."""
+        from .properties import read_properties
+        used_by = None
+        sid = self.ports(exclude).get(port)
+        if sid is not None and sid in self.daemons:
+            used_by = read_properties(self.daemons[sid].m.server_dir / "server.properties").get("motd") or sid
+        running_here = sid is not None and sid in self.daemons and bool(
+            self.daemons[sid].proc and self.daemons[sid].proc.running)
+        return {"port": port, "used_by": used_by, "mcsm": port in self.reserved_ports(),
+                "busy": not running_here and not port_free(port), "suggestion": self.free_port()}
 
     def check_port(self, daemon: Daemon) -> None:
         """Refuse to start a server whose port another running server here already uses."""
@@ -302,6 +379,47 @@ class Hub:
                 raise RuntimeError(f"port {port} is already used by {name}, which is running; "
                                    "stop it first, or give this server another port in its Settings")
 
+    @property
+    def staging_dir(self) -> Path:
+        return self.state_dir / "staging"
+
+    def stage_upload(self, handler, filename: str, max_bytes: int) -> dict:
+        """Keep an upload (from the setup page) until the server it's for is created."""
+        import secrets
+        cutoff = time.time() - 86400
+        if self.staging_dir.is_dir():
+            for old in self.staging_dir.iterdir():
+                if old.stat().st_mtime < cutoff:
+                    shutil.rmtree(old, ignore_errors=True)
+        sid = secrets.token_hex(8)
+        dest = self.staging_dir / sid / filename
+        receive(handler, dest, max_bytes)
+        return {"id": sid, "filename": filename, "size": dest.stat().st_size}
+
+    def world_source(self, choice: str) -> Path | None:
+        """Where a world picked on the setup page (or Settings) is: an upload, or a singleplayer save."""
+        from . import world
+        if not choice:
+            return None
+        if choice.startswith("save:"):
+            return world.find_save(choice[5:])
+        found = list((self.staging_dir / choice).glob("*.zip")) if re.fullmatch(r"[a-f0-9]{16}", choice) else []
+        if not found:
+            raise ConfigError("the uploaded world isn't here any more; upload it again")
+        return found[0]
+
+    def take_staged(self, stage_ids: list[str], mods_dir: Path) -> int:
+        """Move jars picked with "Local files" on the setup page into a server's mods folder."""
+        moved = 0
+        for stage_id in stage_ids:
+            folder = self.staging_dir / stage_id
+            for f in folder.glob("*.jar"):
+                mods_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(f), mods_dir / f.name)
+                moved += 1
+            shutil.rmtree(folder, ignore_errors=True)
+        return moved
+
     def create(self, spec: setupmod.SetupSpec) -> str:
         """Make a new server folder from the setup page and start installing it (not running it)."""
         if self.is_single:
@@ -314,10 +432,15 @@ class Hub:
                 sid, n = f"{base}-{n}", n + 1
             root = self.home / SERVERS_DIR / sid
             if spec.port in self.ports():
+                if spec.port_chosen:
+                    other = self.ports()[spec.port]
+                    raise ConfigError(f"port {spec.port} is already used by another server here ({other}); pick another")
                 spec.port = self.free_port(spec.port)  # two servers can't share a port
             spec.network_access = False  # the hub's own setting decides who can open the panel
+            spec.world_source = self.world_source(spec.world)  # before any files are written
             setupmod.configure(root, spec)
             setupmod.mark_pending(root)
+            self.take_staged(spec.local_mods, configmod.load(root).server.dir / "mods")
             self._attach(sid, root)
             d = self.daemons.get(sid)
             if d is None:
@@ -325,6 +448,52 @@ class Hub:
         log.info("creating server %s in %s", sid, root)
         if not d.submit("set up server", d.run_setup, spec):
             raise RuntimeError("the new server is busy; try again")
+        return sid
+
+    @property
+    def exports_dir(self) -> Path:
+        return self.home / "exports"
+
+    def import_server(self, stage_id: str) -> str:
+        """Add a server from an export (Settings → Export on another computer)."""
+        if self.is_single:
+            raise RuntimeError("this mcsm runs a single server (`mcsm run`); use `mcsm start` to import servers")
+        if not re.fullmatch(r"[a-f0-9]{16}", stage_id or ""):
+            raise ConfigError("that upload isn't here any more; upload the file again")
+        found = list((self.staging_dir / stage_id).glob("*.zip"))
+        if not found:
+            raise ConfigError("that upload isn't here any more; upload the file again")
+        sid = self.import_archive(found[0])
+        shutil.rmtree(self.staging_dir / stage_id, ignore_errors=True)
+        return sid
+
+    def import_archive(self, archive: Path, name: str | None = None,
+                       prepare: Callable[[Path], None] | None = None) -> str:
+        """A new server from an export (``name`` renames it; ``prepare`` adjusts its folder
+        before it's loaded)."""
+        from . import transfer
+        manifest = transfer.read_manifest(archive)
+        with self._lock:
+            base = slugify(name or manifest.get("name") or manifest.get("folder") or "imported")
+            sid, n = base, 2
+            taken = set(self.discover()) | {HOME_ID}
+            while sid in taken or (self.home / SERVERS_DIR / sid).exists():
+                sid, n = f"{base}-{n}", n + 1
+            root = self.home / SERVERS_DIR / sid
+            transfer.import_into(archive, root)
+            from .properties import read_properties, write_properties
+            props_path = configmod.load(root).server.dir / "server.properties"
+            if name:
+                write_properties(props_path, {"motd": name[:59]})
+            port = int(read_properties(props_path).get("server-port", "25565") or 25565)
+            if port in self.ports():  # another server here already uses it
+                new = self.free_port(port)
+                write_properties(props_path, {"server-port": str(new)})
+                log.info("the imported server used port %d, which is taken here; it now uses %d", port, new)
+            if prepare:
+                prepare(root)
+            self._attach(sid, root)
+        log.info("imported %s into %s", name or manifest.get("name"), root)
         return sid
 
     def delete(self, sid: str, delete_files: bool) -> str:

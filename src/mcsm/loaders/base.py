@@ -54,8 +54,9 @@ class Loader(ABC):
 
 
 def run_installer(java: str, installer: Path, args: list[str], cwd: Path) -> None:
+    from ..desktop import NO_WINDOW
     proc = subprocess.run([java, "-jar", str(installer), *args], cwd=cwd,
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, **NO_WINDOW)
     if proc.returncode != 0:
         tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-20:])
         raise LoaderError(f"installer {installer.name} failed (exit {proc.returncode}):\n{tail}")

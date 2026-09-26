@@ -46,7 +46,10 @@ exe = EXE(
     a.datas,
     [],
     name="mcsm",
-    console=True,       # a console window shows the server log and the web UI password
+    icon=str(root / "packaging" / "mcsm.ico"),  # drawn by packaging/make_icon.py
+    # Windows: no command window; everything happens in the browser (see mcsm/desktop.py).
+    # macOS and Linux keep the terminal, where it's started from.
+    console=sys.platform != "win32",
     upx=False,          # UPX-packed binaries trigger antivirus false positives
     strip=False,
 )

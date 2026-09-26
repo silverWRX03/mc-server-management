@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import logging
 import re
 import secrets
@@ -31,12 +32,12 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, backup, config as configmod, licenses, notice, serverprops, setup as setupmod, stats, webauth
+from . import __version__, backup, config as configmod, configs, licenses, notice, serverprops, setup as setupmod, stats, webauth
 from .config import ConfigError, ModSpec
 from .daemon import Daemon, set_current_server
 from .hub import Hub
 from .minecraft import Mojang
-from .http import sha1_file
+from .http import HttpError, sha1_file
 from .java import JavaError
 from .mods import ModError
 from .mods.modrinth import ModrinthProvider
@@ -50,9 +51,12 @@ SESSION_COOKIE = "mcsm_session"
 SESSION_TTL = 7 * 86400
 MAX_JSON = 1 << 20
 MAX_UPLOAD = 512 << 20
+MAX_ARCHIVE = 64 << 30
+LOCAL_ONLY = {"/api/open", "/api/hub/open"}  # they act on this computer's screen  # a whole server (worlds and all), for importing
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-          "/style.css": ("style.css", "text/css; charset=utf-8")}
+          "/style.css": ("style.css", "text/css; charset=utf-8"),
+          "/icon.png": ("icon.png", "image/png")}
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' https: data:; style-src 'self'; "
                                "script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
@@ -64,6 +68,8 @@ SECURITY_HEADERS = {
 
 # Reachable before the first-run notice has been accepted.
 NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses", "/api/auth/change", "/api/hub"}
+# Routes whose request body is a file, streamed to disk rather than parsed as JSON.
+RAW_UPLOADS = {"/api/hub/stage", "/api/mods/local"}
 SERVER_PATH = re.compile(r"^/api/servers/([a-z0-9][a-z0-9-]{0,63})(/.*)$")
 
 
@@ -238,6 +244,20 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, path: Path):
+        """Stream a file from disk as a download."""
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(size))
+        quoted = urllib.parse.quote(path.name)
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quoted}")
+        for k, v in {"Cache-Control": "no-store", **SECURITY_HEADERS}.items():
+            self.send_header(k, v)
+        self.end_headers()
+        with open(path, "rb") as f:
+            shutil.copyfileobj(f, self.wfile, 1 << 20)
+
     def _json(self, status: int, obj: Any, headers: dict[str, str] | None = None):
         self._send(status, json.dumps(obj).encode(), "application/json", headers)
 
@@ -320,11 +340,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True},
                                   {"Set-Cookie": f"{SESSION_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict"})
             q = {k: v[-1] for k, v in query.items()}
+            if path in LOCAL_ONLY and not local:
+                raise ApiError(403, "opening folders only works in a browser on the server's own computer")
             handler = self.web.hub_api.routes.get((method, path))
             if handler is not None:
                 if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
                     raise ApiError(428, "accept the notice first")
-                return self._json(200, handler(q, self._body() if method == "POST" else {}))
+                if path in RAW_UPLOADS:
+                    return self._json(200, handler(q, self))
+                result = handler(q, self._body() if method == "POST" else {})
+                if path == "/api/hub":
+                    result = {**result, "local": local}  # whether "Open folder" buttons can work
+                return self._json(200, result)
             if m := SERVER_PATH.match(path):
                 sid, path = m.group(1), "/api" + m.group(2)
             elif only := self.web.hub.only():  # single server: the short URLs still work
@@ -333,6 +360,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not found")
             if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
                 raise ApiError(428, "accept the notice first")
+            if path in LOCAL_ONLY and not local:
+                raise ApiError(403, "opening folders only works in a browser on the server's own computer")
             api = self.web.api_for(sid)
             set_current_server(api.d.server_id)  # so this server's activity feed shows what happens
             handler = api.routes.get((method, path))
@@ -340,6 +369,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not found")
             if path == "/api/manual/upload":
                 return self._json(200, api.upload(self, q))
+            if path in RAW_UPLOADS:
+                return self._json(200, handler(q, self))
+            if path == "/api/export/download":
+                return self._send_file(api.export_file(q.get("name", "")))
             if path == "/api/players/skin":
                 try:
                     png = api.skins.png(q.get("name", ""))
@@ -359,9 +392,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 def setup_options(mojang: Mojang) -> dict:
     """The choices on the setup page."""
-    versions, error = [], None
+    versions, betas, error = [], [], None
     try:
         versions = list(reversed(mojang.releases()))[:40]
+        betas = mojang.betas()
     except Exception as e:  # offline: "latest" still works once the network is back
         error = f"couldn't load the list of Minecraft versions: {e}"
     total = setupmod.total_ram_gb()
@@ -369,6 +403,7 @@ def setup_options(mojang: Mojang) -> dict:
         "loaders": [{"name": n, "label": label, "description": desc, "mods": mods}
                     for n, label, desc, mods in setupmod.LOADER_INFO],
         "versions": versions,
+        "betas": betas,
         "versions_error": error,
         "total_ram_gb": round(total, 1) if total else None,
         "memory_gb": setupmod.suggested_memory_gb(total),
@@ -378,7 +413,8 @@ def setup_options(mojang: Mojang) -> dict:
     }
 
 
-def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_loader: str) -> dict:
+def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_loader: str,
+                default_version: str | None = None) -> dict:
     """Modrinth search for the setup and Mods pages; with ``top=1`` and no query, the 20 most popular."""
     query = q.get("q", "").strip()
     top = q.get("top") == "1"
@@ -390,11 +426,107 @@ def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_l
         raise ApiError(400, "unknown loader")
     if not LOADERS[loader_name].mod_loaders:
         return {"results": []}  # vanilla: no mods
+    version = q.get("version", default_version) or None  # only mods with a build for it
+    if version and not re.fullmatch(r"[A-Za-z0-9.+-]{1,32}", version):
+        raise ApiError(400, "bad Minecraft version")
     results = provider.search(query, LOADERS[loader_name].mod_loaders, limit=20,
-                              index="relevance" if query else "downloads")
+                              index="relevance" if query else "downloads", minecraft=version)
     for r in results:
         r["listed"] = r["id"] in listed or r["slug"] in listed
     return {"results": results}
+
+
+def mod_requirements(provider: ModrinthProvider, mod_id: str, loaders: tuple[str, ...], minecraft: str | None,
+                     channel: str = "release", limit: int = 30) -> dict:
+    """Whether a Modrinth mod has a build for ``minecraft`` (any version when None), and the
+    mods it needs (their dependencies too), so pickers can select them along with it."""
+    def newest(project_id: str):
+        ok = [v for v in provider._versions(project_id, loaders) if provider._acceptable(v, channel)
+              and (minecraft is None or minecraft in v.get("game_versions", []))]
+        return max(ok, key=lambda v: v.get("date_published", "")) if ok else None
+
+    def required(version) -> list[str]:
+        return [d["project_id"] for d in version.get("dependencies", [])
+                if d.get("dependency_type") == "required" and d.get("project_id")]
+
+    project = provider.project(mod_id)
+    info = {"id": project.id, "slug": project.slug, "name": project.name}
+    version = newest(project.id)
+    if version is None:
+        where = f"Minecraft {minecraft}" if minecraft else "this server type"
+        return {"project": info, "compatible": False, "reason": f"{project.name} has no build for {where}", "deps": []}
+    deps, seen = [], {project.id}
+    queue = [(pid, project.name) for pid in required(version)]
+    while queue and len(seen) < limit:
+        pid, needed_by = queue.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            dep = provider.project(pid)
+        except ModError:
+            continue
+        if dep.server_side == "unsupported":
+            continue  # only players need it
+        dep_version = newest(dep.id)
+        deps.append({"id": dep.id, "slug": dep.slug, "name": dep.name, "needed_by": needed_by,
+                     "compatible": dep_version is not None})
+        if dep_version is not None:
+            queue += [(x, dep.name) for x in required(dep_version)]
+    return {"project": info, "compatible": all(d["compatible"] for d in deps), "deps": deps,
+            "reason": next((f"it needs {d['name']}, which has no build for Minecraft {minecraft}"
+                            for d in deps if not d["compatible"]), "")}
+
+
+def requirements_query(provider: ModrinthProvider, q: dict, manager=None) -> dict:
+    from .loaders import LOADERS
+    mod_id = q.get("id", "")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", mod_id):
+        raise ApiError(400, "bad mod id")
+    loader = q.get("loader") or (manager.config.server.loader if manager else "")
+    if loader not in LOADERS or not LOADERS[loader].mod_loaders:
+        raise ApiError(400, "that server type doesn't run mods")
+    version = q.get("version")
+    if version is None and manager is not None:
+        version = manager.lock.minecraft
+    return mod_requirements(provider, mod_id, LOADERS[loader].mod_loaders, version or None)
+
+
+def browse_search(browser, q: dict, manager=None) -> dict:
+    from .browse import BrowseError
+    kind = q.get("type", "mod")
+    loader = q.get("loader") or (manager.config.server.loader if manager else None)
+    if loader == "vanilla":
+        loader = None
+    version = q.get("version")
+    if version is None and manager is not None:
+        version = manager.lock.minecraft or None
+    try:
+        return browser.search(q.get("source", "modrinth"), kind, q.get("q", "").strip()[:100], loader or None,
+                              version or None, q.get("category") or None, q.get("sort", "relevance"),
+                              int(q.get("offset", 0) or 0))
+    except BrowseError as e:
+        raise ApiError(400, str(e)) from None
+
+
+def browse_project(browser, q: dict) -> dict:
+    from .browse import BrowseError
+    pid = q.get("id", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", pid):
+        raise ApiError(400, "bad project id")
+    try:
+        return browser.project(q.get("source", "modrinth"), pid)
+    except BrowseError as e:
+        raise ApiError(400, str(e)) from None
+
+
+def browse_categories(browser, q: dict) -> dict:
+    from .browse import BrowseError
+    try:
+        return {"categories": browser.categories(q.get("source", "modrinth"), q.get("type", "mod")),
+                "sources": browser.sources}
+    except BrowseError as e:
+        raise ApiError(400, str(e)) from None
 
 
 class HubApi:
@@ -408,10 +540,25 @@ class HubApi:
         r: dict[tuple[str, str], Callable[[dict, dict], Any]] = {}
         r[("GET", "/api/hub")] = self.overview
         r[("GET", "/api/hub/setup")] = self.new_server_options
+        r[("GET", "/api/hub/mods/requires")] = lambda q, b: requirements_query(ModrinthProvider(self.hub.http), q)
         r[("GET", "/api/hub/mods/search")] = lambda q, b: search_mods(ModrinthProvider(self.hub.http), q, set(), "fabric")
         r[("POST", "/api/hub/create")] = self.create
         r[("POST", "/api/hub/network")] = self.network
         r[("POST", "/api/hub/share")] = self.save_share
+        r[("GET", "/api/hub/port")] = self.port_check
+        r[("POST", "/api/hub/stage")] = self.stage
+        r[("POST", "/api/hub/open")] = self.open_folder
+        r[("POST", "/api/hub/quit")] = self.quit
+        r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
+        r[("POST", "/api/hub/mods/check")] = self.check_mods
+        r[("POST", "/api/hub/trial")] = self.start_trial
+        r[("GET", "/api/hub/trial")] = self.trial_status
+        r[("POST", "/api/hub/trial/cancel")] = self.cancel_trial
+        r[("GET", "/api/hub/saves")] = self.saves
+        r[("POST", "/api/hub/import")] = lambda q, b: {"ok": True, "id": self.hub.import_server(str(b.get("id", "")))}
+        r[("GET", "/api/hub/browse/search")] = lambda q, b: browse_search(self.browser(), q)
+        r[("GET", "/api/hub/browse/project")] = lambda q, b: browse_project(self.browser(), q)
+        r[("GET", "/api/hub/browse/categories")] = lambda q, b: browse_categories(self.browser(), q)
         r[("POST", "/api/hub/delete")] = lambda q, b: {
             "ok": True, "message": self.hub.delete(str(b.get("id", "")), b.get("delete_files") is True)}
         r[("GET", "/api/notice")] = lambda q, b: {"accepted": notice.accepted(self.hub.root), "version": notice.NOTICE_VERSION,
@@ -435,6 +582,121 @@ class HubApi:
             "servers": hub.summary(),
             "share": hub.share_status() if not hub.is_single else None,
         }
+
+    def browser(self):
+        from .browse import Browser
+        return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+
+    # ------------------------------------------------ try before you buy
+    def check_mods(self, q, b) -> dict:
+        """The instant check: builds for this version, required mods, declared conflicts."""
+        from . import trial
+        from .loaders import LOADERS
+        loader = str(b.get("loader", ""))
+        if loader not in LOADERS or not LOADERS[loader].mod_loaders:
+            raise ApiError(400, "that server type doesn't run mods")
+        mods = [str(x) for x in (b.get("mods") or []) if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", str(x))]
+        minecraft = str(b.get("minecraft") or "") or None
+        return trial.check(ModrinthProvider(self.hub.http), LOADERS[loader].mod_loaders, minecraft, mods)
+
+    def start_trial(self, q, b) -> dict:
+        """A test boot of a set of mods, in a throwaway server; ``bisect`` finds culprits."""
+        from . import trial
+        if any(t.state == "running" for t in self.hub.trials.values()):
+            raise ApiError(409, "a test is already running; wait for it or stop it")
+        sid = b.get("server")
+        java_from = None
+        if sid:  # the mods of an existing server
+            d = self.hub.get(str(sid))
+            if d is None:
+                raise ApiError(404, "no such server")
+            cfg = d.m.config
+            loader = cfg.server.loader
+            minecraft = d.m.lock.minecraft or cfg.server.minecraft
+            mods = [ModSpec(s.source, s.id) for s in cfg.mods]
+            java_from = cfg.state_dir / "java"
+        else:
+            loader = str(b.get("loader", ""))
+            minecraft = str(b.get("minecraft") or "latest")
+            items = b.get("mods") or []
+            if not isinstance(items, list) or len(items) > 200:
+                raise ApiError(400, "pick up to 200 mods")
+            mods = []
+            for item in items:
+                source, _, mod_id = str(item).partition(":") if ":" in str(item) else ("modrinth", "", str(item))
+                if source not in configmod.MOD_SOURCES or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", mod_id):
+                    raise ApiError(400, f"{item!r} isn't a mod id")
+                mods.append(ModSpec(source, mod_id))
+            java_from = next((dd.m.config.state_dir / "java" for dd in self.hub.daemons.values()
+                              if (dd.m.config.state_dir / "java").is_dir()), None)
+        if loader not in configmod.LOADERS or loader == "vanilla" and mods:
+            raise ApiError(400, "pick a server type that runs mods")
+        t = trial.Trial(self.hub, loader, minecraft, mods, bisect=bool(b.get("bisect")), java_from=java_from)
+        self.hub.trials = {k: v for k, v in self.hub.trials.items() if v.state == "running"}  # forget old ones
+        self.hub.trials[t.id] = t.start()
+        return {"ok": True, "id": t.id}
+
+    def trial_status(self, q, b) -> dict:
+        t = self.hub.trials.get(q.get("id", ""))
+        if t is None:
+            raise ApiError(404, "that test isn't running any more")
+        return t.to_dict(int(q.get("since", 0) or 0))
+
+    def cancel_trial(self, q, b) -> dict:
+        t = self.hub.trials.get(str(b.get("id", "")))
+        if t is None:
+            raise ApiError(404, "that test isn't running any more")
+        t.cancel.set()
+        return {"ok": True}
+
+    def use_public_ip(self, q, b) -> dict:
+        """Find this network's public address and use it for friends' invite links."""
+        if self.hub.is_single:
+            raise ApiError(400, "friend downloads need `mcsm start` (the server list)")
+        ip = self.hub.public_ip()
+        self.hub.save_share(self.hub.share_settings()["port"], ip)
+        log.info("friends outside your network now use %s", ip)
+        return {"ok": True, "ip": ip, "share": self.hub.share_status()}
+
+    def quit(self, q, b) -> dict:
+        """Close mcsm (stopping every server), for when there's no window to close."""
+        if self.hub.is_single:
+            raise ApiError(400, "this mcsm was started with `mcsm run`; stop it where it runs")
+        log.info("quitting (asked from the web UI)")
+        threading.Timer(0.5, self.hub.stop_requested.set).start()  # after this reply is sent
+        return {"ok": True}
+
+    def saves(self, q, b) -> dict:
+        """Singleplayer worlds on this computer, to start a server from (or put on one)."""
+        from . import world
+        return {"worlds": world.list_saves()}
+
+    def open_folder(self, q, b) -> dict:
+        from . import opener
+        where = {"home": self.hub.home, "exports": self.hub.exports_dir}.get(str(b.get("what", "")))
+        if where is None:
+            raise ApiError(400, "unknown folder")
+        where.mkdir(parents=True, exist_ok=True)
+        if not opener.open_path(where):
+            raise ApiError(500, f"couldn't open a file manager; the folder is {where}")
+        return {"ok": True, "path": str(where)}
+
+    def stage(self, q, handler) -> dict:
+        if handler.headers.get("X-MCSM") != "1":
+            raise ApiError(403, "missing X-MCSM header")
+        name = q.get("filename", "")
+        if not re.fullmatch(r"[A-Za-z0-9 ()\[\]+_.,'-]{1,120}\.(jar|zip)", name):
+            raise ApiError(400, "only .jar and .zip files can be added here")
+        return self.hub.stage_upload(handler, name, MAX_ARCHIVE if name.endswith(".zip") else MAX_UPLOAD)
+
+    def port_check(self, q, b) -> dict:
+        try:
+            port = int(q.get("port", ""))
+        except ValueError:
+            raise ApiError(400, "the port must be a number") from None
+        if not 1024 <= port <= 65535:
+            raise ApiError(400, "pick a port between 1024 and 65535")
+        return self.hub.port_info(port, exclude=q.get("exclude") or None)
 
     def save_share(self, q, b) -> dict:
         if self.hub.is_single:
@@ -508,6 +770,7 @@ class Api:
         post("/api/server/stop", lambda q, b: self._job("stop", self.d.stop_server))
         post("/api/server/restart", lambda q, b: self._job("restart", self.d.restart_server))
         get("/api/updates", lambda q, b: {"check": self.d.last_check})
+        get("/api/beta", self.betas)
         post("/api/updates/check", lambda q, b: self._job("update check", self.d.check_only, b.get("target")))
         post("/api/updates/apply", lambda q, b: self._job(
             "update", self.d.check_for_updates, True, b.get("target") or None))
@@ -523,6 +786,19 @@ class Api:
         get("/api/backups", self.backups)
         post("/api/backups/create", self.create_backup)
         post("/api/backups/restore", self.restore_backup)
+        post("/api/open", self.open_folder)
+        post("/api/world/replace", self.replace_world)
+        post("/api/updates/remove-and-upgrade", self.remove_and_upgrade)
+        post("/api/mods/check", lambda q, b: self._check(b, client=False))
+        post("/api/client/check", lambda q, b: self._check(b, client=True))
+        post("/api/beta/test", self.test_beta)
+        get("/api/configs", lambda q, b: configs.grouped(self.m.server_dir, self.m.lock.mods))
+        get("/api/configs/file", lambda q, b: configs.read(self.m.server_dir, q.get("path", "")))
+        post("/api/configs/file", self.save_config)
+        get("/api/export", self.exports)
+        post("/api/export", self.export)
+        post("/api/export/delete", self.delete_export)
+        get("/api/export/download", self.exports)  # streamed by the request handler
         get("/api/players", self.players)
         post("/api/players/action", self.player_action)
         get("/api/java", self.java)
@@ -530,6 +806,12 @@ class Api:
         post("/api/java/use", self.java_use)
         get("/api/settings", self.settings)
         post("/api/settings", self.save_settings)
+        get("/api/browse/search", lambda q, b: browse_search(self._browser(), q, self.m))
+        get("/api/browse/project", lambda q, b: browse_project(self._browser(), q))
+        get("/api/browse/categories", lambda q, b: browse_categories(self._browser(), q))
+        post("/api/mods/add-many", self.add_many)
+        get("/api/mods/requires", lambda q, b: requirements_query(self._modrinth(), q, self.m))
+        post("/api/mods/local", self.upload_local)
         get("/api/client", self.client)
         post("/api/client", self.save_client)
         post("/api/client/new-link", self.new_client_link)
@@ -603,7 +885,7 @@ class Api:
         if not c:
             return None
         return {"checked_at": c["checked_at"], "up_to_date": c["up_to_date"], "target": c["target"],
-                "latest": c["latest"], "manual": len(c["manual"])}
+                "latest": c["latest"], "manual": len(c["manual"]), "lagging": c.get("lagging")}
 
     def console(self, q, b) -> dict:
         items, last = self.d.console.since(int(q.get("since", 0) or 0), 1000)
@@ -644,6 +926,9 @@ class Api:
         if not self.d.setup_pending:
             raise ApiError(409, "this server is already set up")
         spec = setupmod.SetupSpec.from_dict(b)
+        spec.world_source = self.web.hub.world_source(spec.world)
+        if spec.local_mods:
+            self.web.hub.take_staged(spec.local_mods, self.m.server_dir / "mods")
         return self._job("set up server", self.d.run_setup, spec)
 
     # ---------------------------------------------------------------- mods
@@ -651,10 +936,11 @@ class Api:
         lk = self.m.lock
         return {
             "loader": self.m.config.server.loader,
+            "minecraft": lk.minecraft,
             "installed": [{"key": x.key, "name": x.name, "version": x.version_number, "filename": x.filename,
                            "source": x.source, "dependency_of": x.dependency_of, "manual": x.manual}
                           for x in lk.mods],
-            "configured": [{"source": s.source, "id": s.id, "required": s.required} for s in self.m.config.mods],
+            "configured": self._configured_with_deps(),
             "skipped": [{"key": k, "reason": v} for k, v in lk.skipped.items()],
             "unmanaged": self.m.unmanaged_jars(),
         }
@@ -662,9 +948,53 @@ class Api:
     def _modrinth(self) -> ModrinthProvider:
         return self.m.providers.get("modrinth") or ModrinthProvider(self.m.http)
 
+    def _check(self, b, client: bool) -> dict:
+        """The instant check for this server's mods (with the players' mods too, for the Friends page)."""
+        from . import trial
+        loaders = self.m.loader.mod_loaders
+        if not loaders:
+            return {"ok": True, "mods": [], "conflicts": [], "problems": [], "minecraft": self.m.lock.minecraft}
+        mods = [s.id for s in self.m.config.mods if s.source == "modrinth"]
+        if client:
+            mods += list(self.m.config.client.mods)
+        minecraft = self.m.lock.minecraft or (None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft)
+        return trial.check(self._modrinth(), loaders, minecraft, mods)
+
+    def _configured_with_deps(self) -> list[dict]:
+        """The mods in mcsm.toml, each with the dependencies installed for it (they go when it goes)."""
+        lk = self.m.lock
+        installed = {x.key: x for x in lk.mods}
+        children: dict[str, list] = {}
+        for x in lk.mods:
+            if x.dependency_of:
+                children.setdefault(x.dependency_of, []).append(x)
+        out = []
+        for spec in self.m.config.mods:
+            key = f"{spec.source}:{spec.id}"
+            if key not in installed:
+                match = next((x for x in lk.mods if x.source == spec.source and x.project_id == spec.id), None)
+                if match:
+                    key = match.key
+                elif spec.source == "modrinth":
+                    try:
+                        key = self._modrinth().project(spec.id).key  # a slug in mcsm.toml
+                    except Exception:
+                        pass
+            deps, todo, seen = [], list(children.get(key, [])), {key}
+            while todo:
+                d = todo.pop(0)
+                if d.key in seen:
+                    continue
+                seen.add(d.key)
+                deps.append({"key": d.key, "name": d.name})
+                todo += children.get(d.key, [])
+            out.append({"source": spec.source, "id": spec.id, "required": spec.required, "key": key,
+                        "name": installed[key].name if key in installed else spec.id, "deps": deps})
+        return out
+
     def search(self, q, b) -> dict:
         listed = {s.id for s in self.m.config.mods if s.source == "modrinth"}
-        return search_mods(self._modrinth(), q, listed, self.m.config.server.loader)
+        return search_mods(self._modrinth(), q, listed, self.m.config.server.loader, self.m.lock.minecraft)
 
     def add_mod(self, q, b) -> dict:
         source = b.get("source", "modrinth")
@@ -678,11 +1008,72 @@ class Api:
             raise ApiError(400, f"{project.name} is client-side only")
         if any(s.source == source and s.id in (mod_id, project.id, project.slug) for s in self.m.config.mods):
             raise ApiError(409, f"{project.name} is already listed")
+        deps = []
+        if source == "modrinth" and self.m.loader.mod_loaders:
+            # Only mods that work on this server's Minecraft, and say what comes along with them.
+            try:
+                req = mod_requirements(self._modrinth(), project.id, self.m.loader.mod_loaders, self.m.lock.minecraft)
+            except (ModError, HttpError) as e:
+                log.debug("couldn't check %s's requirements: %s", project.name, e)
+                req = None
+            if req is not None:
+                if not req["compatible"] and self.m.lock.minecraft:
+                    raise ApiError(400, f"can't add {project.name}: " + (req["reason"] or "no compatible build"))
+                deps = [d["name"] for d in req["deps"]]
         configmod.append_mod(self.m.config.path, ModSpec(source, project.slug or project.id,
                                                          required=bool(b.get("required", True))))
         self.m.reload_config()
-        log.info("added %s", project.name)
-        return {"ok": True, "name": project.name}
+        log.info("added %s%s", project.name, f" (with {', '.join(deps)})" if deps else "")
+        return {"ok": True, "name": project.name, "deps": deps}
+
+    def _browser(self):
+        from .browse import Browser
+        return Browser(self.m.http, self.m.config.curseforge_api_key)
+
+    def add_many(self, q, b) -> dict:
+        """Add the mods ticked in the mod browser."""
+        items = b.get("mods")
+        if not isinstance(items, list) or not 0 < len(items) <= 100:
+            raise ApiError(400, "pick between 1 and 100 mods")
+        added, skipped = [], []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                added.append(self.add_mod(q, {"source": item.get("source", "modrinth"), "id": item.get("id"),
+                                              "required": b.get("required", True) is not False})["name"])
+            except (ApiError, ModError, ConfigError) as e:
+                skipped.append({"name": item.get("name") or item.get("id"), "reason": str(e)})
+        return {"ok": True, "added": added, "skipped": skipped}
+
+    def upload_local(self, q, handler) -> dict:
+        """A mod jar from this computer ("Local files"). If Modrinth knows it, it becomes a normal
+        mod that mcsm keeps up to date; otherwise it stays as your own file in mods/."""
+        from .hub import receive
+        if handler.headers.get("X-MCSM") != "1":
+            raise ApiError(403, "missing X-MCSM header")
+        name = q.get("filename", "")
+        if not re.fullmatch(r"[A-Za-z0-9 ()\[\]+_.,'-]{1,120}\.jar", name):
+            raise ApiError(400, "only .jar files can be added as mods")
+        mods_dir = self.m.server_dir / "mods"
+        dest = receive(handler, mods_dir / name, MAX_UPLOAD)
+        try:
+            found = self._modrinth().identify([sha1_file(dest)])
+        except Exception:
+            found = {}
+        version = next(iter(found.values()), None)
+        if version:
+            try:
+                r = self.add_mod(q, {"source": "modrinth", "id": version["project_id"]})
+                dest.unlink(missing_ok=True)  # mcsm downloads the right file for each version from now on
+                return {"ok": True, "name": r["name"], "managed": True}
+            except ApiError as e:
+                if e.status == 409:  # already one of the server's mods
+                    dest.unlink(missing_ok=True)
+                    return {"ok": True, "name": name, "managed": True, "already": True}
+                log.info("%s is on Modrinth but can't be added (%s); keeping it as a local file", name, e)
+        log.info("added %s as a local mod (mcsm won't update it)", name)
+        return {"ok": True, "name": name, "managed": False}
 
     def remove_mod(self, q, b) -> dict:
         if not configmod.remove_mod(self.m.config.path, b.get("source", "modrinth"), str(b.get("id", ""))):
@@ -759,17 +1150,23 @@ class Api:
         return {"ok": True, "message": message}
 
     # ------------------------------------------------------------- friends
-    def _invite_link(self) -> str | None:
+    def _invite_links(self) -> dict:
+        """The invite for friends on this network (local) and for everyone else (internet)."""
         c = self.m.config.client
         if not c.token:
-            return None
-        share = self.web.hub.share_settings()
-        host = share["address"]
-        if not host:
-            from .cli import lan_ip
-            host = lan_ip() or "localhost"
+            return {}
+        from .cli import lan_ip
         from .join import Invite
-        return Invite(host.strip("[]"), share["port"], c.token).url
+        share = self.web.hub.share_settings()
+        lan = lan_ip()
+        out = {"local": Invite(lan, share["port"], c.token).url if lan else None, "internet": None}
+        if share["address"]:
+            out["internet"] = Invite(share["address"].strip("[]"), share["port"], c.token).url
+        return out
+
+    def _invite_link(self) -> str | None:
+        links = self._invite_links()
+        return links.get("internet") or links.get("local")
 
     def client(self, q, b) -> dict:
         c = self.m.config.client
@@ -788,6 +1185,7 @@ class Api:
             "available": not hub.is_single,
             "enabled": c.enabled, "mods": c.mods, "memory_gb": c.memory_gb,
             "link": self._invite_link() if c.enabled else None,
+            "links": self._invite_links() if c.enabled else {},
             "share": hub.share_status() if not hub.is_single else None,
             "pack": preview, "pack_error": error,
             "loader": self.m.config.server.loader,
@@ -838,7 +1236,8 @@ class Api:
         if not query and q.get("top") != "1":
             return {"results": []}
         results = self._modrinth().search(query, loaders, limit=20, index="relevance" if query else "downloads",
-                                          side="client")
+                                          side="client", minecraft=self.m.lock.minecraft or (
+                                              None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft))
         listed = set(self.m.config.client.mods)
         for r in results:
             r["listed"] = r["id"] in listed or r["slug"] in listed
@@ -866,6 +1265,166 @@ class Api:
             backup.prune(self.m.config.backups.dir, self.m.config.backups.keep)
             return f"created {path.name}"
         return self._job("backup", run)
+
+    # ---------------------------------------------------------- open folder
+    FOLDERS = ("server", "files", "world", "mods", "config", "logs", "crash", "backups", "exports", "manual", "java")
+
+    def folder(self, what: str) -> Path:
+        """One of the server's folders, by name (never an arbitrary path)."""
+        cfg, sd = self.m.config, self.m.server_dir
+        if what == "world":
+            return sd / (read_properties(sd / "server.properties").get("level-name") or "world")
+        paths = {"server": cfg.root, "files": sd, "mods": sd / "mods", "config": sd / "config", "logs": sd / "logs",
+                 "crash": sd / "crash-reports", "backups": cfg.backups.dir, "exports": self.exports_dir,
+                 "manual": cfg.manual_dir, "java": cfg.state_dir / "java"}
+        if what not in paths:
+            raise ApiError(400, "unknown folder")
+        return paths[what]
+
+    def open_folder(self, q, b) -> dict:
+        from . import opener
+        where = self.folder(str(b.get("what", "")))
+        if not where.exists():
+            if str(b.get("what")) in ("world", "logs", "crash", "java"):
+                raise ApiError(404, f"{where} doesn't exist yet (it appears once the server has run)")
+            where.mkdir(parents=True, exist_ok=True)
+        if not opener.open_path(where):
+            raise ApiError(500, f"couldn't open a file manager; the folder is {where}")
+        return {"ok": True, "path": str(where)}
+
+    def save_config(self, q, b) -> dict:
+        """Save a mod's config file (the previous version is kept in .mcsm/config-backups/)."""
+        text = b.get("text")
+        if not isinstance(text, str):
+            raise ApiError(400, "nothing to save")
+        modified = b.get("modified")
+        result = configs.write(self.m.server_dir, self.m.config.state_dir / "config-backups", str(b.get("path", "")),
+                               text, float(modified) if isinstance(modified, (int, float)) else None)
+        log.info("saved %s", b.get("path"))
+        return {**result, "running": bool(self.d.proc and self.d.proc.running)}
+
+    def betas(self, q, b) -> dict:
+        try:
+            versions = self.m.mojang.betas()
+        except Exception as e:
+            raise ApiError(502, f"couldn't load Minecraft's beta versions: {e}") from None
+        return {"betas": versions, "current": self.m.lock.minecraft,
+                "copies": not self.web.hub.is_single}
+
+    def test_beta(self, q, b) -> dict:
+        """Try a beta Minecraft on a copy of this server; the server itself isn't touched."""
+        from . import transfer
+        hub = self.web.hub
+        if hub.is_single:
+            raise ApiError(400, "testing betas needs `mcsm start` (the server list)")
+        version = str(b.get("version", ""))
+        if version not in self.m.mojang.betas():
+            raise ApiError(400, "pick one of the beta versions in the list")
+        name = read_properties(self.m.server_dir / "server.properties").get("motd") or self.sid
+
+        def prepare(root: Path) -> None:
+            path = root / configmod.CONFIG_NAME
+            configmod.set_value(path, "server", "minecraft", json.dumps(version))
+            configmod.set_value(path, "updates", "strategy", '"mods-only"')  # stays on the beta
+            for spec in configmod.load(root).mods:  # run with whichever mods support the beta
+                configmod.remove_mod(path, spec.source, spec.id)
+                configmod.append_mod(path, ModSpec(spec.source, spec.id, required=False))
+
+        def run():
+            running = self.d.proc and self.d.proc.running
+            if running:
+                self.d.proc.send("save-off")
+                self.d.proc.send("save-all flush")
+                time.sleep(5)
+            tmp = hub.staging_dir / f"beta-{time.time_ns()}"
+            try:
+                archive = transfer.export(self.m, tmp / "copy.zip")
+            finally:
+                if running and self.d.proc and self.d.proc.running:
+                    self.d.proc.send("save-on")
+            try:
+                sid = hub.import_archive(archive, f"{name} (beta {version})", prepare)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            copy = hub.get(sid)
+            if copy is None or not copy.submit("install beta", copy.check_for_updates, True, version):
+                raise RuntimeError("the copy was made but couldn't start installing; open it and press Update")
+            return f"made a copy, \"{name} (beta {version})\", and is installing Minecraft {version} on it"
+        return self._job("beta test copy", run)
+
+    def remove_and_upgrade(self, q, b) -> dict:
+        lag = (self.d.last_check or {}).get("lagging")
+        version, mods = str(b.get("version", "")), b.get("mods")
+        if not lag or lag["version"] != version:
+            raise ApiError(409, "that's out of date; check for updates and try again")
+        allowed = {x["config"] for x in lag["mods"] if x["config"]}
+        if not isinstance(mods, list) or not mods or not set(map(str, mods)) <= allowed:
+            raise ApiError(400, "pick mods from the list of mods holding the update back")
+        return self._job("update", self.d.remove_and_upgrade, version, [str(x) for x in mods])
+
+    def replace_world(self, q, b) -> dict:
+        """Swap the server's world for another one (a backup is made first)."""
+        from . import world
+        if self.d.state != "stopped":
+            raise ApiError(409, "stop the server before replacing its world")
+        choice = str(b.get("world", ""))
+        if not re.fullmatch(r"(save:)?[a-f0-9]{16}", choice):
+            raise ApiError(400, "pick a world first")
+        source = self.web.hub.world_source(choice)
+
+        def run():
+            sd, cfg = self.m.server_dir, self.m.config
+            dest = self.folder("world")
+            if dest.exists():
+                path = backup.create(sd, cfg.backups.dir, "before-new-world", cfg.backups.exclude)
+                log.info("backed up the old world to %s", path.name)
+            info = world.replace(source, dest)
+            if source.parent.parent == self.web.hub.staging_dir:
+                shutil.rmtree(source.parent, ignore_errors=True)
+            return f"the world is now {info.get('name') or dest.name}; press Start to play it"
+        return self._job("replace world", run)
+
+    # --------------------------------------------------------------- export
+    @property
+    def exports_dir(self) -> Path:
+        hub = self.web.hub
+        return (hub.exports_dir if not hub.is_single else self.m.config.root / "exports") / self.sid
+
+    def exports(self, q, b) -> dict:
+        d = self.exports_dir
+        files = sorted(d.glob("*.mcsm.zip"), key=lambda p: p.stat().st_mtime, reverse=True) if d.is_dir() else []
+        return {"folder": str(d), "exports": [{"name": p.name, "size": p.stat().st_size, "created": p.stat().st_mtime}
+                                               for p in files]}
+
+    def export_file(self, name: str) -> Path:
+        path = self.exports_dir / name
+        if Path(name).name != name or not name.endswith(".mcsm.zip") or not path.is_file():
+            raise ApiError(404, "no such export")
+        return path
+
+    def export(self, q, b) -> dict:
+        from . import transfer
+        include_backups = bool(b.get("backups"))
+
+        def run():
+            running = self.d.proc and self.d.proc.running
+            if running:  # write everything to disk and hold it there while copying
+                self.d.proc.send("save-off")
+                self.d.proc.send("save-all flush")
+                time.sleep(5)
+            try:
+                from .properties import read_properties
+                name = read_properties(self.m.server_dir / "server.properties").get("motd") or self.sid
+                path = transfer.export(self.m, self.exports_dir / transfer.export_name(name), include_backups)
+            finally:
+                if running and self.d.proc and self.d.proc.running:
+                    self.d.proc.send("save-on")
+            return f"exported to {path.name}"
+        return self._job("export", run)
+
+    def delete_export(self, q, b) -> dict:
+        self.export_file(str(b.get("name", ""))).unlink()
+        return {"ok": True}
 
     def restore_backup(self, q, b) -> dict:
         name = str(b.get("name", ""))

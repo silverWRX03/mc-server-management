@@ -30,18 +30,32 @@ def test_picks_newest_version_all_required_mods_support(make_config, http, modri
     assert [b.name for b in decision.blocked[0].blockers] == ["BBB"]
 
 
-def test_optional_mod_is_dropped_instead_of_blocking(make_config, http, modrinth):
+def test_upgrades_wait_for_every_mod(make_config, http, modrinth):
     modrinth.project("AAA", "lithium")
     modrinth.version("AAA", "1.0", RELEASES)
     modrinth.project("BBB", "create")
     modrinth.version("BBB", "2.0", ["1.21.1"])
-    cfg = make_config([ModSpec("modrinth", "lithium"), ModSpec("modrinth", "create", required=False)])
+    modrinth.project("MAP", "minimap", client_side="required", server_side="unsupported")
+    modrinth.version("MAP", "1.0", ["1.21.1"])
+    specs = [ModSpec("modrinth", "lithium"), ModSpec("modrinth", "create", required=False), ModSpec("modrinth", "minimap")]
 
-    plan = planner(cfg, http).decide().plan
+    # Optional or not, a mod that isn't ready holds back moving to a newer Minecraft.
+    decision = planner(make_config(specs), http).decide()
+    assert decision.plan.minecraft == "1.21.1"
+    waiting = decision.blocked[0].blockers
+    assert decision.blocked[0].minecraft == "1.21.4"
+    assert [(b.name, b.waiting, b.config) for b in waiting] == [("BBB", True, "modrinth:create")]
+    assert [b.name for b in decision.plan.dropped] == ["MAP"]  # client-only never counts
 
+    # With wait_for_all_mods off, optional mods are left out instead.
+    plan = planner(make_config(specs, wait_for_all_mods=False), http).decide().plan
     assert plan.minecraft == "1.21.4"
     assert [m.name for m in plan.mods] == ["AAA"]
-    assert [b.name for b in plan.dropped] == ["BBB"]
+    assert {b.name for b in plan.dropped} == {"BBB", "MAP"}
+
+    # A first install still picks the newest version the required mods support.
+    plan = planner(make_config(specs, minecraft="latest"), http, lock=Lock()).decide().plan
+    assert plan.minecraft == "1.21.4" and [b.name for b in plan.dropped if not b.client_only] == ["BBB"]
 
 
 def test_latest_strategy_waits_for_newest_release(make_config, http, modrinth):
