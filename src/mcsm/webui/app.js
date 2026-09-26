@@ -64,6 +64,16 @@ function upload(path, file, onProgress) {
   });
 }
 
+// "Open folder" buttons: shown only in a browser on the server's own computer, where
+// mcsm can open the file manager. ``sid`` picks a server other than the current one.
+function folderBtn(what, label, sid, cls = "btn ghost small") {
+  if (!hubInfo || !hubInfo.local) return null;
+  const path = what === "home" ? "/api/hub/open" : sid ? `/api/servers/${encodeURIComponent(sid)}/open` : "/api/open";
+  return h("button", { type: "button", class: cls, title: "Open in your file manager",
+    onclick: () => api(path, { method: "POST", body: { what } }).catch((e) => { if (!(e instanceof Unauthorized)) toast(e.message, true); }) },
+  "📂 ", label);
+}
+
 // A toast that stays until the user picks an action.
 function stickyToast(id, children) {
   if (document.getElementById(id)) return;
@@ -565,7 +575,8 @@ views.dashboard = () => {
     h("div", { class: "meters" }, cpu.el, mem.el),
     h("div", { class: "mt" }, playerCard),
     h("div", { class: "card mt" }, h("h3", {}, "Console"), con.el),
-    h("div", { class: "grid mt" }, card("Server", statusBody), card("Updates", update)),
+    h("div", { class: "grid mt" }, card("Server", statusBody,
+      h("div", { class: "row mt-s" }, folderBtn("server", "Server folder"), folderBtn("world", "World folder"))), card("Updates", update)),
     h("div", { class: "card mt" }, h("h3", {}, "Activity"), events),
   );
   if (status) render(status);
@@ -577,7 +588,8 @@ views.dashboard = () => {
 
 views.console = () => {
   const con = consolePanel();
-  fill($("#main"), con.el);
+  const folders = hubInfo && hubInfo.local ? h("div", { class: "row mb" }, folderBtn("logs", "Logs folder"), folderBtn("crash", "Crash reports")) : null;
+  fill($("#main"), folders, con.el);
   con.input.focus();
   every(1000, con.poll);
   return {};
@@ -615,6 +627,7 @@ views.updates = () => {
 
     const manual = c.manual.length ? card("Manual downloads needed",
       h("p", { class: "muted" }, "These mod authors don't allow automatic downloads. Download each file from its link, then upload it here (or copy it into the manual-downloads folder)."),
+      folderBtn("manual", "Manual-downloads folder"),
       h("ul", { class: "list" }, c.manual.map((m) => {
         const file = h("input", { type: "file", accept: ".jar", class: "hidden" });
         file.addEventListener("change", async () => {
@@ -821,7 +834,8 @@ views.mods = () => {
     card("Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, results,
       h("div", { class: "row mt-s" }, cfId,
         h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
-    h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured), card("Installed", installed)),
+    h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured),
+      card("Installed", hubInfo && hubInfo.local ? h("div", { class: "row mb" }, folderBtn("mods", "Mods folder"), folderBtn("config", "Config folder")) : null, installed)),
   );
   load();
   return { onJobDone: load, refresh: load };
@@ -848,7 +862,7 @@ views.backups = () => {
     h("h2", { class: "view-title" }, "Backups"),
     card("Create backup", h("p", { class: "muted" }, "A backup is also made automatically before every update."),
       h("div", { class: "row" }, label, h("button", { class: "btn primary", onclick: () => act(() => api("/api/backups/create", { method: "POST", body: { label: label.value } }), "Backing up…") }, "Back up now"))),
-    card("Backups", h("p", { class: "muted small" }, "Restoring needs the server to be stopped."), list),
+    card("Backups", h("div", { class: "row" }, h("p", { class: "muted small grow" }, "Restoring needs the server to be stopped."), folderBtn("backups", "Backups folder")), list),
   );
   load();
   return { onJobDone: load, onStatus: load };
@@ -871,7 +885,7 @@ views.java = () => {
           h("dt", {}, "Auto-install"), h("dd", {}, r.auto_install ? "on" : "off")),
           h("label", { class: "mt-s" }, "Run the server on",
             h("div", { class: "row" }, use, h("button", { class: "btn primary", onclick: () => act(() => api("/api/java/use", { method: "POST", body: { version: use.value } }), "Saved. Applies at the next start.").then(load) }, "Save")))),
-        card("Download Temurin", h("p", { class: "muted" }, "Downloads Eclipse Temurin into .mcsm/java/."),
+        card("Download Temurin", h("p", { class: "muted" }, "Downloads Eclipse Temurin into .mcsm/java/. ", folderBtn("java", "Open it")),
           h("div", { class: "row" }, major, h("button", { class: "btn", onclick: () => act(() => api("/api/java/install", { method: "POST", body: { major: Number(major.value) } }), "Downloading…") }, "Install"))),
       ),
       card("Available runtimes", h("table", {},
@@ -968,7 +982,8 @@ views.settings = () => {
             h("a", { class: "btn small", href: scoped(`/api/export/download?name=${encodeURIComponent(x.name)}`), download: x.name }, "Download"),
             h("button", { class: "btn small danger", onclick: () => confirm(`Delete ${x.name}?`) && act(() => api("/api/export/delete", { method: "POST", body: { name: x.name } }), "Deleted").then(loadExports) }, "Delete"))))))
         : null,
-      h("p", { class: "muted small mt-s" }, "Exports are kept in ", h("code", {}, r.folder)));
+      h("div", { class: "row mt-s" }, h("p", { class: "muted small grow" }, "Exports are kept in ", h("code", {}, r.folder)),
+        folderBtn("exports", "Exports folder"), folderBtn("server", "Server folder")));
   };
   fill($("#main"), h("h2", { class: "view-title" }, "Server settings"), form, exportCard, danger);
   load();
@@ -1421,7 +1436,7 @@ views.servers = () => {
               : h("button", { class: "btn danger", disabled: busy.has(s.id), onclick: () => control(s, "stop") }, "Stop"),
           s.setup_pending ? null : h("a", { class: "btn", href: `#s/${s.id}/dashboard` }, "Open"),
           !hb.single && !s.job ? h("button", { class: "btn ghost", onclick: () => deleteServer(s, refreshStatus) }, "Delete") : null),
-        h("div", { class: "muted small folder" }, s.folder))),
+        h("div", { class: "row" }, h("div", { class: "muted small folder grow" }, s.folder), folderBtn("server", "Folder", s.id)))),
       hb.single ? null : h("a", { class: "card server-card new", href: "#new" },
         h("strong", {}, "+ New server"), h("span", { class: "muted small" }, "Pick a server type, Minecraft version and mods")));
   };
@@ -1519,7 +1534,7 @@ views.mcsm = () => {
             try { localStorage.removeItem(DISMISS_KEY); } catch (_) {}
             closeToast("self-update");
             await act(() => api("/api/self-update/check", { method: "POST", body: {} }), "Checking for a new mcsm version…");
-          } }, "Check for mcsm updates"))),
+          } }, "Check for mcsm updates"), s.single ? null : folderBtn("home", "mcsm folder", null, "btn"))),
       h("div", { class: "mt" }, card("What mcsm does and doesn't do",
         h("ul", { class: "notice-points" }, n.points.map((p) => h("li", {}, p))))),
       h("div", { class: "mt" }, card("Open-source licenses",

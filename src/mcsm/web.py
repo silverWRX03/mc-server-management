@@ -51,7 +51,8 @@ SESSION_COOKIE = "mcsm_session"
 SESSION_TTL = 7 * 86400
 MAX_JSON = 1 << 20
 MAX_UPLOAD = 512 << 20
-MAX_ARCHIVE = 64 << 30  # a whole server (worlds and all), for importing
+MAX_ARCHIVE = 64 << 30
+LOCAL_ONLY = {"/api/open", "/api/hub/open"}  # they act on this computer's screen  # a whole server (worlds and all), for importing
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8")}
@@ -338,13 +339,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True},
                                   {"Set-Cookie": f"{SESSION_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict"})
             q = {k: v[-1] for k, v in query.items()}
+            if path in LOCAL_ONLY and not local:
+                raise ApiError(403, "opening folders only works in a browser on the server's own computer")
             handler = self.web.hub_api.routes.get((method, path))
             if handler is not None:
                 if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
                     raise ApiError(428, "accept the notice first")
                 if path in RAW_UPLOADS:
                     return self._json(200, handler(q, self))
-                return self._json(200, handler(q, self._body() if method == "POST" else {}))
+                result = handler(q, self._body() if method == "POST" else {})
+                if path == "/api/hub":
+                    result = {**result, "local": local}  # whether "Open folder" buttons can work
+                return self._json(200, result)
             if m := SERVER_PATH.match(path):
                 sid, path = m.group(1), "/api" + m.group(2)
             elif only := self.web.hub.only():  # single server: the short URLs still work
@@ -353,6 +359,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not found")
             if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
                 raise ApiError(428, "accept the notice first")
+            if path in LOCAL_ONLY and not local:
+                raise ApiError(403, "opening folders only works in a browser on the server's own computer")
             api = self.web.api_for(sid)
             set_current_server(api.d.server_id)  # so this server's activity feed shows what happens
             handler = api.routes.get((method, path))
@@ -475,6 +483,7 @@ class HubApi:
         r[("POST", "/api/hub/share")] = self.save_share
         r[("GET", "/api/hub/port")] = self.port_check
         r[("POST", "/api/hub/stage")] = self.stage
+        r[("POST", "/api/hub/open")] = self.open_folder
         r[("POST", "/api/hub/import")] = lambda q, b: {"ok": True, "id": self.hub.import_server(str(b.get("id", "")))}
         r[("GET", "/api/hub/browse/search")] = lambda q, b: browse_search(self.browser(), q)
         r[("GET", "/api/hub/browse/project")] = lambda q, b: browse_project(self.browser(), q)
@@ -506,6 +515,16 @@ class HubApi:
     def browser(self):
         from .browse import Browser
         return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+
+    def open_folder(self, q, b) -> dict:
+        from . import opener
+        where = {"home": self.hub.home, "exports": self.hub.exports_dir}.get(str(b.get("what", "")))
+        if where is None:
+            raise ApiError(400, "unknown folder")
+        where.mkdir(parents=True, exist_ok=True)
+        if not opener.open_path(where):
+            raise ApiError(500, f"couldn't open a file manager; the folder is {where}")
+        return {"ok": True, "path": str(where)}
 
     def stage(self, q, handler) -> dict:
         if handler.headers.get("X-MCSM") != "1":
@@ -611,6 +630,7 @@ class Api:
         get("/api/backups", self.backups)
         post("/api/backups/create", self.create_backup)
         post("/api/backups/restore", self.restore_backup)
+        post("/api/open", self.open_folder)
         get("/api/export", self.exports)
         post("/api/export", self.export)
         post("/api/export/delete", self.delete_export)
@@ -1015,6 +1035,32 @@ class Api:
             backup.prune(self.m.config.backups.dir, self.m.config.backups.keep)
             return f"created {path.name}"
         return self._job("backup", run)
+
+    # ---------------------------------------------------------- open folder
+    FOLDERS = ("server", "files", "world", "mods", "config", "logs", "crash", "backups", "exports", "manual", "java")
+
+    def folder(self, what: str) -> Path:
+        """One of the server's folders, by name (never an arbitrary path)."""
+        cfg, sd = self.m.config, self.m.server_dir
+        if what == "world":
+            return sd / (read_properties(sd / "server.properties").get("level-name") or "world")
+        paths = {"server": cfg.root, "files": sd, "mods": sd / "mods", "config": sd / "config", "logs": sd / "logs",
+                 "crash": sd / "crash-reports", "backups": cfg.backups.dir, "exports": self.exports_dir,
+                 "manual": cfg.manual_dir, "java": cfg.state_dir / "java"}
+        if what not in paths:
+            raise ApiError(400, "unknown folder")
+        return paths[what]
+
+    def open_folder(self, q, b) -> dict:
+        from . import opener
+        where = self.folder(str(b.get("what", "")))
+        if not where.exists():
+            if str(b.get("what")) in ("world", "logs", "crash", "java"):
+                raise ApiError(404, f"{where} doesn't exist yet (it appears once the server has run)")
+            where.mkdir(parents=True, exist_ok=True)
+        if not opener.open_path(where):
+            raise ApiError(500, f"couldn't open a file manager; the folder is {where}")
+        return {"ok": True, "path": str(where)}
 
     # --------------------------------------------------------------- export
     @property
