@@ -64,6 +64,11 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
   Minecraft version you chose.
 - **Edit mods' config files** from the Mods page in an editor with IDE-style colours
   (TOML, JSON, YAML, .properties, .cfg, .ini); the previous version is kept on every save.
+- **Try before you buy:** when a server won't start, mcsm says which mod is to blame.
+  **Test these mods** checks a mod list for known conflicts, can start a throwaway
+  server with it, and if that fails, finds the culprits and tells you which mods work
+  together.
+- **Day and night themes**, switched with the sun/moon button.
 - **Try beta Minecraft versions** (snapshots and pre-releases) on a new server, or on a
   copy of an existing one so your real world is never touched.
 - **Mods three ways:** `.jar` files from your computer (ones Modrinth recognises are
@@ -234,6 +239,11 @@ To play on the server from this computer too: `mcsm join --from-server <server f
 
 ![Picking launchers](docs/web-friend-setup.png)
 
+The Friends page has two invite links: a **local** one for friends on your Wi-Fi, and an
+**internet** one; **Use my public IP** finds your public address for it. If you tick
+"Make a download for my friends" when creating a server, mcsm offers to set up the
+friends' mods while the server installs (its progress stays at the bottom of the window).
+
 In a terminal, `mcsm join <invite> --launcher prism,modrinth` (or `--console`) does the
 same without the page.
 
@@ -374,6 +384,8 @@ CurseForge's checksum before it's accepted.
 ![A monthly reminder](docs/web-reminder.png)
 
 ![Editing a mod's config file](docs/web-config-editor.png)
+
+![Testing a mod list](docs/web-mod-test.png)
 
 **Open folder** buttons (server, world, mods, config, logs, crash reports, backups,
 exports, manual downloads, Java) appear only in a browser on the server's own
