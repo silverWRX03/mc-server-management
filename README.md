@@ -113,7 +113,9 @@ right Java by itself).
 | Linux on ARM (Raspberry Pi 4/5 with a 64-bit OS) | [`mcsm-linux-arm64`](https://github.com/silverWRX03/mc-server-management/releases/latest/download/mcsm-linux-arm64) |
 
 **Windows:** put `mcsm-windows-x64.exe` in a folder of its own (for example
-`Documents\mcsm`) and double-click it.
+`Documents\mcsm`) and double-click it. There's no command window: mcsm opens in your
+browser, and **Quit** (bottom left) closes it. Double-clicking it again while it runs
+just opens the page again. Its log is in `mcsm\.mcsm\mcsm.log` in your user folder.
 - The first time, Windows SmartScreen may say *"Windows protected your PC"*, because
   the app isn't code-signed yet. Click **More info → Run anyway**.
 - When the server first starts, allow it through Windows Firewall so friends can connect.
@@ -181,8 +183,9 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
 
 Prefer the terminal? `mcsm setup` asks the same questions there.
 
-Keep the mcsm window open while servers run, and press Ctrl+C (or close it) to stop
-them all cleanly.
+mcsm keeps running while servers run. To stop them all cleanly and close mcsm, press
+**Quit** at the bottom left of the control panel (or Ctrl+C in the terminal on a Mac or
+Linux).
 
 Servers live in a folder called `mcsm` in your home folder (`C:\Users\<you>\mcsm\servers\`
 on Windows), one folder each. To keep them somewhere else, set the `MCSM_HOME`
@@ -282,7 +285,7 @@ mcsm
 
 ### Windows and macOS in the background
 
-Keep the window open while the server runs. To start it automatically, add
+mcsm runs until you press **Quit** in the control panel. To start it automatically, add
 `mcsm-windows-x64.exe` to Task Scheduler with the trigger *At log on*. On a Mac, add
 it to *System Settings → General → Login Items*.
 

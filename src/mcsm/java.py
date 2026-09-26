@@ -48,7 +48,8 @@ def probe(binary: str) -> int | None:
     if shutil.which(binary) is None:
         return None
     try:
-        out = subprocess.run([binary, "-version"], capture_output=True, text=True, timeout=30)
+        from .desktop import NO_WINDOW
+        out = subprocess.run([binary, "-version"], capture_output=True, text=True, timeout=30, **NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return parse_major(out.stderr + out.stdout)

@@ -203,6 +203,18 @@ $("#login-form").addEventListener("submit", async (e) => {
 });
 
 $("#logout").addEventListener("click", async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); showLogin(); });
+// There's no command window to close, so mcsm is quit from here.
+$("#quit").addEventListener("click", async () => {
+  const running = ((hubInfo && hubInfo.servers) || []).filter((s) => s.state === "running" || s.state === "starting");
+  if (!confirm(running.length ? `Quit mcsm? ${running.map((s) => s.name).join(", ")} will be stopped (players get disconnected).`
+    : "Quit mcsm? Open it again from its icon when you want it back.")) return;
+  try { await api("/api/hub/quit", { method: "POST", body: {} }); } catch (e) { if (!(e instanceof Unauthorized)) { toast(e.message, true); return; } }
+  clearTimers();
+  document.body.replaceChildren(h("div", { class: "login" }, h("div", { class: "login-card" },
+    h("div", { class: "brand big" }, h("span", { class: "logo" }), "mcsm"),
+    h("p", {}, "mcsm is shutting down" + (running.length ? " and stopping your servers" : "") + "."),
+    h("p", { class: "muted small" }, "You can close this tab. To use mcsm again, open it from its icon."))));
+});
 
 // ------------------------------------------------------------ first-run notice
 let noticeOpening = false;
@@ -325,6 +337,7 @@ async function refreshStatus() {
   const hb = hubInfo;
   $("#version").textContent = "v" + hb.version;
   $("#logout").classList.toggle("hidden", hb.auth.mode === "none");
+  $("#quit").classList.toggle("hidden", !!hb.single);
   if (!hb.notice_accepted) { showNotice(); return; }
   offerSelfUpdate(hb.self_update);
   if (hb.auth.default && !hb.auth.managed && !promptDismissed()) showSecurity(true);

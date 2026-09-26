@@ -484,6 +484,7 @@ class HubApi:
         r[("GET", "/api/hub/port")] = self.port_check
         r[("POST", "/api/hub/stage")] = self.stage
         r[("POST", "/api/hub/open")] = self.open_folder
+        r[("POST", "/api/hub/quit")] = self.quit
         r[("GET", "/api/hub/saves")] = self.saves
         r[("POST", "/api/hub/import")] = lambda q, b: {"ok": True, "id": self.hub.import_server(str(b.get("id", "")))}
         r[("GET", "/api/hub/browse/search")] = lambda q, b: browse_search(self.browser(), q)
@@ -516,6 +517,14 @@ class HubApi:
     def browser(self):
         from .browse import Browser
         return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+
+    def quit(self, q, b) -> dict:
+        """Close mcsm (stopping every server), for when there's no window to close."""
+        if self.hub.is_single:
+            raise ApiError(400, "this mcsm was started with `mcsm run`; stop it where it runs")
+        log.info("quitting (asked from the web UI)")
+        threading.Timer(0.5, self.hub.stop_requested.set).start()  # after this reply is sent
+        return {"ok": True}
 
     def saves(self, q, b) -> dict:
         """Singleplayer worlds on this computer, to start a server from (or put on one)."""

@@ -228,7 +228,8 @@ class Joiner:
         with tempfile.TemporaryDirectory() as tmp:
             jar = Path(tmp) / "installer.jar"
             self.http.download(url, jar)
-            proc = self.run_cmd([java, "-jar", str(jar), "--installClient", str(self.mc)], cwd=tmp,
+            from .desktop import NO_WINDOW
+            proc = self.run_cmd([java, "-jar", str(jar), "--installClient", str(self.mc)], cwd=tmp, **NO_WINDOW,
                                 capture_output=True, text=True)
             if proc.returncode != 0:
                 tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-15:])

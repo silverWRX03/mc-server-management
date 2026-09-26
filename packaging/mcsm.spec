@@ -46,7 +46,9 @@ exe = EXE(
     a.datas,
     [],
     name="mcsm",
-    console=True,       # a console window shows the server log and the web UI password
+    # Windows: no command window; everything happens in the browser (see mcsm/desktop.py).
+    # macOS and Linux keep the terminal, where it's started from.
+    console=sys.platform != "win32",
     upx=False,          # UPX-packed binaries trigger antivirus false positives
     strip=False,
 )

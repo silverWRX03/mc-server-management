@@ -508,7 +508,8 @@ def _join(args, invite, pack, mc_dir) -> int:
     if any(t not in launchers.KEYS for t in targets):
         print(f"error: --launcher takes {', '.join(launchers.KEYS)}")
         return 2
-    if not (args.yes or args.console or targets or args.no_launcher) and interactive():
+    from . import desktop
+    if not (args.yes or args.console or targets or args.no_launcher) and (interactive() or desktop.windowless()):
         from . import joinui
         code = joinui.run(invite, pack=pack, mc_dir=mc_dir)
         if code is not None:
@@ -1001,6 +1002,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import desktop
+    desktop.setup()  # the Windows executable has no command window of its own
+    try:
+        return _entry(argv)
+    except Exception as e:  # pragma: no cover - last resort, so a windowless failure isn't silent
+        logging.getLogger(__name__).exception("mcsm stopped unexpectedly")
+        desktop.show_error(f"mcsm stopped unexpectedly: {e}\n\nDetails are in {desktop.log_path()}")
+        return 1
+
+
+def _entry(argv: list[str] | None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:  # e.g. a Windows console code page that lacks "•"
             stream.reconfigure(errors="replace")
@@ -1018,8 +1030,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _main(args)
     finally:
+        from . import desktop
         if selfupdate.frozen() and os.name == "nt" and args.command in ("start", "join") and not argv \
-                and interactive():
+                and interactive() and not desktop.windowless():
             # Double-clicked on Windows: keep the console open so messages can be read.
             try:
                 input("\nPress Enter to close this window...")
