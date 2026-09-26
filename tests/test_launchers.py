@@ -123,8 +123,12 @@ def test_friend_page(tmp_path, http, joiner, monkeypatch):
             urllib.request.urlopen(req, timeout=5)
         assert c.post("/api/setup", {"launchers": []})[0] == 400
 
-        assert c.post("/api/setup", {"launchers": ["prism", "modrinth"]})[0] == 200
+        assert info["pack"]["memory_gb"] == 4 and "system_gb" in info
+        assert c.post("/api/setup", {"launchers": ["prism"], "memory_gb": 999})[0] == 400
+        assert c.post("/api/setup", {"launchers": ["prism", "modrinth"], "memory_gb": 6})[0] == 200  # their own choice
         wait_for(lambda: not ui.running and ui.results, timeout=20)
+        cfg = (tmp_path / "prism" / "instances" / "mcsm-kyle-s-survival" / "instance.cfg").read_text()
+        assert "MaxMemAlloc=6144" in cfg
         progress = c.get("/api/progress?since=0")[1]
         assert [r["ok"] for r in progress["results"]] == [True, True] and "Finished." in progress["lines"]
         assert (tmp_path / "prism" / "instances" / "mcsm-kyle-s-survival" / "mmc-pack.json").exists()

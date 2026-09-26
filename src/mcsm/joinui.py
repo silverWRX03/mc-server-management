@@ -80,17 +80,22 @@ class JoinUI:
                 "name": p["name"], "address": p["address"], "minecraft": p["minecraft"], "loader": p["loader"],
                 "loader_version": p.get("loader_version"), "mods": [m["name"] for m in p.get("mods", [])],
                 "manual": p.get("manual", []), "icon": p.get("icon") if str(p.get("icon") or "").startswith("data:image/png;base64,") else None,
-                "quick_play": _supports_quick_play(p["minecraft"])},
+                "quick_play": _supports_quick_play(p["minecraft"]), "memory_gb": int(p.get("memory_gb") or 4)},
             "error": self.pack_error,
+            "system_gb": _system_gb(),
             "launchers": [f.to_dict() for f in launchers.detect(self.joiner.mc, self.prism_dir)],
         }
 
-    def setup(self, targets: list[str]) -> None:
+    def setup(self, targets: list[str], memory_gb: int | None = None) -> None:
         targets = [t for t in targets if t in launchers.KEYS]
         if not targets:
             raise ValueError("pick at least one launcher")
         if self.pack is None:
             raise ValueError(self.pack_error or "the server's details haven't loaded")
+        if memory_gb is not None:  # the friend's own choice for their computer
+            if not 1 <= int(memory_gb) <= 64:
+                raise ValueError("pick between 1 and 64 GB of memory")
+            self.pack = {**self.pack, "memory_gb": int(memory_gb)}
         with self._lock:
             if self.running:
                 raise RuntimeError("already setting things up")
@@ -187,7 +192,9 @@ class JoinUI:
                     length = min(int(self.headers.get("Content-Length") or 0), 64 * 1024)
                     body = json.loads(self.rfile.read(length) or b"{}")
                     if rest == "api/setup":
-                        ui.setup([str(x) for x in body.get("launchers", [])])
+                        mem = body.get("memory_gb")
+                        ui.setup([str(x) for x in body.get("launchers", [])],
+                                 int(mem) if isinstance(mem, (int, float)) else None)
                         self._json(200, {"ok": True})
                     elif rest == "api/open":
                         self._json(200, {"ok": ui.open_again(str(body.get("launcher", "")))})
@@ -213,6 +220,12 @@ class JoinUI:
         while not self.done.wait(2):
             if not self.running and time.monotonic() - self.last_seen > IDLE_SECONDS:
                 break
+
+
+def _system_gb() -> int | None:
+    from .setup import total_ram_gb
+    total = total_ram_gb()
+    return int(total) if total else None
 
 
 def launchers_slug(pack: dict) -> str:

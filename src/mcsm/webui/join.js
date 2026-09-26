@@ -52,6 +52,21 @@ function render() {
   });
   if (!info.launchers.some((l) => l.found)) boxes[0].querySelector("input").checked = true;
   const go = h("button", { class: "btn primary big", type: "submit" }, "Add to my launchers");
+  // Memory for this Minecraft: the server owner's suggestion, changeable to suit this computer.
+  const sys = info.system_gb;
+  const choices = [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 32].filter((g) => !sys || g <= Math.max(2, sys - 2) || g === p.memory_gb);
+  if (!choices.includes(p.memory_gb)) choices.push(p.memory_gb);
+  const memory = h("select", { name: "memory", "aria-label": "Memory for Minecraft" },
+    choices.sort((a, b) => a - b).map((g) => h("option", { value: String(g) }, `${g} GB${g === p.memory_gb ? " (suggested by the server)" : ""}`)));
+  memory.value = String(p.memory_gb);
+  const memHint = h("span", { class: "small muted block" });
+  const updateHint = () => {
+    const g = Number(memory.value);
+    memHint.textContent = sys ? `This computer has ${sys} GB.` + (g > sys - 3 ? " Leave some for the rest of the computer, or Minecraft may crash." : "")
+      + (g < p.memory_gb ? " Less than suggested: big modpacks may run slowly or crash." : "") : "";
+  };
+  memory.addEventListener("change", updateHint);
+  updateHint();
   root.replaceChildren(
     h("div", { class: "join-head" },
       p.icon ? h("img", { src: p.icon, alt: "" }) : h("div", { class: "noicon" }),
@@ -69,10 +84,11 @@ function render() {
       const launchers = [...document.querySelectorAll("input[name=launcher]:checked")].map((x) => x.value);
       if (!launchers.length) { toast("Tick at least one launcher.", true); return; }
       go.disabled = true;
-      try { await api("api/setup", { launchers }); poll(); } catch (err) { toast(err.message, true); go.disabled = false; }
+      try { await api("api/setup", { launchers, memory_gb: Number(memory.value) }); poll(); } catch (err) { toast(err.message, true); go.disabled = false; }
     } },
       h("h2", {}, "Which launchers should have this server?"),
       h("div", { class: "launchers" }, boxes),
+      h("label", { class: "mt memory" }, "Memory for Minecraft", memory, memHint),
       h("div", { class: "row mt" }, go)),
     h("div", { id: "progress", class: "card hidden" }, h("h2", {}, "Progress"), h("pre", { id: "log", class: "log" }), h("div", { id: "results" })),
   );
