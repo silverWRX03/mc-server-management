@@ -1,4 +1,4 @@
-# mcsm: Creating managing a your own server should be easy! 
+# mcsm: Creating and managing  your own modded  Minecraft server should be easy! 
 
 <img src="docs/icon.png" alt="mcsm" width="128" align="right">
 
