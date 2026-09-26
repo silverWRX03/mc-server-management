@@ -59,6 +59,13 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Web control panel:** dashboard, live console, players, one-click updates, mod search,
   uploads for blocked downloads, backups, Java and settings, with **Open folder**
   buttons for the server, world, mods, config, logs and backups.
+- **Dependencies come along:** picking a mod picks the mods it needs (shown under it),
+  and they're removed together. Mod lists only show mods that have a build for the
+  Minecraft version you chose.
+- **Edit mods' config files** from the Mods page in an editor with IDE-style colours
+  (TOML, JSON, YAML, .properties, .cfg, .ini); the previous version is kept on every save.
+- **Try beta Minecraft versions** (snapshots and pre-releases) on a new server, or on a
+  copy of an existing one so your real world is never touched.
 - **Mods three ways:** `.jar` files from your computer (ones Modrinth recognises are
   kept up to date), a **mod browser window** (search Modrinth and CurseForge with
   filters and sorting, read each mod's page, tick as many as you like), or a whole
@@ -352,8 +359,8 @@ Then open <http://localhost:8765>.
 | **Dashboard** | CPU and memory bars; who's online, with head icons and one-click message / op / kick / ban; the server console with a command box; server state, update status, live activity feed; the monthly reminder about mods holding back a new version |
 | **Console** | live server log (warnings and errors highlighted), send commands with history |
 | **Players** | who's online; kick, ban/pardon (by name or IP), op/de-op, whitelist on/off and add/remove; everyone who has joined before |
-| **Updates** | check now, see exactly what would change, which mods block newer versions, apply with one click, or remove the mods holding it back and update |
-| **Mods** | add `.jar`s from your computer, open the mod browser (Modrinth and CurseForge), start a new server from a modpack, mark mods required/optional, remove them |
+| **Updates** | check now, see exactly what would change, which mods block newer versions, apply with one click, or remove the mods holding it back and update; test a beta Minecraft on a copy of the server |
+| **Mods** | add `.jar`s from your computer, open the mod browser (Modrinth and CurseForge), start a new server from a modpack, mark mods required/optional, remove them (with the dependencies nothing else needs), edit their config files |
 | **Backups** | back up now (with a proper `save-all`), restore any backup |
 | **Java** | see which runtime the server uses, download Temurin versions, pin a version |
 | **Settings** | update strategy, schedule, countdowns, memory, port, backups to keep, Discord webhook, all of `server.properties`; replace the world; export the server; delete it |
@@ -365,6 +372,8 @@ CurseForge's checksum before it's accepted.
 ![Updates page](docs/web-updates.png)
 
 ![A monthly reminder](docs/web-reminder.png)
+
+![Editing a mod's config file](docs/web-config-editor.png)
 
 **Open folder** buttons (server, world, mods, config, logs, crash reports, backups,
 exports, manual downloads, Java) appear only in a browser on the server's own
