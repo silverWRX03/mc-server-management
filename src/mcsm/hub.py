@@ -173,6 +173,10 @@ class Hub:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.state_dir / (HUB_FILE + ".tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n")
+        try:
+            tmp.chmod(0o600)  # it can hold the CurseForge key and the Discord bot token
+        except OSError:
+            pass
         os.replace(tmp, self.state_dir / HUB_FILE)
 
     def _load_web(self) -> WebConfig:

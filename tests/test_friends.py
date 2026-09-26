@@ -27,11 +27,11 @@ def free_port():
 
 # ------------------------------------------------------------------ pieces
 def test_servers_dat_round_trip():
-    data = nbt.add_server(None, "Kyle's Survival", "mc.example.com")
+    data = nbt.add_server(None, "Weekend Survival", "mc.example.com")
     data = nbt.add_server(data, "Other", "10.0.0.2:25570")
-    data = nbt.add_server(data, "Kyle's Survival (renamed)", "mc.example.com")
+    data = nbt.add_server(data, "Weekend Survival (renamed)", "mc.example.com")
     servers = nbt.loads(data)["servers"]
-    assert [(s["name"], s["ip"]) for s in servers] == [("Kyle's Survival (renamed)", "mc.example.com"),
+    assert [(s["name"], s["ip"]) for s in servers] == [("Weekend Survival (renamed)", "mc.example.com"),
                                                       ("Other", "10.0.0.2:25570")]
     # Entries (and tag types) mcsm doesn't know about survive.
     root = {"servers": nbt.ListTag(nbt.COMPOUND, [{"name": "Old", "ip": "old:1", "icon": "abc",
@@ -48,8 +48,8 @@ def test_invites():
     inv = join.Invite("mc.example.com", 8766, "A" * 24)
     assert join.parse_invite(inv.url) == inv
     assert join.parse_invite(inv.code) == inv
-    name = join.download_name("Kyle's Survival! <3", inv, "mcsm-windows-x64.exe")
-    assert name.endswith(").exe") and "Kyle's Survival" in name and "<" not in name
+    name = join.download_name("Weekend Survival! <3", inv, "mcsm-windows-x64.exe")
+    assert name.endswith(").exe") and "Weekend Survival" in name and "<" not in name
     assert join.invite_from_name(name) == inv
     assert join.invite_from_name(name.replace(".exe", " (1).exe")) == inv  # browsers add " (1)"
     assert join.invite_from_name("mcsm-windows-x64.exe") is None
@@ -61,7 +61,7 @@ def test_invites():
 
 
 def pack(**over):
-    p = {"format": 1, "name": "Kyle's Survival", "minecraft": "1.21.1", "loader": "fabric",
+    p = {"format": 1, "name": "Weekend Survival", "minecraft": "1.21.1", "loader": "fabric",
          "loader_version": "0.16.5", "java_major": 21, "address": "mc.example.com", "memory_gb": 4,
          "mods": [], "manual": [], "skipped": [], "icon": None}
     p.update(over)
@@ -128,16 +128,16 @@ def test_join_sets_up_the_launcher(launcher, http):
            "sha1": hashlib.sha1(jar).hexdigest(), "side": "both"}
     j = join.Joiner(join.Invite("mc.example.com", 8766, "A" * 24), mc_dir=launcher, http=http, say=lambda s: None)
     result = j.run(pack(mods=[mod]), open_launcher=False)
-    game = launcher / "mcsm" / "kyle-s-survival"
+    game = launcher / "mcsm" / "weekend-survival"
     assert result["downloaded"] == 1 and (game / "mods" / "a.jar").read_bytes() == jar
     assert (launcher / "versions" / "fabric-loader-0.16.5-1.21.1" / "fabric-loader-0.16.5-1.21.1.json").exists()
-    ours = json.loads((launcher / "versions" / "mcsm-kyle-s-survival" / "mcsm-kyle-s-survival.json").read_text())
+    ours = json.loads((launcher / "versions" / "mcsm-weekend-survival" / "mcsm-weekend-survival.json").read_text())
     assert ours["inheritsFrom"] == "fabric-loader-0.16.5-1.21.1" and ours["jar"] == "1.21.1"
     assert ours["arguments"]["game"] == ["--quickPlayMultiplayer", "mc.example.com"]  # joins by itself
     assert nbt.loads((game / "servers.dat").read_bytes())["servers"][0]["ip"] == "mc.example.com"
     profiles = json.loads((launcher / "launcher_profiles.json").read_text())
-    ours = profiles["profiles"]["mcsm-kyle-s-survival"]
-    assert ours["name"] == "Kyle's Survival" and ours["lastVersionId"] == "mcsm-kyle-s-survival"
+    ours = profiles["profiles"]["mcsm-weekend-survival"]
+    assert ours["name"] == "Weekend Survival" and ours["lastVersionId"] == "mcsm-weekend-survival"
     assert ours["gameDir"] == str(game) and "-Xmx4G" in ours["javaArgs"]
     assert profiles["profiles"]["x"]["name"] == "Mine" and profiles["settings"] == {"keep": True}  # untouched
 
@@ -145,7 +145,7 @@ def test_join_sets_up_the_launcher(launcher, http):
     (game / "mods" / "mine.jar").write_bytes(b"theirs")
     result = j.run(pack(mods=[], minecraft="1.19.2", loader="vanilla", loader_version=None), open_launcher=False)
     assert result["removed"] == 1 and not (game / "mods" / "a.jar").exists() and (game / "mods" / "mine.jar").exists()
-    ours = json.loads((launcher / "versions" / "mcsm-kyle-s-survival" / "mcsm-kyle-s-survival.json").read_text())
+    ours = json.loads((launcher / "versions" / "mcsm-weekend-survival" / "mcsm-weekend-survival.json").read_text())
     assert ours["inheritsFrom"] == "1.19.2" and "arguments" not in ours  # no quick play before 1.20
 
 
@@ -161,7 +161,7 @@ def test_join_rejects_a_tampered_mod(launcher, http):
     j = join.Joiner(join.Invite("h", 1, "A" * 24), mc_dir=launcher, http=http, say=lambda s: None)
     with pytest.raises(join.JoinError, match="checksum"):
         j.run(pack(loader="vanilla", mods=[mod]), open_launcher=False)
-    assert not (launcher / "mcsm" / "kyle-s-survival" / "mods" / "a.jar").exists()
+    assert not (launcher / "mcsm" / "weekend-survival" / "mods" / "a.jar").exists()
 
 
 def test_join_runs_the_neoforge_installer(launcher, http):
@@ -178,7 +178,7 @@ def test_join_runs_the_neoforge_installer(launcher, http):
                     java_probe=lambda binary: 21)
     j.run(pack(loader="neoforge", loader_version="21.1.1"), open_launcher=False)
     assert ran[0][0] == "java" and ran[0][-2:] == ["--installClient", str(launcher)]
-    ours = json.loads((launcher / "versions" / "mcsm-kyle-s-survival" / "mcsm-kyle-s-survival.json").read_text())
+    ours = json.loads((launcher / "versions" / "mcsm-weekend-survival" / "mcsm-weekend-survival.json").read_text())
     assert ours["inheritsFrom"] == "neoforge-21.1.1"
 
 
@@ -191,7 +191,7 @@ def test_friends_page_and_download(tmp_path, http, modrinth, fake_template, monk
     home = tmp_path / "home"
     root = home / "servers" / "survival"
     setupmod.configure(root, setupmod.SetupSpec.from_dict({"loader": "fabric", "minecraft": "1.21.1", "mods": ["goodmod"],
-                                                           "motd": "Kyle's Survival", "accept_eula": True,
+                                                           "motd": "Weekend Survival", "accept_eula": True,
                                                            "port": 25570, "friends": True}))
     assert configmod.load(root).client.enabled and configmod.load(root).client.token
     assert update(manager(configmod.load(root), http, ["1.21.1"])).ok
@@ -219,7 +219,7 @@ def test_friends_page_and_download(tmp_path, http, modrinth, fake_template, monk
         base = f"http://127.0.0.1:{share_port}/join/{token}"
         with urllib.request.urlopen(base) as r:
             page = r.read().decode()
-            assert "Kyle&#x27;s Survival" in page and r.headers["Content-Security-Policy"].startswith("default-src 'none'")
+            assert "Weekend Survival" in page and r.headers["Content-Security-Policy"].startswith("default-src 'none'")
         with urllib.request.urlopen(base + "/pack.json") as r:
             p = json.loads(r.read())
         assert p["address"] == "127.0.0.1:25570" and len(p["mods"]) == 2
@@ -233,7 +233,7 @@ def test_friends_page_and_download(tmp_path, http, modrinth, fake_template, monk
 
         # A friend's copy fetches the same pack through the invite.
         assert join.Joiner(join.Invite("127.0.0.1", share_port, token), mc_dir=tmp_path / "x").fetch_pack()["name"] \
-            == "Kyle's Survival"
+            == "Weekend Survival"
         for bad in (f"http://127.0.0.1:{share_port}/join/{'Z' * 24}", f"http://127.0.0.1:{share_port}/",
                     f"{base}/download/solaris"):
             with pytest.raises(urllib.error.HTTPError) as e:

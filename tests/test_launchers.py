@@ -35,18 +35,18 @@ def joiner(tmp_path, http):
 
 def test_prism_instance(tmp_path, joiner):
     prism = tmp_path / "PrismLauncher"
-    r = launchers.install_prism(joiner, pack(mods=mods()), "kyles-survival", prism)
-    inst = prism / "instances" / "mcsm-kyles-survival"
+    r = launchers.install_prism(joiner, pack(mods=mods()), "weekend-survival", prism)
+    inst = prism / "instances" / "mcsm-weekend-survival"
     assert r["downloaded"] == 2 and (inst / ".minecraft" / "mods" / "a.jar").read_bytes() == JAR
     components = json.loads((inst / "mmc-pack.json").read_text())["components"]
     assert [(c["uid"], c["version"]) for c in components] == [
         ("net.minecraft", "1.21.1"), ("net.fabricmc.intermediary", "1.21.1"), ("net.fabricmc.fabric-loader", "0.16.5")]
     cfg = (inst / "instance.cfg").read_text()
-    assert "name=Kyle's Survival" in cfg and "JoinServerOnLaunchAddress=mc.example.com" in cfg and "MaxMemAlloc=4096" in cfg
+    assert "name=Weekend Survival" in cfg and "JoinServerOnLaunchAddress=mc.example.com" in cfg and "MaxMemAlloc=4096" in cfg
     assert nbt.loads((inst / ".minecraft" / "servers.dat").read_bytes())["servers"][0]["ip"] == "mc.example.com"
     # Running it again keeps settings changed in Prism, and follows the server's changes.
     (inst / "instance.cfg").write_text(cfg.replace("iconKey=default", "iconKey=creeper"))
-    launchers.install_prism(joiner, pack(mods=[], loader="neoforge", loader_version="21.1.77"), "kyles-survival", prism)
+    launchers.install_prism(joiner, pack(mods=[], loader="neoforge", loader_version="21.1.77"), "weekend-survival", prism)
     assert "iconKey=creeper" in (inst / "instance.cfg").read_text()
     assert json.loads((inst / "mmc-pack.json").read_text())["components"][1] == {"uid": "net.neoforged", "version": "21.1.77"}
     assert not (inst / ".minecraft" / "mods" / "a.jar").exists()
@@ -54,7 +54,7 @@ def test_prism_instance(tmp_path, joiner):
 
 def test_modrinth_pack(tmp_path, joiner):
     path = launchers.build_mrpack(joiner, pack(mods=mods()), tmp_path)
-    assert path.name == "Kyle's Survival.mrpack"
+    assert path.name == "Weekend Survival.mrpack"
     with zipfile.ZipFile(path) as z:
         index = json.loads(z.read("modrinth.index.json"))
         assert index["dependencies"] == {"minecraft": "1.21.1", "fabric-loader": "0.16.5"}
@@ -62,8 +62,8 @@ def test_modrinth_pack(tmp_path, joiner):
         f = index["files"][0]
         assert f["fileSize"] == len(JAR) and f["hashes"]["sha512"] == hashlib.sha512(JAR).hexdigest()
         assert z.read("overrides/mods/c.jar") == CF_JAR  # elsewhere: inside the pack
-        assert nbt.loads(z.read("overrides/servers.dat"))["servers"][0]["name"] == "Kyle's Survival"
-    assert launchers.build_mrpack(joiner, pack(), tmp_path).name == "Kyle's Survival (2).mrpack"
+        assert nbt.loads(z.read("overrides/servers.dat"))["servers"][0]["name"] == "Weekend Survival"
+    assert launchers.build_mrpack(joiner, pack(), tmp_path).name == "Weekend Survival (2).mrpack"
 
 
 def test_curseforge_pack(tmp_path, joiner):
@@ -89,7 +89,7 @@ def test_run_targets_keeps_going(tmp_path, joiner, monkeypatch):
     assert [r["launcher"] for r in results] == ["minecraft", "prism", "modrinth", "curseforge"]
     assert not by["minecraft"]["ok"] and "Minecraft Launcher" in by["minecraft"]["message"]  # not installed
     assert not by["prism"]["ok"] and by["modrinth"]["ok"] and by["curseforge"]["ok"]
-    assert (tmp_path / "Kyle's Survival.mrpack").exists()
+    assert (tmp_path / "Weekend Survival.mrpack").exists()
 
 
 def test_detect(tmp_path, monkeypatch):
@@ -113,7 +113,7 @@ def test_friend_page(tmp_path, http, joiner, monkeypatch):
         status, page, _ = c.get("/")
         assert status == 200 and "join.js" in page
         info = c.get("/api/info")[1]
-        assert info["pack"]["name"] == "Kyle's Survival" and info["pack"]["mods"] == ["A", "C"]
+        assert info["pack"]["name"] == "Weekend Survival" and info["pack"]["mods"] == ["A", "C"]
         assert {x["key"]: x["found"] for x in info["launchers"]}["prism"]
         # Without the secret, from another site, or without the header: refused.
         assert Client(url.split("/", 3)[0] + "//" + url.split("/")[2]).get("/api/info")[0] == 404
@@ -127,11 +127,11 @@ def test_friend_page(tmp_path, http, joiner, monkeypatch):
         assert c.post("/api/setup", {"launchers": ["prism"], "memory_gb": 999})[0] == 400
         assert c.post("/api/setup", {"launchers": ["prism", "modrinth"], "memory_gb": 6})[0] == 200  # their own choice
         wait_for(lambda: not ui.running and ui.results, timeout=20)
-        cfg = (tmp_path / "prism" / "instances" / "mcsm-kyle-s-survival" / "instance.cfg").read_text()
+        cfg = (tmp_path / "prism" / "instances" / "mcsm-weekend-survival" / "instance.cfg").read_text()
         assert "MaxMemAlloc=6144" in cfg
         progress = c.get("/api/progress?since=0")[1]
         assert [r["ok"] for r in progress["results"]] == [True, True] and "Finished." in progress["lines"]
-        assert (tmp_path / "prism" / "instances" / "mcsm-kyle-s-survival" / "mmc-pack.json").exists()
+        assert (tmp_path / "prism" / "instances" / "mcsm-weekend-survival" / "mmc-pack.json").exists()
         assert c.post("/api/open", {"launcher": "prism"})[1]["ok"]
         assert c.post("/api/quit")[0] == 200 and ui.done.is_set()
     finally:

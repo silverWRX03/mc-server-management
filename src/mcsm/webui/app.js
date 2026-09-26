@@ -750,7 +750,8 @@ views.updates = () => {
             : [`Up to date on Minecraft ${c.installed}, the newest version your mods support. ${c.latest} is waiting. `,
               h("button", { class: "btn small", onclick: () => openReadiness(newer, c.installed) }, "Show why")])
       : c.target
-        ? h("div", { class: "notice warn" }, h("strong", {}, `Ready: Minecraft ${c.installed || "(new install)"} → ${c.target}`),
+        ? h("div", { class: "notice warn" }, h("strong", {}, c.installed === c.target ? `Ready: mod updates for Minecraft ${c.target}`
+            : `Ready: Minecraft ${c.installed || "(new install)"} → ${c.target}`),
             c.loader_version ? h("span", { class: "muted" }, `  (loader ${c.loader_version})`) : null)
         : h("div", { class: "notice bad" }, "No installable combination of Minecraft, loader and required mods was found.");
 

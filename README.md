@@ -8,6 +8,47 @@
 > keep backups (mcsm makes one before every update), and please report problems in
 > [Issues](https://github.com/silverWRX03/mc-server-management/issues).
 
+## Mission
+
+**Running a Minecraft server with friends should be as easy as playing on one.** mcsm
+(Minecraft server manager) sets up a modded or plain Minecraft server on your own computer,
+keeps it running, and keeps it and its mods up to date for as long as you play. It also
+gets your friends' games ready to join. Everything happens in a control panel in your
+browser: no command lines, no config files, no hunting for the right mod versions.
+
+**What mcsm can do**
+
+- Create a server (Fabric, NeoForge, Forge, Quilt, Paper or plain Minecraft) with the right
+  Java, loader and mods, and check that it starts before you play.
+- Keep it on the newest Minecraft **once every mod supports it**, with a backup before each
+  update and an automatic rollback if the new version doesn't start.
+- Find mods and pull in what they need, tell you which mod broke a server, and test a mod
+  list before you commit to it.
+- Give friends one link that sets up their launcher with the right version and mods (plus
+  their own shaders and resource packs), and post it to Discord.
+- Let you manage it from your phone (paired by QR code) or from another computer, and run it
+  on a spare Linux computer or in Docker.
+
+**What mcsm can't do**
+
+- It can't make your computer reachable from the internet by itself. Friends outside your
+  home need your **router's port forwarding** set up. mcsm shows you how, but every router
+  is different, and some internet providers don't allow it at all.
+- It can't make mods work together when their authors haven't made them compatible. It can
+  only find out, tell you, and wait for updates.
+- It can't download CurseForge mods whose authors don't allow downloads by other apps. You
+  download those yourself; mcsm gives you the link and does the rest.
+- It isn't a hosting service: the server runs on your computer, which has to be on for
+  people to play. It doesn't support Bedrock Edition.
+- It can't bring back a world you didn't back up. mcsm backs up before every update, but
+  keep your own copies of anything you can't afford to lose.
+- It isn't affiliated with Mojang, Microsoft, Modrinth or CurseForge.
+
+Every section of this README is listed in the [section links](#appendix-section-links) at
+the end.
+
+## How it works
+
 `mcsm` runs your modded Minecraft server and **keeps it on the newest Minecraft
 release once your mods support it**. It watches for new releases and checks
 whether your loader and every mod you depend on (plus their dependencies) have
@@ -74,6 +115,18 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
   **Test these mods** checks a mod list for known conflicts, can start a throwaway
   server with it, and if that fails, finds the culprits and tells you which mods work
   together.
+- **Show why:** the Updates tab lists every mod for the newest Minecraft in green (ready),
+  yellow (only alpha/beta builds) or red (not yet), and says when the loader is the holdup.
+- **Early builds on request:** mods that only have alpha/beta builds can be picked after a
+  warning. They keep their own channel, so everything else stays on releases.
+- **Paper servers** with plugins from Modrinth (players join with plain Minecraft).
+- **Aikar's flags** are offered when a server gets more than 16 GB of memory.
+- **Phones and other computers:** turn on remote access (a strong password is required,
+  never a PIN) and pair your phone by scanning a QR code. See
+  [Remote access and phones](#remote-access-and-phones).
+- **Help built in,** including a router port-forwarding guide with pictures.
+- **Runs anywhere:** a Windows, macOS or Linux app, a [Docker image](docs/docker.md), or on a
+  [Linux computer without a screen](docs/headless.md) that you manage from another one.
 - **Day and night themes**, switched with the sun/moon button.
 - **Try beta Minecraft versions** (snapshots and pre-releases) on a new server, or on a
   copy of an existing one so your real world is never touched.
@@ -87,7 +140,9 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Move a server to another computer:** export it to one file, import it there.
 - **Friend downloads:** friends run one file that adds your server, with the right
   version and mods, to the Minecraft Launcher, Prism Launcher, the Modrinth App or
-  CurseForge.
+  CurseForge. They can add their own shaders, resource packs and mods, choose how much
+  memory their game gets, and are asked before an update changes anything of theirs.
+  Post the invite to a Discord channel from the Friends page.
 - **Discord notifications** for upgrades, blocked releases, crashes and rollbacks.
 - **Leaves your files alone.** Only files mcsm installed (tracked in `mcsm.lock.json`)
   are ever replaced. World, configs and hand-added jars are never touched.
@@ -98,12 +153,14 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 The first time you run it, mcsm shows these points and asks you to accept them, in
 the terminal or in the web UI. Nothing runs until you do.
 
+![The first-run notice](docs/web-notice.png)
+
 - mcsm runs your Minecraft server on this computer and keeps it and its mods up to date.
 - It connects to the internet to download Minecraft, mod loaders, mods, Java and its
   own updates (from Mojang, Modrinth, CurseForge, Fabric, Quilt, NeoForge, Forge, PaperMC, Adoptium and GitHub).
 - It does not collect usage data. There is no analytics, tracking, advertising or account.
 - Your worlds, settings and backups stay on this computer. Nothing is uploaded, except
-  messages to Discord if you set up a webhook.
+  messages to Discord if you set up a webhook or a bot.
 - It changes files in your server folder: it replaces the mods and loader files it
   installed, and makes a backup first.
 - Moving a world to a newer Minecraft version can't be undone. Restoring a backup is the only way back.
@@ -245,6 +302,13 @@ To play on the server from this computer too: `mcsm join --from-server <server f
 
 ![Picking launchers](docs/web-friend-setup.png)
 
+![Adding shaders on the friend's page](docs/web-friend-extras.png)
+
+For friends outside your home, the Help page (and the screen you see while a new server
+installs) walks you through your router's port forwarding:
+
+![The router guide](docs/web-help.png)
+
 The Friends page has two invite links: a **local** one for friends on your Wi-Fi, and an
 **internet** one; **Use my public IP** finds your public address for it. If you tick
 "Make a download for my friends" when creating a server, mcsm offers to set up the
@@ -283,6 +347,11 @@ mcsm
 ```
 
 ### Linux servers (headless, over SSH)
+
+The easiest way: one command from your own computer installs mcsm on the Linux computer and
+starts it at boot. See **[docs/headless.md](docs/headless.md)** (Windows, macOS and Linux
+steps). For containers, see **[docs/docker.md](docs/docker.md)**. The details below are for
+doing it by hand.
 
 - **Reaching the control panel from your own PC.** The setup wizard asks whether to
   allow other devices on your network; on a machine with no desktop the suggested
@@ -370,6 +439,8 @@ Then open <http://localhost:8765>.
 
 ![Dashboard](docs/web-dashboard.png)
 
+![The night theme](docs/web-night.png)
+
 | Page | What you can do |
 |---|---|
 | **Dashboard** | CPU and memory bars; who's online, with head icons and one-click message / op / kick / ban; the server console with a command box; server state, update status, live activity feed; the monthly reminder about mods holding back a new version |
@@ -386,6 +457,8 @@ Mods whose authors block third-party downloads get a **Download** link and an
 CurseForge's checksum before it's accepted.
 
 ![Updates page](docs/web-updates.png)
+
+![Show why: each mod for the newest Minecraft](docs/web-why.png)
 
 ![A monthly reminder](docs/web-reminder.png)
 
@@ -413,6 +486,40 @@ reverse proxy with its own domain, add that domain to `[web] allowed_hosts`. The
 with no third-party scripts. The console gives full operator control of your
 server, so to reach it from elsewhere, put it behind an HTTPS reverse proxy (Caddy,
 nginx) or a VPN such as Tailscale rather than exposing the port directly.
+
+## Remote access and phones
+
+By default only the computer mcsm runs on can open the control panel. **mcsm settings →
+Remote access & phones** (also on the new-server screen) lets other devices in, with these
+safeguards:
+
+- **A strong password is required:** 12+ characters, with uppercase, lowercase and a special
+  character. PINs and "no password" only ever work on the server's own computer, and the
+  password can't be weakened while remote access is on.
+- **Phones are paired by scanning a QR code.** The code works once, for five minutes. Each
+  phone gets its own key (only a hash of it is stored) and signs in by itself afterwards.
+- **Phones get the everyday controls only:** start, stop and restart servers, backups,
+  updates and players. They can't change settings, mods or files, use the console or change
+  the password.
+- **You stay in charge of every device:** each paired phone is listed with when and where it
+  was last used, and can be signed out on its own. Changing the password signs out every
+  phone.
+- **Attempts are limited and actions are logged:** repeated wrong passwords or pairing codes
+  are rate-limited, and what a phone does appears in the server's activity feed.
+- **HTTPS** is available with a certificate you provide (for example `tailscale cert`).
+- **Away from home, use a private network app, not your router:** mcsm recommends
+  [Tailscale](https://tailscale.com) (free for personal use), which connects your phone and
+  computer privately and encrypted, and shows its address in the pairing dialog. Don't
+  forward the control panel's port (8765) on your router.
+
+The panel can be added to your phone's home screen, where it opens like an app.
+
+![Pairing a phone](docs/web-remote.png)
+
+On a computer without a screen, or in Docker, mcsm starts with a random **one-time
+password** printed on its console. Signing in with it can only choose your own strong
+password (or set `MCSM_INITIAL_PASSWORD`). See [docs/headless.md](docs/headless.md) and
+[docs/docker.md](docs/docker.md).
 
 ## Managing players
 
@@ -483,6 +590,36 @@ the server's `mods/`), and run `mcsm update` again. The file's hash is checked a
 CurseForge, so a wrong or outdated file isn't used. The update never starts until
 every file is present, so the server is never left half-upgraded. With `mcsm run`, the
 same links go to your Discord notifications when a new version needs them.
+
+## How mcsm uses the CurseForge API
+
+mcsm talks to CurseForge only through its official API (`api.curseforge.com`), which needs
+an API key. It follows CurseForge's
+[terms for third-party apps](https://support.curseforge.com/en/support/solutions/articles/9000207405):
+
+- **The key stays private.** mcsm's own key is never in this repository or its source. Release
+  builds get it at build time from a GitHub secret (`CURSEFORGE_API_KEY`, see
+  [packaging/write_build_keys.py](packaging/write_build_keys.py)). A key you enter yourself is
+  checked with CurseForge, then kept in mcsm's settings file on your computer, readable only by
+  you. It's never shown again, logged, or sent anywhere but CurseForge. A key you enter always
+  takes priority over the built-in one.
+- **Authors' wishes are respected.** When an author doesn't allow downloads by other apps,
+  CurseForge gives no download link and mcsm doesn't look for one. It shows you the file's
+  page to download it yourself, then checks that file against CurseForge's checksum.
+- **Files come from CurseForge, not from mcsm.** Every mod is downloaded from CurseForge's own
+  servers straight to the computer that needs it (yours, or your friends' through their
+  invite) and hash-checked. mcsm doesn't host or re-share CurseForge files. A CurseForge
+  modpack file that mcsm makes for a friend's CurseForge app is built on that friend's own
+  computer, from files downloaded there, for their own use.
+- **Credit where it's due.** Mods found on CurseForge show their authors, and link to their
+  CurseForge pages ("Open on CurseForge").
+- **Light on the API.** Answers are cached for a few minutes, lookups only happen when you
+  search, add mods or check for updates, and nothing is scraped from the website.
+- **Only what's needed.** mcsm reads mod details, files and categories. It sends no
+  information about you, and doesn't use CurseForge data for anything but installing and
+  updating your mods.
+
+mcsm isn't made or endorsed by CurseForge or Overwolf. Paper plugins come from Modrinth only.
 
 ## Java
 
@@ -643,10 +780,41 @@ The test suite runs the full install → upgrade → crash → rollback cycle ag
 
 ### Roadmap ideas
 
-- Paper/Purpur plugin servers (Hangar/Modrinth plugins)
-- Docker image
+- Purpur servers, and plugins from Hangar (Paper with Modrinth plugins is supported)
+- A native phone app (today the control panel works as a web app on your phone's home screen)
 
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 for the licenses of everything mcsm uses or downloads.
+
+## Appendix: section links
+
+- [Mission](#mission)
+- [How it works](#how-it-works)
+- [Features](#features)
+- [What mcsm does and doesn't do](#what-mcsm-does-and-doesnt-do)
+- [Download and run](#download-and-run)
+  - [What happens when you run it](#what-happens-when-you-run-it)
+  - [Playing with friends](#playing-with-friends)
+  - [With Python instead](#with-python-instead)
+  - [Linux servers (headless, over SSH)](#linux-servers-headless-over-ssh)
+  - [Windows and macOS in the background](#windows-and-macos-in-the-background)
+- [Quick start: build a new server](#quick-start-build-a-new-server)
+- [Migrating an existing server (e.g. from autoMCS)](#migrating-an-existing-server-eg-from-automcs)
+- [Web UI](#web-ui)
+- [Remote access and phones](#remote-access-and-phones)
+- [Managing players](#managing-players)
+- [Updating mcsm itself](#updating-mcsm-itself)
+- [Mods that block third-party downloads](#mods-that-block-third-party-downloads)
+- [How mcsm uses the CurseForge API](#how-mcsm-uses-the-curseforge-api)
+- [Java](#java)
+- [Running it forever](#running-it-forever)
+- [Configuration](#configuration)
+  - [Strategies](#strategies)
+- [How an upgrade works](#how-an-upgrade-works)
+- [Testing a build before a release](#testing-a-build-before-a-release)
+- [Releasing (for maintainers)](#releasing-for-maintainers)
+- [Development](#development)
+  - [Roadmap ideas](#roadmap-ideas)
+- [License](#license)
