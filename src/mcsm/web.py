@@ -856,6 +856,7 @@ class Api:
         post("/api/server/stop", lambda q, b: self._job("stop", self.d.stop_server))
         post("/api/server/restart", lambda q, b: self._job("restart", self.d.restart_server))
         get("/api/updates", lambda q, b: {"check": self.d.last_check})
+        get("/api/updates/readiness", self.readiness)
         get("/api/beta", self.betas)
         post("/api/updates/check", lambda q, b: self._job("update check", self.d.check_only, b.get("target")))
         post("/api/updates/apply", lambda q, b: self._job(
@@ -968,6 +969,54 @@ class Api:
         return {**usage,
                 "memory_max_bytes": stats.heap_bytes(self.m.config.server.memory, setupmod.suggested_memory_gb()),
                 "system_memory_bytes": int(total * 1024 ** 3) if total else None}
+
+    def readiness(self, q, b) -> dict:
+        """For one Minecraft version (default: the newest release): is the loader ready, and does
+        each installed mod have a build for it? green: a release; yellow: only alpha/beta
+        builds; red: nothing yet; unknown: couldn't tell (a file of your own, or a lookup failed)."""
+        from .mods.base import CHANNEL_RANK
+        from .mods.modrinth import ModrinthProvider
+        version = q.get("version") or self.m.mojang.latest_release()
+        if not re.fullmatch(r"\d+(\.\d+){1,3}(-[A-Za-z0-9.]+)?|\d{2}w\d{2}[a-z]", version):
+            raise ApiError(400, "that isn't a Minecraft version")
+        loader = self.m.loader
+        try:
+            loader_version = loader.latest_version(version)
+            loader_state = "green" if loader_version else "red"
+        except HttpError:
+            loader_version, loader_state = None, "unknown"
+        mods = list(self.m.lock.mods)
+        loaders = loader.mod_loaders
+        channels: dict[str, str | None] = {}
+        modrinth_ids = [x.project_id for x in mods if x.source == "modrinth" and not x.manual]
+        if modrinth_ids and loaders:
+            provider = self.m.providers.get("modrinth")
+            channels.update((provider if isinstance(provider, ModrinthProvider) else ModrinthProvider(self.m.http))
+                            .best_channels(modrinth_ids, loaders, version))
+        names = {x.key: x.name for x in mods}
+        out = []
+        for x in mods:
+            if x.source == "modrinth" and x.project_id in channels:
+                channel = channels[x.project_id]
+            else:  # CurseForge and others: ask the provider which versions each channel covers
+                provider = self.m.providers.get(x.source)
+                channel = "unknown"
+                if provider is not None and loaders:
+                    try:
+                        spec = ModSpec(x.source, x.project_id)
+                        channel = next((c for c in sorted(CHANNEL_RANK, key=CHANNEL_RANK.get)
+                                        if version in provider.supported_versions(spec, loaders, c)), None)
+                    except (HttpError, ModError):
+                        channel = "unknown"
+            state = {"release": "green", None: "red", "unknown": "unknown"}.get(channel, "yellow")
+            out.append({"name": x.name, "key": x.key, "version": x.version_number, "state": state,
+                        "channel": channel if channel not in (None, "unknown") else None,
+                        "required": x.required, "needed_by": names.get(x.dependency_of or "", None)})
+        order = {"red": 0, "yellow": 1, "unknown": 2, "green": 3}
+        out.sort(key=lambda m: (order[m["state"]], m["name"].lower()))
+        return {"minecraft": version, "installed": self.m.lock.minecraft,
+                "loader": {"name": loader.name, "state": loader_state, "version": loader_version},
+                "mods": out, "counts": {k: sum(m["state"] == k for m in out) for k in order}}
 
     def _update_summary(self) -> dict | None:
         c = self.d.last_check

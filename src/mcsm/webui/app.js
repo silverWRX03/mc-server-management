@@ -667,6 +667,46 @@ function laggingNotice(lag, installed, always = false) {
   return el;
 }
 
+// Why a newer Minecraft isn't installable yet: the loader and every installed mod, coloured.
+function openReadiness(versions, installed) {
+  const body = h("div", { class: "readiness-body" }, h("p", { class: "muted" }, "Checking each mod…"));
+  const pick = h("select", { "aria-label": "Minecraft version" }, versions.map((v) => h("option", { value: v }, `Minecraft ${v}`)));
+  const legend = h("div", { class: "row small legend" },
+    h("span", { class: "dotc green" }), "ready (a release build)",
+    h("span", { class: "dotc yellow" }), "only an alpha/beta build (may be unstable)",
+    h("span", { class: "dotc red" }), "no build yet",
+    h("span", { class: "dotc unknown" }), "can't tell");
+  const load = async () => {
+    fill(body, h("p", { class: "muted" }, `Checking each mod for Minecraft ${pick.value}…`));
+    const r = await api(`/api/updates/readiness?version=${encodeURIComponent(pick.value)}`).catch((e) => { fill(body, h("div", { class: "notice bad" }, e.message)); return null; });
+    if (!r || r.minecraft !== pick.value) return;
+    const row = (state, name, detail, extra) => h("li", { class: "ready-row " + state }, h("span", { class: "dotc " + state, title: state }),
+      h("div", { class: "grow" }, h("strong", {}, name), extra || null, h("div", { class: "muted small" }, detail)));
+    const n = r.counts;
+    const verdict = r.loader.state === "red" ? `${r.loader.name} doesn't support Minecraft ${r.minecraft} yet, so nothing can move until it does.`
+      : n.red ? `${n.red} mod${n.red === 1 ? " has" : "s have"} no build for Minecraft ${r.minecraft} yet.`
+        : n.yellow ? `Every mod has a build, but ${n.yellow} only ${n.yellow === 1 ? "has" : "have"} alpha/beta builds. mcsm waits for releases unless you allow early builds.`
+          : `Everything is ready for Minecraft ${r.minecraft}. Run a check on the Updates tab to move.`;
+    fill(body,
+      h("div", { class: "notice " + (r.loader.state === "red" || n.red ? "bad" : n.yellow ? "warn" : "ok") }, verdict),
+      h("ul", { class: "list mt-s" },
+        row(r.loader.state, `${r.loader.name[0].toUpperCase()}${r.loader.name.slice(1)} (server type)`,
+          r.loader.state === "green" ? `ready (${r.loader.version})` : r.loader.state === "red" ? `no ${r.loader.name} build for Minecraft ${r.minecraft} yet` : "couldn't check it right now"),
+        r.mods.map((m) => row(m.state, m.name,
+          { green: "has a release build", yellow: `only ${m.channel} builds so far`, red: `no build for Minecraft ${r.minecraft} yet`, unknown: "can't tell (your own file, or the lookup failed)" }[m.state] +
+            ` · installed ${m.version}`,
+          [m.needed_by ? h("span", { class: "tag" }, `needed by ${m.needed_by}`) : null, m.required ? null : h("span", { class: "tag" }, "optional")]))),
+      r.mods.length ? null : h("p", { class: "empty" }, "No mods installed."));
+  };
+  pick.addEventListener("change", load);
+  openSidePane(h("div", { class: "readiness" },
+    h("div", { class: "row" }, h("h2", { class: "grow" }, "Why it's waiting"), pick,
+      h("button", { class: "btn ghost small", onclick: () => closeBrowser() }, "Close")),
+    h("p", { class: "muted small" }, `This server is on Minecraft ${installed || "(not installed yet)"}. Each installed mod, checked for the version above:`),
+    legend, body), "Update readiness");
+  load();
+}
+
 views.updates = () => {
   const body = h("div");
   const load = async () => {
@@ -702,10 +742,13 @@ views.updates = () => {
       },
     }, c.installed ? "Apply update" : "Install server");
 
+    // Newer versions to explain, newest first (the blocked ones the check found, and the latest).
+    const newer = [...new Set([c.latest, ...c.blocked.map((b) => b.minecraft)].filter((v) => v && v !== c.installed))];
     const summary = c.up_to_date
       ? h("div", { class: c.latest === c.installed ? "notice ok" : "notice warn" },
           c.latest === c.installed ? `Up to date on the latest release, Minecraft ${c.installed}.`
-            : `Up to date on Minecraft ${c.installed}, the newest version your mods support. ${c.latest} is blocked; see below.`)
+            : [`Up to date on Minecraft ${c.installed}, the newest version your mods support. ${c.latest} is waiting. `,
+              h("button", { class: "btn small", onclick: () => openReadiness(newer, c.installed) }, "Show why")])
       : c.target
         ? h("div", { class: "notice warn" }, h("strong", {}, `Ready: Minecraft ${c.installed || "(new install)"} → ${c.target}`),
             c.loader_version ? h("span", { class: "muted" }, `  (loader ${c.loader_version})`) : null)
@@ -733,6 +776,7 @@ views.updates = () => {
       h("li", { class: line.startsWith("+") ? "change-add" : line.startsWith("-") ? "change-rm" : "" }, line)))) : null;
 
     const blocked = c.blocked.length ? card("Newer versions that are blocked",
+      h("div", { class: "row mb" }, h("button", { class: "btn small", onclick: () => openReadiness(newer, c.installed) }, "Show why, mod by mod")),
       h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Minecraft"), h("th", {}, "Waiting on"))),
         h("tbody", {}, c.blocked.map((b) => h("tr", {},
           h("td", {}, b.minecraft),
@@ -1383,11 +1427,6 @@ function richText(text, format) {
 // bottom, and the mod's page on the right.
 let browserOpen = null;
 function openBrowser(params) {
-  closeBrowser(true);
-  const stage = $("#stage");
-  const back = { setup: "setup", new: "setup", mods: "Mods", friends: "Friends" }[currentName] || "the page";
-  const rail = h("button", { type: "button", class: "browse-rail", title: `Back to ${back} (Esc)`, "aria-label": `Back to ${back}`,
-    onclick: () => closeBrowser() }, h("span", { class: "rail-arrow" }, "‹"), h("span", { class: "rail-label" }, `Back to ${back}`));
   const refresh = () => { if (current && current.refresh) current.refresh(); };
   const b = browserPanel(new URLSearchParams(params), {
     close: () => closeBrowser(),
@@ -1405,11 +1444,21 @@ function openBrowser(params) {
     },
     changed: () => { closeBrowser(); refresh(); },
   });
-  const panel = h("section", { class: "inpage-browser", "aria-label": "Mod browser" }, b.el);
+  openSidePane(b.el, "Mod browser");
+  b.start();
+}
+// The page slides left into a narrow rail (click it or press Escape to go back) and ``el``
+// takes the screen: the mod browser, and the Updates tab's "Show why".
+function openSidePane(el, label) {
+  closeBrowser(true);
+  const stage = $("#stage");
+  const back = { setup: "setup", new: "setup", mods: "Mods", friends: "Friends", updates: "Updates" }[currentName] || "the page";
+  const rail = h("button", { type: "button", class: "browse-rail", title: `Back to ${back} (Esc)`, "aria-label": `Back to ${back}`,
+    onclick: () => closeBrowser() }, h("span", { class: "rail-arrow" }, "‹"), h("span", { class: "rail-label" }, `Back to ${back}`));
+  const panel = h("section", { class: "inpage-browser", "aria-label": label }, el);
   stage.append(rail, panel);
   stage.classList.add("browsing");
   browserOpen = { rail, panel };
-  b.start();
 }
 function closeBrowser(instant = false) {
   if (!browserOpen) return;

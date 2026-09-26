@@ -93,3 +93,23 @@ def test_config_and_setup_accept_a_channel(tmp_path, make_config):
                                          "mod_channels": {"a": "alpha", "b": "release", "c": "x"}})
     assert spec.mod_channels == {"a": "alpha"}
     assert json.dumps(spec.mod_channels)
+
+
+def test_readiness_for_the_next_minecraft(hub_env, modrinth):
+    """The Updates tab's 'Show why': each mod green (release), yellow (alpha/beta) or red (none)."""
+    hub, c = hub_env
+    login(c)
+    for pid, slug, name in (("GRN", "greenmod", "Green Mod"), ("YEL", "yellowmod", "Yellow Mod"), ("RED", "redmod", "Red Mod")):
+        modrinth.project(pid, slug, name)
+        modrinth.version(pid, "1.0", ["1.21.1"])
+    modrinth.version("GRN", "2.0", ["1.21.2"])
+    modrinth.version("YEL", "2.0-beta", ["1.21.2"], version_type="beta")
+    alpha = hub.get("alpha")
+    for slug in ("greenmod", "yellowmod", "redmod"):
+        assert c.post("/api/servers/alpha/mods/add", {"source": "modrinth", "id": slug})[0] == 200
+    assert update(alpha.m).ok
+    r = c.get("/api/servers/alpha/updates/readiness?version=1.21.2")[1]
+    assert r["minecraft"] == "1.21.2" and r["loader"]["state"] == "green"
+    assert [(m["name"], m["state"]) for m in r["mods"]] == [("Red Mod", "red"), ("Yellow Mod", "yellow"), ("Green Mod", "green")]
+    assert r["counts"] == {"red": 1, "yellow": 1, "unknown": 0, "green": 1}
+    assert c.get("/api/servers/alpha/updates/readiness?version=1.21;rm")[0] == 400
