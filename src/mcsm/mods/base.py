@@ -19,6 +19,7 @@ class Project:
     slug: str
     name: str
     server_side: str = "required"  # required | optional | unsupported | unknown
+    client_side: str = "required"
 
     @property
     def key(self) -> str:

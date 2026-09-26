@@ -63,6 +63,10 @@ def latest_release(http: HttpClient) -> Release | None:
         if e.status == 404:  # no releases published yet
             return None
         raise
+    return _release(data)
+
+
+def _release(data: dict) -> Release | None:
     tag = data.get("tag_name", "")
     if not tag or data.get("draft") or data.get("prerelease"):
         return None
@@ -70,6 +74,31 @@ def latest_release(http: HttpClient) -> Release | None:
               if a.get("name") and a.get("browser_download_url")}
     return Release(version=tag.lstrip("vV"), tag=tag, url=data.get("html_url", ""),
                    notes=(data.get("body") or "")[:4000], assets=assets)
+
+
+def release_for(http: HttpClient, version: str = __version__) -> Release | None:
+    """The release of one particular version (e.g. the one running now)."""
+    try:
+        data = http.get_json(f"https://api.github.com/repos/{REPO}/releases/tags/v{version}",
+                             headers={"Accept": "application/vnd.github+json"})
+    except HttpError as e:
+        if e.status == 404:
+            return None
+        raise
+    return _release(data)
+
+
+def fetch_verified(release: Release, name: str, dest: Path, http: HttpClient) -> Path:
+    """Download one of a release's files, checked against its SHA256SUMS.txt."""
+    if name not in release.assets:
+        raise SelfUpdateError(f"release {release.version} has no {name}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest.parent, prefix=".download-") as tmp:
+        sha256 = _expected_sha256(release, name, http, Path(tmp))
+        new = http.download(release.assets[name], Path(tmp) / name, sha256=sha256)
+        new.chmod(0o755)
+        os.replace(new, dest)
+    return dest
 
 
 def check(http: HttpClient, current: str = __version__) -> Release | None:

@@ -72,6 +72,15 @@ class WebConfig:
 
 
 @dataclass
+class ClientConfig:
+    """The download friends use to set up Minecraft for this server (see clientpack.py)."""
+    enabled: bool = False
+    token: str = ""                 # secret part of the invite link
+    mods: list[str] = field(default_factory=list)   # extra client-only Modrinth mods (slugs)
+    memory_gb: int = 4              # memory the friends' Minecraft gets
+
+
+@dataclass
 class Config:
     root: Path
     server: ServerConfig
@@ -89,6 +98,7 @@ class Config:
     discord_webhook: str = ""
     curseforge_api_key: str = ""
     restart_on_crash: bool = True
+    client: ClientConfig = field(default_factory=ClientConfig)
 
     @property
     def path(self) -> Path:
@@ -138,6 +148,20 @@ def _memory(value) -> str:
     if re.fullmatch(r"\d+[MmGg]", text) and int(text[:-1]) > 0:
         return text.upper()
     raise ConfigError(f"server.memory is {value!r}; use something like 4G, 4096M, or auto")
+
+
+def _client(c: dict) -> ClientConfig:
+    mods = c.get("mods", [])
+    if not isinstance(mods, list) or not all(isinstance(m, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", m)
+                                             for m in mods):
+        raise ConfigError("client.mods must be a list of Modrinth project ids or slugs")
+    token = str(c.get("token", ""))
+    if token and not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", token):
+        raise ConfigError("client.token looks wrong; delete it and mcsm makes a new one")
+    memory = int(c.get("memory_gb", 4))
+    if not 1 <= memory <= 32:
+        raise ConfigError("client.memory_gb must be between 1 and 32")
+    return ClientConfig(enabled=bool(c.get("enabled", False)), token=token, mods=list(mods), memory_gb=memory)
 
 
 def parse(root: Path, data: dict) -> Config:
@@ -220,6 +244,7 @@ def parse(root: Path, data: dict) -> Config:
         curseforge_api_key=(data.get("curseforge", {}).get("api_key", "")
                             or os.environ.get("MCSM_CURSEFORGE_API_KEY", "")),
         restart_on_crash=bool(s.get("restart_on_crash", True)),
+        client=_client(data.get("client", {})),
     )
 
 

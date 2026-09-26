@@ -411,6 +411,7 @@ class HubApi:
         r[("GET", "/api/hub/mods/search")] = lambda q, b: search_mods(ModrinthProvider(self.hub.http), q, set(), "fabric")
         r[("POST", "/api/hub/create")] = self.create
         r[("POST", "/api/hub/network")] = self.network
+        r[("POST", "/api/hub/share")] = self.save_share
         r[("POST", "/api/hub/delete")] = lambda q, b: {
             "ok": True, "message": self.hub.delete(str(b.get("id", "")), b.get("delete_files") is True)}
         r[("GET", "/api/notice")] = lambda q, b: {"accepted": notice.accepted(self.hub.root), "version": notice.NOTICE_VERSION,
@@ -432,7 +433,24 @@ class HubApi:
             "home": str(hub.home),
             "network_access": hub.web.host in ("0.0.0.0", "::"),
             "servers": hub.summary(),
+            "share": hub.share_status() if not hub.is_single else None,
         }
+
+    def save_share(self, q, b) -> dict:
+        if self.hub.is_single:
+            raise ApiError(400, "friend downloads need `mcsm start` (the server list)")
+        try:
+            port = int(b.get("port", 8766))
+        except (TypeError, ValueError):
+            raise ApiError(400, "the port must be a number") from None
+        if not 1024 <= port <= 65535 or port == self.web.port:
+            raise ApiError(400, "pick a port between 1024 and 65535 that the control panel isn't using")
+        address = str(b.get("address", "")).strip()
+        if address and not re.fullmatch(r"[A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:]{2,45}\]|[0-9A-Fa-f:]{2,45}", address):
+            raise ApiError(400, "the address should be a host name or IP address, without http:// or a port")
+        self.hub.save_share(port, address)
+        log.info("friend download settings: port %s, address %s", port, address or "(automatic)")
+        return {"ok": True, "share": self.hub.share_status()}
 
     def new_server_options(self, q, b) -> dict:
         if self._mojang is None:
@@ -512,6 +530,10 @@ class Api:
         post("/api/java/use", self.java_use)
         get("/api/settings", self.settings)
         post("/api/settings", self.save_settings)
+        get("/api/client", self.client)
+        post("/api/client", self.save_client)
+        post("/api/client/new-link", self.new_client_link)
+        get("/api/client/search", self.client_search)
         self.routes = r
         self.sampler = stats.Sampler()
         self._skins: Skins | None = None
@@ -735,6 +757,92 @@ class Api:
         message = self._players().act(action, str(b.get("name", "")), b.get("reason"))
         log.info("players: %s", message)
         return {"ok": True, "message": message}
+
+    # ------------------------------------------------------------- friends
+    def _invite_link(self) -> str | None:
+        c = self.m.config.client
+        if not c.token:
+            return None
+        share = self.web.hub.share_settings()
+        host = share["address"]
+        if not host:
+            from .cli import lan_ip
+            host = lan_ip() or "localhost"
+        from .join import Invite
+        return Invite(host.strip("[]"), share["port"], c.token).url
+
+    def client(self, q, b) -> dict:
+        c = self.m.config.client
+        hub = self.web.hub
+        preview, error = None, None
+        if c.enabled and self.m.lock.installed:
+            from .clientpack import PackBuilder
+            if getattr(self, "_pack_builder", None) is None or self._pack_builder.m is not self.m:
+                self._pack_builder = PackBuilder(self.m)
+            try:
+                share = hub.share_settings()
+                preview = self._pack_builder.build(share["address"] or "<your address>")
+            except Exception as e:
+                error = str(e)
+        return {
+            "available": not hub.is_single,
+            "enabled": c.enabled, "mods": c.mods, "memory_gb": c.memory_gb,
+            "link": self._invite_link() if c.enabled else None,
+            "share": hub.share_status() if not hub.is_single else None,
+            "pack": preview, "pack_error": error,
+            "loader": self.m.config.server.loader,
+        }
+
+    def save_client(self, q, b) -> dict:
+        if self.web.hub.is_single:
+            raise ApiError(400, "friend downloads need `mcsm start` (the server list)")
+        path = self.m.config.path
+        c = self.m.config.client
+        if "enabled" in b:
+            configmod.set_value(path, "client", "enabled", "true" if b["enabled"] is True else "false")
+            if b["enabled"] is True and not c.token:
+                from .clientpack import new_token
+                configmod.set_value(path, "client", "token", json.dumps(new_token()))
+        if "mods" in b:
+            mods = b["mods"]
+            if not isinstance(mods, list) or not all(isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", x)
+                                                     for x in mods):
+                raise ApiError(400, "mods must be a list of Modrinth project names")
+            configmod.set_value(path, "client", "mods", json.dumps(list(dict.fromkeys(mods))))
+        if "memory_gb" in b:
+            try:
+                memory = int(b["memory_gb"])
+            except (TypeError, ValueError):
+                raise ApiError(400, "memory must be a number") from None
+            if not 1 <= memory <= 32:
+                raise ApiError(400, "memory must be between 1 and 32 GB")
+            configmod.set_value(path, "client", "memory_gb", str(memory))
+        self.m.reload_config()
+        self.web.hub.update_share()
+        log.info("friend download settings saved")
+        return self.client(q, {})
+
+    def new_client_link(self, q, b) -> dict:
+        from .clientpack import new_token
+        configmod.set_value(self.m.config.path, "client", "token", json.dumps(new_token()))
+        self.m.reload_config()
+        log.info("made a new invite link; the old one no longer works")
+        return self.client(q, {})
+
+    def client_search(self, q, b) -> dict:
+        from .loaders import LOADERS
+        loaders = LOADERS[self.m.config.server.loader].mod_loaders
+        if not loaders:
+            return {"results": []}
+        query = q.get("q", "").strip()
+        if not query and q.get("top") != "1":
+            return {"results": []}
+        results = self._modrinth().search(query, loaders, limit=20, index="relevance" if query else "downloads",
+                                          side="client")
+        listed = set(self.m.config.client.mods)
+        for r in results:
+            r["listed"] = r["id"] in listed or r["slug"] in listed
+        return {"results": results}
 
     # ------------------------------------------------------------- backups
     def backups(self, q, b) -> dict:

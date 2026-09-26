@@ -25,7 +25,14 @@ class ModrinthProvider(ModProvider):
                 raise ModError(f"no Modrinth project named {mod_id!r}") from e
             raise
         return Project(source=self.source, id=p["id"], slug=p["slug"], name=p["title"],
-                       server_side=p.get("server_side", "unknown"))
+                       server_side=p.get("server_side", "unknown"), client_side=p.get("client_side", "unknown"))
+
+    def projects(self, ids: list[str]) -> dict[str, dict]:
+        """Several projects in one request: id -> project data."""
+        if not ids:
+            return {}
+        data = self.http.get_json(f"{API}/projects", params={"ids": json.dumps(sorted(set(ids)))})
+        return {p["id"]: p for p in data}
 
     def _versions(self, project_id: str, loaders: tuple[str, ...]) -> list[dict]:
         # One request per project; filtering by game version happens locally so that
@@ -45,10 +52,13 @@ class ModrinthProvider(ModProvider):
                 out.update(v.get("game_versions", []))
         return out
 
-    def resolve(self, spec: ModSpec, minecraft: str, loaders: tuple[str, ...], channel: str) -> ModFile:
+    def resolve(self, spec: ModSpec, minecraft: str, loaders: tuple[str, ...], channel: str,
+                side: str = "server") -> ModFile:
         project = self.project(spec.id)
-        if project.server_side == "unsupported":
+        if side == "server" and project.server_side == "unsupported":
             raise ClientOnly(f"{project.name} is client-side only")
+        if side == "client" and project.client_side == "unsupported":
+            raise Unavailable(f"{project.name} only runs on servers")
         candidates = [v for v in self._versions(project.id, loaders)
                       if minecraft in v.get("game_versions", []) and self._acceptable(v, channel)]
         if not candidates:
@@ -79,9 +89,11 @@ class ModrinthProvider(ModProvider):
             return {}
         return self.http.post_json(f"{API}/version_files", {"hashes": sha1_hashes, "algorithm": "sha1"})
 
-    def search(self, query: str, loaders: tuple[str, ...], limit: int = 20, index: str = "relevance") -> list[dict]:
-        """Server-compatible mods matching ``query``, most relevant first (or most downloaded)."""
-        facets = [[f"categories:{l}" for l in loaders], ["server_side:required", "server_side:optional"],
+    def search(self, query: str, loaders: tuple[str, ...], limit: int = 20, index: str = "relevance",
+               side: str = "server") -> list[dict]:
+        """Mods for the server (or, with ``side="client"``, for players' computers) matching
+        ``query``, most relevant first (or most downloaded)."""
+        facets = [[f"categories:{l}" for l in loaders], [f"{side}_side:required", f"{side}_side:optional"],
                   ["project_type:mod"]]
         data = self.http.get_json(f"{API}/search", params={
             "query": query, "limit": limit, "index": index, "facets": json.dumps([f for f in facets if f])})
@@ -89,5 +101,6 @@ class ModrinthProvider(ModProvider):
             "id": h["project_id"], "slug": h.get("slug", ""), "name": h.get("title", ""),
             "description": h.get("description", ""), "icon": h.get("icon_url") or "",
             "downloads": h.get("downloads", 0), "server_side": h.get("server_side", "unknown"),
+            "client_side": h.get("client_side", "unknown"),
             "latest_version": h.get("latest_version", ""),
         } for h in data.get("hits", [])]

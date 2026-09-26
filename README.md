@@ -165,6 +165,33 @@ on Windows), one folder each. To keep them somewhere else, set the `MCSM_HOME`
 environment variable. A folder that already contains an `mcsm.toml` (for example from
 an older mcsm) shows up in the list too.
 
+### Playing with friends
+
+Switch on **Make a download for friends** when you create a server (or later, on the
+server's **Friends** page) and share the invite link. Your friends:
+
+1. open the link and download the setup for their computer (it's this same mcsm
+   program, named after your server so it knows where to connect);
+2. run it. It adds a *Your Server* installation to their **official Minecraft
+   Launcher** with the right Minecraft version, mod loader (Fabric, Quilt, NeoForge or
+   Forge) and mods, in a folder of its own, and puts your server in its multiplayer list;
+3. pick that installation in the launcher and press Play. On Minecraft 1.20 and newer
+   it joins your server straight away.
+
+Mods come straight from Modrinth or CurseForge (every file is checked against its
+checksum); only mods that run on players' computers are included, plus any
+client-only mods you add on the Friends page (a minimap, JEI, Sodium...). When your
+server upgrades, friends run the file again to update. Sign-in stays with the
+Minecraft Launcher, so mcsm never sees anyone's Microsoft account.
+
+For friends outside your home network, forward two TCP ports to this computer: your
+Minecraft port (25565 for the first server) and the download port (8766), and enter
+your public address under **mcsm settings → Sharing with friends**. The download port
+serves only the invite page, the mod list and the download, never the control panel.
+To play on the server from this computer too: `mcsm join --from-server <server folder>`.
+
+![What friends see](docs/web-join.png)
+
 **Deleting a server:** use **Delete** on its card, or **Delete server…** at the bottom
 of its Settings. You choose whether to keep its files (it just leaves the list) or
 erase its world, mods, backups and settings too (you type its name to confirm).
