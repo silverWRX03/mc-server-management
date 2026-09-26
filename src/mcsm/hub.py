@@ -64,6 +64,17 @@ def _rmtree(path: Path) -> None:
         shutil.rmtree(path, onerror=retry)
 
 
+def port_free(port: int) -> bool:
+    """Whether nothing on this computer is listening on a TCP port."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+            return True
+        except OSError:
+            return False
+
+
 def slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "server"
 
@@ -286,9 +297,30 @@ class Hub:
     def free_port(self, start: int = 25565) -> int:
         taken = self.ports()
         port = start
-        while port in taken:
+        while port in taken or port in self.reserved_ports() or not port_free(port):
             port += 1
         return port
+
+    def reserved_ports(self) -> set[int]:
+        """Ports mcsm itself listens on (the control panel and the friends' download)."""
+        out = {self.web.port}
+        if self.ui is not None and self.ui.httpd is not None:
+            out.add(self.ui.httpd.server_address[1])
+        if not self.is_single:
+            out.add(self.share_settings()["port"])
+        return out
+
+    def port_info(self, port: int, exclude: str | None = None) -> dict:
+        """Whether a Minecraft port can be used: by another server here, by mcsm, or by another program."""
+        from .properties import read_properties
+        used_by = None
+        sid = self.ports(exclude).get(port)
+        if sid is not None and sid in self.daemons:
+            used_by = read_properties(self.daemons[sid].m.server_dir / "server.properties").get("motd") or sid
+        running_here = sid is not None and sid in self.daemons and bool(
+            self.daemons[sid].proc and self.daemons[sid].proc.running)
+        return {"port": port, "used_by": used_by, "mcsm": port in self.reserved_ports(),
+                "busy": not running_here and not port_free(port), "suggestion": self.free_port()}
 
     def check_port(self, daemon: Daemon) -> None:
         """Refuse to start a server whose port another running server here already uses."""
@@ -314,6 +346,9 @@ class Hub:
                 sid, n = f"{base}-{n}", n + 1
             root = self.home / SERVERS_DIR / sid
             if spec.port in self.ports():
+                if spec.port_chosen:
+                    other = self.ports()[spec.port]
+                    raise ConfigError(f"port {spec.port} is already used by another server here ({other}); pick another")
                 spec.port = self.free_port(spec.port)  # two servers can't share a port
             spec.network_access = False  # the hub's own setting decides who can open the panel
             setupmod.configure(root, spec)

@@ -150,6 +150,13 @@ def test_create_a_server_from_the_web(hub_env):
     assert c.post("/api/hub/create", {"loader": "vanilla", "motd": "My World", "accept_eula": True})[1]["id"] == "my-world-2"
     ports = {s["id"]: s["port"] for s in c.get("/api/hub")[1]["servers"] if s["id"] != "main"}
     assert len(set(ports.values())) == 3 and ports["alpha"] == "25565"
+    # The setup page checks ports as you type, and a port picked by hand that's taken is refused.
+    info = c.get("/api/hub/port?port=25565")[1]
+    assert info["used_by"] == "Alpha" and info["suggestion"] not in (25565, int(ports["my-world"]), int(ports["my-world-2"]))
+    assert c.get("/api/hub/port?port=25590")[1]["used_by"] is None
+    assert c.get("/api/hub/port?port=80")[0] == 400
+    status, body, _ = c.post("/api/hub/create", {"loader": "vanilla", "motd": "Clash", "port": 25565, "accept_eula": True})
+    assert status == 400 and "already used" in body["error"]
     # Two servers can't be given the same port...
     status, body, _ = c.post("/api/servers/my-world/settings", {"port": 25565})
     assert status == 400 and "alpha" in body["error"]

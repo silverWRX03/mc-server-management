@@ -100,6 +100,7 @@ class SetupSpec:
     accept_eula: bool = False
     properties: dict[str, str] = field(default_factory=dict)  # advanced server.properties settings
     friends: bool = False          # make a download that sets up friends' Minecraft for this server
+    port_chosen: bool = False      # the port was picked by the person (not just the default)
 
     @classmethod
     def from_dict(cls, d: dict) -> SetupSpec:
@@ -141,6 +142,7 @@ class SetupSpec:
             accept_eula=d.get("accept_eula") is True,
             properties=serverprops.validate(d.get("properties")),
             friends=d.get("friends") is True,
+            port_chosen="port" in d,
         )
         if spec.loader not in configmod.LOADERS:
             raise ConfigError(f"unknown server type {spec.loader!r}")

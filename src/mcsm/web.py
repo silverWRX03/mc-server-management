@@ -412,6 +412,7 @@ class HubApi:
         r[("POST", "/api/hub/create")] = self.create
         r[("POST", "/api/hub/network")] = self.network
         r[("POST", "/api/hub/share")] = self.save_share
+        r[("GET", "/api/hub/port")] = self.port_check
         r[("POST", "/api/hub/delete")] = lambda q, b: {
             "ok": True, "message": self.hub.delete(str(b.get("id", "")), b.get("delete_files") is True)}
         r[("GET", "/api/notice")] = lambda q, b: {"accepted": notice.accepted(self.hub.root), "version": notice.NOTICE_VERSION,
@@ -435,6 +436,15 @@ class HubApi:
             "servers": hub.summary(),
             "share": hub.share_status() if not hub.is_single else None,
         }
+
+    def port_check(self, q, b) -> dict:
+        try:
+            port = int(q.get("port", ""))
+        except ValueError:
+            raise ApiError(400, "the port must be a number") from None
+        if not 1024 <= port <= 65535:
+            raise ApiError(400, "pick a port between 1024 and 65535")
+        return self.hub.port_info(port, exclude=q.get("exclude") or None)
 
     def save_share(self, q, b) -> dict:
         if self.hub.is_single:

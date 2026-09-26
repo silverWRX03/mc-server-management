@@ -1277,6 +1277,27 @@ views.setup = () => {
       Array.from({ length: Math.min(maxMem, 32) }, (_, i) => i + 1).map((g) => h("option", { value: String(g) }, `${g} GB${g === opts.memory_gb ? " (suggested)" : ""}`)));
     mem.value = String(st.memory_gb);
 
+    // The Minecraft port, checked as you type: other servers here, mcsm itself, other programs.
+    const portField = () => {
+      const note = h("span", { class: "muted small" }, "25565 is Minecraft's usual port. Friends type the address as host:port when it's not 25565.");
+      const input = h("input", { type: "number", min: 1024, max: 65535, value: st.port });
+      let timer;
+      const check = async () => {
+        const port = Number(input.value);
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) { note.className = "small bad-text"; note.textContent = "Pick a number between 1024 and 65535."; return; }
+        if (opts.network_option) return;  // `mcsm run`: a single server, nothing to compare with
+        const r = await api(`/api/hub/port?port=${port}${isNew ? "" : "&exclude=" + encodeURIComponent(server)}`).catch(() => null);
+        if (!r || Number(input.value) !== port) return;
+        if (r.used_by) { note.className = "small bad-text"; note.textContent = `Already used by ${r.used_by}. Try ${r.suggestion}.`; }
+        else if (r.mcsm) { note.className = "small bad-text"; note.textContent = `mcsm itself uses this port. Try ${r.suggestion}.`; }
+        else if (r.busy) { note.className = "small warn-text"; note.textContent = `Another program on this computer is using port ${port}; the server won't start until it's free. Try ${r.suggestion}.`; }
+        else { note.className = "small ok-text"; note.textContent = `Port ${port} is free.` + (port === 25565 ? "" : " Friends connect with your address followed by :" + port + "."); }
+      };
+      input.addEventListener("input", () => { st.port = Number(input.value); clearTimeout(timer); timer = setTimeout(check, 300); });
+      check();
+      return field("Port (players connect to this)", input, note);
+    };
+
     const eula = h("input", { type: "checkbox", checked: st.accept_eula, onchange: (e) => { st.accept_eula = e.target.checked; } });
     const lan = h("input", { type: "checkbox", checked: st.network_access, onchange: (e) => { st.network_access = e.target.checked; } });
 
@@ -1322,7 +1343,7 @@ views.setup = () => {
             field("Difficulty", sel("difficulty", opts.difficulties)),
             field("Game mode", sel("gamemode", opts.gamemodes)),
             field("Memory", mem, opts.total_ram_gb ? `This computer has ${opts.total_ram_gb} GB.` : null),
-            field("Port", inp("port", { type: "number", min: 1024, max: 65535 }), "25565 is Minecraft's usual port.")),
+            portField()),
           opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null)),
         h("div", { class: "mt" }, advanced),
         opts.network_option ? null : h("div", { class: "mt" }, card("Friends (optional)",

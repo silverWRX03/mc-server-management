@@ -263,3 +263,6 @@ details.advanced[open] > summary { margin-bottom: 8px; }
 .row > input.grow { flex: 1; min-width: 200px; }
 .row.check-row { flex-wrap: nowrap; align-items: flex-start; }
 .row.check-row input { margin-top: 3px; flex: none; }
+.ok-text { color: #9be09b; }
+.warn-text { color: #f0c96a; }
+.bad-text { color: #ff9f99; }
