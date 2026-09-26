@@ -508,3 +508,5 @@ main > * { animation: rise .25s ease-out; }
 .modal.tester { max-width: 720px; }
 .modal.tester .log { max-height: 240px; }
 .tester-time { font-variant-numeric: tabular-nums; }
+.key-panel ol { padding-left: 18px; margin: 6px 0 10px; }
+.key-panel .row input { flex: 1; min-width: 0; }

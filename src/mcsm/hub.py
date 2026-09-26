@@ -123,6 +123,7 @@ class Hub:
         self.share_error: str | None = None
         self._lock = threading.RLock()
         self._web = self._load_web()
+        self._apply_curseforge_key()
 
     @classmethod
     def single(cls, daemon: Daemon) -> Hub:
@@ -197,6 +198,42 @@ class Hub:
         data = self._hub_file()
         data.setdefault("web", {}).update(changes)
         self._save_hub_file(data)
+
+    # ------------------------------------------------------- CurseForge
+    def curseforge_key(self) -> str:
+        """The CurseForge API key: saved in mcsm settings, or MCSM_CURSEFORGE_API_KEY."""
+        return str(self._hub_file().get("curseforge_api_key") or os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+
+    def _apply_curseforge_key(self) -> None:
+        # Servers read MCSM_CURSEFORGE_API_KEY when their mcsm.toml has no key of its own.
+        key = self._hub_file().get("curseforge_api_key")
+        if key:
+            os.environ["MCSM_CURSEFORGE_API_KEY"] = key
+
+    def save_curseforge_key(self, key: str) -> None:
+        """Check a key with CurseForge, then use it everywhere (empty removes it)."""
+        from .mods import curseforge as cf
+        key = key.strip()
+        if key:
+            if not re.fullmatch(r"[A-Za-z0-9$./_+=-]{20,120}", key):
+                raise ConfigError("that doesn't look like a CurseForge API key")
+            try:
+                self.http.get_json(f"{cf.API}/games/{cf.MINECRAFT_GAME_ID}", headers={"x-api-key": key})
+            except Exception as e:
+                raise ConfigError(f"CurseForge didn't accept that key ({e})") from None
+        data = self._hub_file()
+        if key:
+            data["curseforge_api_key"] = key
+            os.environ["MCSM_CURSEFORGE_API_KEY"] = key
+        else:
+            data.pop("curseforge_api_key", None)
+            os.environ.pop("MCSM_CURSEFORGE_API_KEY", None)
+        self._save_hub_file(data)
+        for d in list(self.daemons.values()):
+            try:
+                d.m.reload_config()
+            except Exception as e:
+                log.warning("couldn't reload a server's settings: %s", e)
 
     # ---------------------------------------------------------- sharing
     def share_settings(self) -> dict:

@@ -549,6 +549,8 @@ class HubApi:
         r[("POST", "/api/hub/stage")] = self.stage
         r[("POST", "/api/hub/open")] = self.open_folder
         r[("POST", "/api/hub/quit")] = self.quit
+        r[("GET", "/api/hub/curseforge")] = lambda q, b: {"set": bool(self.curseforge_key_now())}
+        r[("POST", "/api/hub/curseforge")] = self.save_curseforge
         r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
         r[("POST", "/api/hub/mods/check")] = self.check_mods
         r[("POST", "/api/hub/trial")] = self.start_trial
@@ -585,7 +587,8 @@ class HubApi:
 
     def browser(self):
         from .browse import Browser
-        return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+        return Browser(self.hub.http, self.hub.curseforge_key() if not self.hub.is_single else
+                       os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
 
     # ------------------------------------------------ try before you buy
     def check_mods(self, q, b) -> dict:
@@ -657,6 +660,16 @@ class HubApi:
         self.hub.save_share(self.hub.share_settings()["port"], ip)
         log.info("friends outside your network now use %s", ip)
         return {"ok": True, "ip": ip, "share": self.hub.share_status()}
+
+    def curseforge_key_now(self) -> str:
+        return self.hub.curseforge_key() if not self.hub.is_single else os.environ.get("MCSM_CURSEFORGE_API_KEY", "")
+
+    def save_curseforge(self, q, b) -> dict:
+        if self.hub.is_single:
+            raise ApiError(400, "set [curseforge] api_key in mcsm.toml for a server run with `mcsm run`")
+        self.hub.save_curseforge_key(str(b.get("key", "")))
+        log.info("CurseForge API key %s", "saved" if b.get("key") else "removed")
+        return {"ok": True, "set": bool(self.hub.curseforge_key())}
 
     def quit(self, q, b) -> dict:
         """Close mcsm (stopping every server), for when there's no window to close."""

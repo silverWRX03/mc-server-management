@@ -1378,7 +1378,9 @@ views.browse = (params) => {
   const q = h("input", { type: "search", placeholder: kind === "modpack" ? "Search modpacks…" : "Search mods…", "aria-label": "Search" });
   const sort = h("select", { "aria-label": "Sort by" }, [["relevance", "Best match"], ["downloads", "Most downloaded"],
     ["follows", "Most followed"], ["newest", "Newest"], ["updated", "Recently updated"]].map(([v, l]) => h("option", { value: v }, l)));
-  const source = h("select", { "aria-label": "Source" }, h("option", { value: "modrinth" }, "Modrinth"));
+  const source = h("select", { "aria-label": "Source" }, h("option", { value: "modrinth" }, "Modrinth"),
+    kind === "mod" ? h("option", { value: "curseforge" }, "CurseForge") : null);
+  let cfKey = null;  // whether a CurseForge API key is set (asked once)
   const category = h("select", { "aria-label": "Category" }, h("option", { value: "" }, "All categories"));
   const version = h("input", { value: st.version, placeholder: "Any version", "aria-label": "Minecraft version", class: "narrow" });
   let timer, seq = 0;
@@ -1407,7 +1409,33 @@ views.browse = (params) => {
         : "Tick the mods you want.";
     addBtn.disabled = kind === "modpack" ? true : n === 0;
   };
+  // CurseForge only answers apps with an API key (free); explain and take one here.
+  const keyPanel = () => {
+    const input = h("input", { type: "password", placeholder: "Paste your CurseForge API key", autocomplete: "off", "aria-label": "CurseForge API key" });
+    const save = h("button", { class: "btn primary", onclick: async () => {
+      save.disabled = true;
+      try {
+        await api("/api/hub/curseforge", { method: "POST", body: { key: input.value } });
+        cfKey = true;
+        toast("CurseForge key saved. It works for all your servers.");
+        loadCategories();
+        search();
+      } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, true); save.disabled = false; }
+    } }, "Save key");
+    fill(list, h("div", { class: "notice key-panel" },
+      h("strong", {}, "CurseForge needs an API key"),
+      h("p", { class: "small" }, "CurseForge only lets apps search it with a key. It's free and takes a minute:"),
+      h("ol", { class: "small" },
+        h("li", {}, "Open ", h("a", { href: "https://console.curseforge.com/", target: "_blank", rel: "noopener noreferrer" }, "console.curseforge.com ↗"), " and sign in (a CurseForge or Google account works)."),
+        h("li", {}, "Go to ", h("strong", {}, "API keys"), " and copy your key."),
+        h("li", {}, "Paste it here. mcsm checks it with CurseForge and keeps it in mcsm settings.")),
+      h("div", { class: "row" }, input, save)));
+  };
   const search = async (more = false) => {
+    if (st.source === "curseforge") {
+      if (cfKey === null) cfKey = (await api("/api/hub/curseforge").catch(() => ({ set: false }))).set;
+      if (!cfKey) { keyPanel(); st.results = []; updateFooter(); return; }
+    }
     const mine = ++seq;
     if (!more) { st.offset = 0; list.scrollTop = 0; }
     const p = new URLSearchParams({ type: kind, q: st.q, source: st.source, sort: st.sort, offset: String(st.offset) });
@@ -1501,9 +1529,7 @@ views.browse = (params) => {
   version.addEventListener("change", () => { st.version = version.value.trim(); search(); });
   const loadCategories = async () => {
     const r = await api(`${base}/categories?type=${kind}&source=${st.source}`).catch(() => null);
-    if (!r) return;
-    fill(category, h("option", { value: "" }, "All categories"), r.categories.map((c) => h("option", { value: c.id }, c.name)));
-    if (source.options.length === 1 && r.sources.includes("curseforge") && kind === "mod") source.append(h("option", { value: "curseforge" }, "CurseForge"));
+    fill(category, h("option", { value: "" }, "All categories"), r ? r.categories.map((c) => h("option", { value: c.id }, c.name)) : []);
   };
 
   fill($("#main"), h("div", { class: "browse" },
@@ -2031,7 +2057,24 @@ views.mcsm = () => {
           x.url.startsWith("http") ? h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" }, "terms ↗") : h("span", { class: "muted small" }, x.url)))))),
     );
   };
-  fill($("#main"), security, network, sharing, about);
+  // CurseForge's API key (for CurseForge mods and searching CurseForge)
+  const cf = h("div", { class: "mb" });
+  const renderCf = async () => {
+    if (hubInfo && hubInfo.single) return;
+    const r = await api("/api/hub/curseforge").catch(() => null);
+    if (!r) return;
+    const input = h("input", { type: "password", placeholder: r.set ? "•••••••• (saved)" : "Paste your CurseForge API key", autocomplete: "off", "aria-label": "CurseForge API key" });
+    const saveKey = (key, msg) => act(() => api("/api/hub/curseforge", { method: "POST", body: { key } }), msg).then(renderCf);
+    fill(cf, card("CurseForge",
+      h("p", { class: "muted small" }, "Needed to search CurseForge and to use CurseForge mods (Modrinth works without it). Get a free key at ",
+        h("a", { href: "https://console.curseforge.com/", target: "_blank", rel: "noopener noreferrer" }, "console.curseforge.com ↗"), " → API keys."),
+      h("div", { class: "row" }, input,
+        h("button", { class: "btn primary", onclick: () => input.value.trim() && saveKey(input.value, "CurseForge key saved") }, r.set ? "Replace key" : "Save key"),
+        r.set ? h("button", { class: "btn ghost", onclick: () => confirm("Remove the CurseForge key?") && saveKey("", "CurseForge key removed") }, "Remove") : null),
+      r.set ? h("p", { class: "small ok-text" }, "✓ A key is saved.") : null));
+  };
+  renderCf();
+  fill($("#main"), security, network, sharing, cf, about);
   renderSecurity(hubInfo);
   renderSharing(hubInfo);
   loadAbout();
