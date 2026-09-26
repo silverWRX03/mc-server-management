@@ -266,3 +266,46 @@ details.advanced[open] > summary { margin-bottom: 8px; }
 .ok-text { color: #9be09b; }
 .warn-text { color: #f0c96a; }
 .bad-text { color: #ff9f99; }
+
+/* three ways to add mods: local files, the browser window, modpacks */
+.source-buttons { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.source-buttons .btn { display: grid; gap: 2px; justify-items: start; text-align: left; padding: 12px 14px; }
+.notice.pack { display: flex; align-items: center; gap: 12px; }
+.notice.pack img { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; }
+.choice:disabled { opacity: .45; cursor: not-allowed; }
+
+/* the mod browser window: filters and results on the left, the mod's page on the right */
+body.browse-mode .sidebar, body.browse-mode .topbar { display: none; }
+body.browse-mode .app { grid-template-columns: 1fr; }
+body.browse-mode main { padding: 0; overflow: hidden; }
+.browse { display: grid; grid-template-columns: minmax(360px, 440px) 1fr; height: 100vh; }
+.browse-left { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--panel); }
+.browse-filters { display: grid; gap: 8px; padding: 14px; border-bottom: 1px solid var(--border); }
+.browse-filters .row > * { flex: 1; min-width: 0; }
+.browse-filters .row > .grow { flex: 1 1 auto; }
+.browse-filters .row > .tag, .browse-filters .row > .btn { flex: 0 0 auto; }
+.browse-results { flex: 1; overflow: auto; padding: 8px; }
+.browse-footer { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--border); }
+.result { display: grid; grid-template-columns: auto 40px 1fr; gap: 10px; align-items: start; padding: 10px;
+  border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+.result:hover { background: var(--panel-2); }
+.result.active { background: var(--panel-2); border-color: var(--accent); }
+.result input { margin-top: 12px; }
+.result img, .result .noicon { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; }
+.result .name { font-weight: 600; overflow-wrap: anywhere; }
+.result .desc { font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.browse-right { overflow: auto; padding: 24px 32px; min-width: 0; }
+.browse-head { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.browse-head img, .browse-head .noicon { width: 72px; height: 72px; border-radius: 12px; object-fit: cover; }
+.browse-head h2 { margin: 0 0 4px; }
+.gallery { display: flex; gap: 8px; overflow-x: auto; }
+.gallery img { height: 140px; border-radius: 8px; }
+.rich { line-height: 1.55; overflow-wrap: anywhere; }
+.rich img { max-width: 100%; height: auto; }
+.rich pre { overflow: auto; background: var(--panel-2); padding: 10px; border-radius: 6px; }
+.rich table { display: block; overflow-x: auto; }
+@media (max-width: 760px) {
+  .browse { grid-template-columns: 1fr; grid-template-rows: 60vh auto; height: auto; }
+  body.browse-mode main { overflow: auto; }
+  .browse-right { padding: 16px; }
+}

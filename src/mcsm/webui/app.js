@@ -754,9 +754,11 @@ views.mods = () => {
   q.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, 350); });
 
   const cfId = h("input", { placeholder: "CurseForge project id or slug" });
+  let info = {};
   const load = async () => {
     const r = await api("/api/mods").catch(() => null);
     if (!r) return;
+    info = r;
     fill(configured, r.configured.length ? h("ul", { class: "list" }, r.configured.map((s) => h("li", {},
       h("div", { class: "grow" }, h("strong", {}, s.id), h("span", { class: "tag" }, s.source)),
       h("label", { class: "row", title: "Required mods hold back Minecraft upgrades until they support the new version" },
@@ -777,15 +779,34 @@ views.mods = () => {
     );
   };
 
+  const picker = h("input", { type: "file", multiple: true, accept: ".jar", class: "hidden" });
+  picker.addEventListener("change", async () => {
+    for (const f of [...picker.files]) {
+      const r = await api(`/api/mods/local?filename=${encodeURIComponent(f.name)}`, { method: "POST", raw: f })
+        .catch((e) => { toast(`${f.name}: ${e.message}`, true); return null; });
+      if (r) toast(r.managed ? `${r.name}: found on Modrinth, so mcsm will keep it up to date` : `${r.name} added as your own file (mcsm won't update it)`);
+    }
+    picker.value = "";
+    load();
+  });
+  const sources = h("div", { class: "source-buttons" },
+    h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
+      h("span", { class: "small muted" }, ".jar files on this computer")),
+    h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: server, loader: info.loader || "", version: info.minecraft || "" }) },
+      "🔎 Download mods", h("span", { class: "small muted" }, "Browse Modrinth and CurseForge")),
+    hubInfo && hubInfo.single ? null : h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup" }) },
+      "📦 Modpacks", h("span", { class: "small muted" }, "Start a new server from a pack")),
+    picker);
+
   fill($("#main"), 
     h("h2", { class: "view-title" }, "Mods"),
-    card("Add mods", q, results,
+    card("Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, results,
       h("div", { class: "row mt-s" }, cfId,
         h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
     h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured), card("Installed", installed)),
   );
   load();
-  return { onJobDone: load };
+  return { onJobDone: load, refresh: load };
 };
 
 views.backups = () => {
@@ -1004,6 +1025,262 @@ views.friends = () => {
   return {};
 };
 
+// ---------------------------------------------------------- rich text (mod pages)
+// Modrinth descriptions are Markdown with bits of HTML; CurseForge's are HTML. Both are
+// turned into DOM through an allowlist, so nothing from outside can run script here.
+const RICH_TAGS = new Set(["A", "P", "BR", "HR", "H1", "H2", "H3", "H4", "H5", "H6", "UL", "OL", "LI", "STRONG", "B",
+  "EM", "I", "U", "S", "DEL", "CODE", "PRE", "BLOCKQUOTE", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD",
+  "DETAILS", "SUMMARY", "DIV", "SPAN", "CENTER", "SUB", "SUP", "KBD", "FIGURE", "FIGCAPTION"]);
+const RICH_DROP = new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "NOSCRIPT", "TEMPLATE", "SVG", "MATH",
+  "FORM", "INPUT", "BUTTON", "TEXTAREA", "SELECT", "LINK", "META", "BASE", "VIDEO", "AUDIO"]);
+function richFromHtml(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");  // inert: nothing runs or loads
+  const out = document.createDocumentFragment();
+  const walk = (node, into) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) { into.append(child.textContent); continue; }
+      if (child.nodeType !== 1) continue;
+      const tag = child.tagName;
+      if (RICH_DROP.has(tag)) continue;
+      if (!RICH_TAGS.has(tag)) { walk(child, into); continue; }
+      const el = document.createElement(tag === "CENTER" ? "div" : tag.toLowerCase());
+      if (tag === "A") {
+        const href = child.getAttribute("href") || "";
+        if (/^https?:\/\//i.test(href)) { el.href = href; el.target = "_blank"; el.rel = "noopener noreferrer"; }
+      } else if (tag === "IMG") {
+        const src = child.getAttribute("src") || "";
+        if (!/^https:\/\//i.test(src)) continue;
+        el.src = src; el.alt = child.getAttribute("alt") || ""; el.loading = "lazy"; el.referrerPolicy = "no-referrer";
+        for (const a of ["width", "height"]) if (/^\d{1,4}$/.test(child.getAttribute(a) || "")) el.setAttribute(a, child.getAttribute(a));
+      } else if (tag === "TD" || tag === "TH") {
+        if (/^\d{1,2}$/.test(child.getAttribute("colspan") || "")) el.setAttribute("colspan", child.getAttribute("colspan"));
+      }
+      walk(child, el);
+      into.append(el);
+    }
+  };
+  walk(doc.body, out);
+  return out;
+}
+function mdToHtml(md) {
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s) => s
+    .replace(/`([^`]+)`/g, (_, c) => `<code>${esc(c)}</code>`)
+    .replace(/!\[([^\]]*)\]\((\S+?)(?:\s+"[^"]*")?\)/g, '<img alt="$1" src="$2">')
+    .replace(/\[([^\]]+)\]\((\S+?)(?:\s+"[^"]*")?\)/g, '<a href="$2">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2">$2</a>');
+  const out = [];
+  let list = null, para = [];
+  const flush = () => {
+    if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; }
+    if (list) { out.push(`</${list}>`); list = null; }
+  };
+  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      flush();
+      const code = [];
+      while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]);
+      out.push(`<pre><code>${esc(code.join("\n"))}</code></pre>`);
+      continue;
+    }
+    let m;
+    if (!line.trim()) { flush(); continue; }
+    if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/))) { flush(); out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); continue; }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); out.push("<hr>"); continue; }
+    if ((m = line.match(/^\s*>\s?(.*)$/))) { flush(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); continue; }
+    if ((m = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/))) {
+      if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; }
+      const kind = /\d/.test(m[1]) ? "ol" : "ul";
+      if (list !== kind) { if (list) out.push(`</${list}>`); out.push(`<${kind}>`); list = kind; }
+      out.push(`<li>${inline(m[2])}</li>`);
+      continue;
+    }
+    if (/^\s*<\/?[a-zA-Z][^>]*>\s*$/.test(line) || /^\s*<(div|center|p|img|details|summary|table|h\d|br|a)\b/i.test(line)) {
+      flush(); out.push(line); continue;  // raw HTML block (sanitised below)
+    }
+    if (list) { out.push(`</${list}>`); list = null; }
+    para.push(line.trim());
+  }
+  flush();
+  return out.join("\n");
+}
+function richText(text, format) {
+  return h("div", { class: "rich" }, richFromHtml(format === "html" ? text : mdToHtml(text || "")));
+}
+
+// ---------------------------------------------------------- mod browser window
+// Opened from setup and the Mods page: search, filters and sort at the top left, results
+// with checkboxes below, "Add selected" at the bottom, and the mod's page on the right.
+function openBrowser(params) {
+  const url = `${location.pathname}#browse?${new URLSearchParams(params)}`;
+  const win = window.open(url, "mcsm-browse", "width=1400,height=900");
+  if (!win) location.hash = `#browse?${new URLSearchParams(params)}`;  // popups blocked: open it here
+  else win.focus();
+}
+window.addEventListener("message", (e) => {
+  if (e.origin !== location.origin || !e.data || typeof e.data !== "object") return;
+  const d = e.data;
+  if (d.type === "mcsm-add-mods" && Array.isArray(d.mods)) {
+    for (const m of d.mods) setupState.mods.set(m.source === "curseforge" ? `curseforge:${m.id}` : m.slug || m.id, { name: m.name, required: true });
+    toast(`${d.mods.length} mod(s) added`);
+    if (current && current.refresh) current.refresh();
+  } else if (d.type === "mcsm-modpack" && d.pack) {
+    Object.assign(setupState, { modpack: d.pack, loader: d.pack.loader, minecraft: d.pack.minecraft });
+    toast(`Modpack chosen: ${d.pack.name}`);
+    if ((currentName === "new" || currentName === "setup") && current && current.refresh) current.refresh();
+    else location.hash = "#new";
+  } else if (d.type === "mcsm-mods-changed" && current && current.refresh) current.refresh();
+});
+
+views.browse = (params) => {
+  document.body.classList.add("browse-mode");
+  const kind = params.get("type") === "modpack" ? "modpack" : "mod";
+  const target = params.get("target") || "setup";
+  const loader = params.get("loader") || "";
+  const base = target === "setup" ? "/api/hub/browse" : `/api/servers/${encodeURIComponent(target)}/browse`;
+  const st = { q: "", source: "modrinth", sort: "relevance", category: "", version: params.get("version") || "",
+    offset: 0, total: 0, results: [], selected: new Map(), active: null };
+  const list = h("div", { class: "browse-results" });
+  const details = h("div", { class: "browse-right" }, h("p", { class: "empty" }, `Pick a ${kind} on the left to read about it here.`));
+  const count = h("span", { class: "grow muted small" });
+  const addBtn = h("button", { class: "btn primary" + (kind === "modpack" ? " hidden" : ""), disabled: true }, "Add selected mods");
+  const q = h("input", { type: "search", placeholder: kind === "modpack" ? "Search modpacks…" : "Search mods…", "aria-label": "Search" });
+  const sort = h("select", { "aria-label": "Sort by" }, [["relevance", "Best match"], ["downloads", "Most downloaded"],
+    ["follows", "Most followed"], ["newest", "Newest"], ["updated", "Recently updated"]].map(([v, l]) => h("option", { value: v }, l)));
+  const source = h("select", { "aria-label": "Source" }, h("option", { value: "modrinth" }, "Modrinth"));
+  const category = h("select", { "aria-label": "Category" }, h("option", { value: "" }, "All categories"));
+  const version = h("input", { value: st.version, placeholder: "Any version", "aria-label": "Minecraft version", class: "narrow" });
+  let timer, seq = 0;
+
+  const fmtNum = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
+  const updateFooter = () => {
+    const n = st.selected.size;
+    count.textContent = kind === "modpack" ? (st.active ? "" : "Pick a modpack to see its versions.")
+      : n ? `${n} selected: ${[...st.selected.values()].map((m) => m.name).slice(0, 3).join(", ")}${n > 3 ? "…" : ""}` : "Tick the mods you want.";
+    addBtn.disabled = kind === "modpack" ? true : n === 0;
+  };
+  const search = async (more = false) => {
+    const mine = ++seq;
+    if (!more) { st.offset = 0; list.scrollTop = 0; }
+    const p = new URLSearchParams({ type: kind, q: st.q, source: st.source, sort: st.sort, offset: String(st.offset) });
+    if (st.category) p.set("category", st.category);
+    p.set("version", st.version);
+    if (loader) p.set("loader", loader);
+    if (!more) fill(list, h("p", { class: "empty" }, "Searching…"));
+    const r = await api(`${base}/search?${p}`).catch((e) => { if (!(e instanceof Unauthorized)) fill(list, h("div", { class: "notice bad" }, e.message)); return null; });
+    if (!r || mine !== seq) return;
+    st.results = more ? st.results.concat(r.results) : r.results;
+    st.total = r.total;
+    renderList();
+  };
+  const renderList = () => {
+    fill(list, st.results.length ? st.results.map((m) => {
+      const key = `${m.source}:${m.id}`;
+      const box = kind === "mod" ? h("input", { type: "checkbox", checked: st.selected.has(key), "aria-label": `Select ${m.name}`,
+        onclick: (e) => e.stopPropagation(),
+        onchange: (e) => { if (e.target.checked) st.selected.set(key, m); else st.selected.delete(key); updateFooter(); } }) : null;
+      return h("div", { class: "result" + (st.active === key ? " active" : ""), tabindex: "0", role: "button",
+        onclick: () => showDetails(m), onkeydown: (e) => { if (e.key === "Enter") showDetails(m); } },
+        box || h("span"),
+        m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
+        h("div", { class: "info" },
+          h("div", { class: "name" }, m.name, m.author ? h("span", { class: "muted small" }, ` by ${m.author}`) : null),
+          h("div", { class: "desc" }, m.summary),
+          h("div", { class: "muted small" }, `⬇ ${fmtNum(m.downloads)}`, m.follows ? ` · ♥ ${fmtNum(m.follows)}` : "",
+            m.updated ? ` · updated ${new Date(m.updated).toLocaleDateString()}` : "")));
+    }).concat(st.results.length < st.total ? [h("div", { class: "row mt-s" }, h("button", { class: "btn small", onclick: () => { st.offset += 20; search(true); } }, "Load more"))] : [])
+      : [h("p", { class: "empty" }, "Nothing found. Try other words or fewer filters.")]);
+    updateFooter();
+  };
+  const showDetails = async (m) => {
+    st.active = `${m.source}:${m.id}`;
+    renderList();
+    fill(details, h("p", { class: "empty" }, `Loading ${m.name}…`));
+    const p = await api(`${base}/project?source=${m.source}&id=${encodeURIComponent(m.id)}`).catch((e) => { toast(e.message, true); return null; });
+    if (!p || st.active !== `${m.source}:${m.id}`) return;
+    const key = `${p.source}:${p.id}`;
+    const pick = kind === "mod" ? h("button", { class: "btn" + (st.selected.has(key) ? "" : " primary"), onclick: () => {
+      if (st.selected.has(key)) st.selected.delete(key); else st.selected.set(key, m);
+      renderList(); showDetails(m);
+    } }, st.selected.has(key) ? "✓ Selected" : "Select") : null;
+    const versionSel = kind === "modpack" && p.versions.length ? h("select", { "aria-label": "Modpack version" },
+      p.versions.map((v) => h("option", { value: v.id }, `${v.name} · Minecraft ${v.minecraft.join(", ")} · ${v.loaders.join(", ")}`))) : null;
+    const usePack = kind === "modpack" ? h("button", { class: "btn primary", disabled: !versionSel, onclick: () => {
+      const v = p.versions.find((x) => x.id === versionSel.value);
+      const packLoader = (v.loaders.find((l) => ["fabric", "neoforge", "forge", "quilt"].includes(l)) || "vanilla");
+      const pack = { project: p.id, version_id: v.id, name: p.name, version: v.name, minecraft: v.minecraft[0], loader: packLoader, icon: p.icon };
+      if (window.opener) { window.opener.postMessage({ type: "mcsm-modpack", pack }, location.origin); window.close(); }
+      else { Object.assign(setupState, { modpack: pack, loader: pack.loader, minecraft: pack.minecraft }); location.hash = "#new"; }
+    } }, "Use this modpack") : null;
+    fill(details,
+      h("div", { class: "browse-head" },
+        p.icon ? h("img", { src: p.icon, alt: "", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
+        h("div", { class: "grow" }, h("h2", {}, p.name), h("div", { class: "muted" }, p.summary),
+          h("div", { class: "muted small" }, `⬇ ${fmtNum(p.downloads)}`, p.follows ? ` · ♥ ${fmtNum(p.follows)}` : "",
+            p.license ? ` · ${p.license}` : "", p.updated ? ` · updated ${new Date(p.updated).toLocaleDateString()}` : "")),
+        h("div", { class: "row" }, pick,
+          h("a", { class: "btn ghost", href: p.url, target: "_blank", rel: "noopener noreferrer" }, `Open on ${p.source === "curseforge" ? "CurseForge" : "Modrinth"} ↗`))),
+      kind === "modpack" ? h("div", { class: "card mt-s" }, h("label", {}, "Version", versionSel || h("p", { class: "empty" }, "No versions.")),
+        h("p", { class: "muted small" }, "The new server is set up with this pack's Minecraft version, mod loader, server mods and configs, and stays on that Minecraft version."),
+        h("div", { class: "row mt-s" }, usePack)) : null,
+      p.categories.length ? h("div", { class: "mt-s" }, p.categories.map((c) => h("span", { class: "tag" }, c))) : null,
+      p.gallery.length ? h("div", { class: "gallery mt" }, p.gallery.map((g) => h("a", { href: g.url, target: "_blank", rel: "noopener noreferrer" },
+        h("img", { src: g.url, alt: g.title || "", loading: "lazy", referrerpolicy: "no-referrer" })))) : null,
+      Object.keys(p.links).length ? h("div", { class: "row mt-s small" }, Object.entries(p.links).map(([k, v]) =>
+        h("a", { href: v, target: "_blank", rel: "noopener noreferrer" }, k.replace("_url", "").replace(/^./, (x) => x.toUpperCase()) + " ↗"))) : null,
+      h("div", { class: "mt" }, richText(p.body, p.body_format)));
+    details.scrollTop = 0;
+  };
+
+  addBtn.addEventListener("click", async () => {
+    const mods = [...st.selected.values()].map((m) => ({ source: m.source, id: m.id, slug: m.slug, name: m.name }));
+    if (target === "setup") {
+      if (window.opener) { window.opener.postMessage({ type: "mcsm-add-mods", mods }, location.origin); window.close(); return; }
+      for (const m of mods) setupState.mods.set(m.source === "curseforge" ? `curseforge:${m.id}` : m.slug || m.id, { name: m.name, required: true });
+      location.hash = "#new";
+      return;
+    }
+    const r = await act(() => api(`/api/servers/${encodeURIComponent(target)}/mods/add-many`, { method: "POST", body: { mods } }));
+    if (!r) return;
+    toast(`Added ${r.added.length} mod(s)` + (r.skipped.length ? `; skipped ${r.skipped.map((x) => `${x.name} (${x.reason})`).join(", ")}` : ""), r.skipped.length > 0);
+    st.selected.clear(); renderList();
+    if (window.opener) window.opener.postMessage({ type: "mcsm-mods-changed" }, location.origin);
+  });
+  q.addEventListener("input", () => { st.q = q.value.trim(); clearTimeout(timer); timer = setTimeout(() => search(), 350); });
+  sort.addEventListener("change", () => { st.sort = sort.value; search(); });
+  source.addEventListener("change", () => { st.source = source.value; st.category = ""; loadCategories(); search(); });
+  category.addEventListener("change", () => { st.category = category.value; search(); });
+  version.addEventListener("change", () => { st.version = version.value.trim(); search(); });
+  const loadCategories = async () => {
+    const r = await api(`${base}/categories?type=${kind}&source=${st.source}`).catch(() => null);
+    if (!r) return;
+    fill(category, h("option", { value: "" }, "All categories"), r.categories.map((c) => h("option", { value: c.id }, c.name)));
+    if (source.options.length === 1 && r.sources.includes("curseforge") && kind === "mod") source.append(h("option", { value: "curseforge" }, "CurseForge"));
+  };
+
+  fill($("#main"), h("div", { class: "browse" },
+    h("div", { class: "browse-left" },
+      h("div", { class: "browse-filters" },
+        h("div", { class: "row" }, h("strong", { class: "grow" }, kind === "modpack" ? "Modpacks" : "Mods"),
+          loader ? h("span", { class: "tag" }, loader) : null,
+          window.opener ? h("button", { class: "btn ghost small", onclick: () => window.close() }, "Close") : h("a", { class: "btn ghost small", href: target === "setup" ? "#new" : `#s/${target}/mods` }, "Back")),
+        q,
+        h("div", { class: "row" }, source, sort),
+        h("div", { class: "row" }, category, version)),
+      list,
+      h("div", { class: "browse-footer" }, count, addBtn)),
+    details));
+  q.focus();
+  loadCategories();
+  search();
+  return {};
+};
+
 // ------------------------------------------------------------ advanced settings
 // Every other server.properties setting, grouped; edits `values` (key -> string) in place.
 function propsEditor(schema, values) {
@@ -1199,7 +1476,7 @@ views.mcsm = () => {
 // Kept outside the view so choices survive re-renders and a failed attempt.
 const setupState = { friends: false, loader: null, minecraft: "latest", mods: new Map(), motd: "A Minecraft server", properties: null, advancedOpen: false,
   max_players: 20, difficulty: "normal", gamemode: "survival", port: 25565, memory_gb: null,
-  network_access: null, accept_eula: false, submitted: false, prefilled: false };
+  network_access: null, accept_eula: false, submitted: false, prefilled: false, modpack: null, localMods: [] };
 
 views.setup = () => {
   const main = h("div", { class: "setup" });
@@ -1214,7 +1491,8 @@ views.setup = () => {
   const renderForm = (error) => {
     const loaderCards = h("div", { class: "choices" }, opts.loaders.map((l) => h("button", {
       type: "button", class: "choice" + (st.loader === l.name ? " selected" : ""),
-      onclick: () => { st.loader = l.name; if (!l.mods) st.mods.clear(); renderForm(); },
+      disabled: !!st.modpack && st.loader !== l.name,
+      onclick: () => { st.loader = l.name; if (!l.mods) { st.mods.clear(); st.localMods = []; } renderForm(); },
     }, h("strong", {}, l.label), h("span", { class: "small muted" }, l.description))));
     const intro = [
       h("h2", { class: "view-title" }, isNew ? "Create a new server" : "Set up your server"),
@@ -1231,17 +1509,23 @@ views.setup = () => {
     const version = h("select", { onchange: (e) => { st.minecraft = e.target.value; } },
       h("option", { value: "latest" }, st.loader === "vanilla" ? "Newest release (recommended)" : "Newest version your mods support (recommended)"),
       opts.versions.map((v) => h("option", { value: v }, `Minecraft ${v}`)));
+    if (st.modpack && ![...version.options].some((o) => o.value === st.minecraft)) version.append(h("option", { value: st.minecraft }, `Minecraft ${st.minecraft}`));
     version.value = st.minecraft;
+    version.disabled = !!st.modpack;
 
     // Mods
     const results = h("div");
     const selected = h("div");
-    const renderSelected = () => fill(selected, st.mods.size ? h("ul", { class: "list" }, [...st.mods].map(([slug, m]) => h("li", {},
-      h("div", { class: "grow" }, h("strong", {}, m.name), h("span", { class: "tag" }, slug)),
+    const renderSelected = () => fill(selected, st.mods.size || st.localMods.length ? h("ul", { class: "list" }, st.localMods.map((m) => h("li", {},
+      h("div", { class: "grow" }, h("strong", {}, m.name), h("span", { class: "tag" }, "local file")),
+      h("button", { type: "button", class: "btn small danger", onclick: () => { st.localMods = st.localMods.filter((x) => x !== m); renderSelected(); } }, "Remove"))),
+      [...st.mods].map(([slug, m]) => h("li", {},
+      h("div", { class: "grow" }, h("strong", {}, m.name), h("span", { class: "tag" }, slug.startsWith("curseforge:") ? "CurseForge" : slug)),
       h("label", { class: "row", title: "Required mods hold back Minecraft upgrades until they support the new version" },
         h("input", { type: "checkbox", checked: m.required, onchange: (e) => { m.required = e.target.checked; } }), "required"),
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.mods.delete(slug); renderSelected(); search(); } }, "Remove"))))
-      : h("p", { class: "empty" }, "No mods yet. Search above, or leave empty for an unmodded server."));
+      : h("p", { class: "empty" }, st.modpack ? "No extra mods. The modpack's own mods are added when the server is created."
+        : "No mods yet. Search above, or leave empty for an unmodded server."));
     const q = h("input", { type: "search", placeholder: "Search Modrinth, e.g. lithium, create, farmer's delight" });
     let timer;
     const loaderLabel = (opts.loaders.find((l) => l.name === st.loader) || {}).label || st.loader;
@@ -1265,8 +1549,32 @@ views.setup = () => {
     q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
     renderSelected();
     if (st.loader && opts.loaders.find((l) => l.name === st.loader).mods) search();  // the popular list
+    // Three ways to add mods: files on this computer, the mod browser window, or a whole modpack.
+    const picker = h("input", { type: "file", multiple: true, accept: ".jar", class: "hidden" });
+    picker.addEventListener("change", async () => {
+      for (const f of [...picker.files]) {
+        const r = await api(`/api/hub/stage?filename=${encodeURIComponent(f.name)}`, { method: "POST", raw: f })
+          .catch((e) => { toast(`${f.name}: ${e.message}`, true); return null; });
+        if (r) st.localMods.push({ id: r.id, name: f.name });
+      }
+      picker.value = "";
+      renderSelected();
+    });
+    const sources = h("div", { class: "source-buttons" },
+      h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
+        h("span", { class: "small muted" }, ".jar files on this computer")),
+      h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: "setup", loader: st.loader, version: st.minecraft === "latest" ? "" : st.minecraft }) },
+        "🔎 Download mods", h("span", { class: "small muted" }, "Browse Modrinth and CurseForge")),
+      h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup", loader: st.modpack ? "" : st.loader }) },
+        "📦 Modpacks", h("span", { class: "small muted" }, "A ready-made pack of mods")),
+      picker);
+    const packCard = st.modpack ? h("div", { class: "notice mt-s pack" },
+      st.modpack.icon ? h("img", { src: st.modpack.icon, alt: "", referrerpolicy: "no-referrer" }) : null,
+      h("div", { class: "grow" }, h("strong", {}, st.modpack.name), " ", h("span", { class: "tag" }, st.modpack.version || ""),
+        h("div", { class: "small muted" }, `Minecraft ${st.minecraft}, ${loaderLabel}. The pack decides the version and server type; its mods are installed and kept up to date.`)),
+      h("button", { type: "button", class: "btn small danger", onclick: () => { st.modpack = null; st.minecraft = "latest"; renderForm(); } }, "Remove modpack")) : null;
     const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card("3. Mods",
-      q, results, h("h3", { class: "mt" }, "Your mods"), selected,
+      sources, packCard, h("h3", { class: "mt" }, "Quick add"), q, results, h("h3", { class: "mt" }, "Your mods"), selected,
       st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null) : null;
 
     // Settings
@@ -1309,12 +1617,13 @@ views.setup = () => {
       const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
         network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults),
-        friends: !!st.friends };
+        friends: !!st.friends, local_mods: st.localMods.map((m) => m.id) };
+      if (st.modpack) body.modpack_version = st.modpack.version_id;
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));
         if (r) {
           Object.assign(setupState, { friends: false, loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
-            prefilled: false, properties: null, advancedOpen: false });
+            prefilled: false, properties: null, advancedOpen: false, modpack: null, localMods: [], minecraft: "latest" });
           location.hash = `#s/${r.id}/setup`;
         }
         return;
@@ -1398,6 +1707,7 @@ views.setup = () => {
 
   $("#main").replaceChildren(main);
   return {
+    refresh: () => { if (opts && !st.submitted) renderForm(); },
     onJobDone: () => {
       const last = status && status.last_job;
       if (!last || last.name !== "set up server") return;
@@ -1440,6 +1750,13 @@ function renderNav() {
 
 function route() {
   const hash = (location.hash || "#servers").slice(1);
+  document.body.classList.remove("browse-mode");
+  if (hash.startsWith("browse")) {  // the mod browser window: no navigation around it
+    clearTimers();
+    currentName = "browse";
+    current = views.browse(new URLSearchParams(hash.split("?")[1] || ""));
+    return;
+  }
   const m = hash.match(/^s\/([a-z0-9][a-z0-9-]*)(?:\/(\w+))?$/);
   const before = server;
   let view;

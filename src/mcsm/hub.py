@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import sys
 import threading
@@ -62,6 +63,28 @@ def _rmtree(path: Path) -> None:
         shutil.rmtree(path, onexc=retry)
     else:
         shutil.rmtree(path, onerror=retry)
+
+
+def receive(handler, dest: Path, max_bytes: int) -> Path:
+    """Stream a request body into ``dest`` (atomically)."""
+    length = int(handler.headers.get("Content-Length") or 0)
+    if not 0 < length <= max_bytes:
+        raise ValueError("the file is empty or too large")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.part")
+    try:
+        with open(tmp, "wb") as out:
+            remaining = length
+            while remaining:
+                chunk = handler.rfile.read(min(1 << 16, remaining))
+                if not chunk:
+                    raise ValueError("the upload was interrupted")
+                out.write(chunk)
+                remaining -= len(chunk)
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return dest
 
 
 def port_free(port: int) -> bool:
@@ -334,6 +357,35 @@ class Hub:
                 raise RuntimeError(f"port {port} is already used by {name}, which is running; "
                                    "stop it first, or give this server another port in its Settings")
 
+    @property
+    def staging_dir(self) -> Path:
+        return self.state_dir / "staging"
+
+    def stage_upload(self, handler, filename: str, max_bytes: int) -> dict:
+        """Keep an upload (from the setup page) until the server it's for is created."""
+        import secrets
+        cutoff = time.time() - 86400
+        if self.staging_dir.is_dir():
+            for old in self.staging_dir.iterdir():
+                if old.stat().st_mtime < cutoff:
+                    shutil.rmtree(old, ignore_errors=True)
+        sid = secrets.token_hex(8)
+        dest = self.staging_dir / sid / filename
+        receive(handler, dest, max_bytes)
+        return {"id": sid, "filename": filename, "size": dest.stat().st_size}
+
+    def take_staged(self, stage_ids: list[str], mods_dir: Path) -> int:
+        """Move jars picked with "Local files" on the setup page into a server's mods folder."""
+        moved = 0
+        for stage_id in stage_ids:
+            folder = self.staging_dir / stage_id
+            for f in folder.glob("*.jar"):
+                mods_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(f), mods_dir / f.name)
+                moved += 1
+            shutil.rmtree(folder, ignore_errors=True)
+        return moved
+
     def create(self, spec: setupmod.SetupSpec) -> str:
         """Make a new server folder from the setup page and start installing it (not running it)."""
         if self.is_single:
@@ -353,6 +405,7 @@ class Hub:
             spec.network_access = False  # the hub's own setting decides who can open the panel
             setupmod.configure(root, spec)
             setupmod.mark_pending(root)
+            self.take_staged(spec.local_mods, configmod.load(root).server.dir / "mods")
             self._attach(sid, root)
             d = self.daemons.get(sid)
             if d is None:

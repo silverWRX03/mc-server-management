@@ -496,9 +496,13 @@ class Daemon:
         if self.m.lock.installed:
             raise RuntimeError("this server is already set up")
         setupmod.configure(self.m.config.root, spec)
+        if spec.modpack_version:
+            from . import modpack
+            log.info("downloading the modpack")
+            modpack.apply(self.m.config.root, spec.modpack_version, self.m.http)
         self.m.reload_config()
-        log.info("setting up a %s server (Minecraft %s, %d mod(s))", spec.loader, spec.minecraft,
-                 len(spec.mods) + len(spec.optional_mods))
+        log.info("setting up a %s server (Minecraft %s, %d mod(s))", self.m.config.server.loader,
+                 self.m.config.server.minecraft, len(self.m.config.mods))
         self.check_only()
         if not self.last_check or not self.last_check.get("target"):
             blocked = self.last_check.get("blocked", []) if self.last_check else []

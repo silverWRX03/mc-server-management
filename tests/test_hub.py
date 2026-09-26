@@ -1,40 +1,11 @@
 """Several servers in one mcsm (`mcsm start`): listed in the web UI, and never started by themselves."""
 
 import json
-import threading
 
-import pytest
-
-from mcsm import cli, config as configmod, lock as lockmod, setup as setupmod, webauth
+from mcsm import cli, lock as lockmod, setup as setupmod, webauth
 from mcsm.hub import Hub
 
-from test_manager import manager, update
 from test_web import Client, wait_for
-
-
-@pytest.fixture
-def hub_env(tmp_path, http, modrinth, fake_template):
-    modrinth.project("FAPI", "fabric-api", "Fabric API")
-    modrinth.version("FAPI", "0.1", ["1.21.1"])
-    modrinth.project("AAA", "goodmod", "Good Mod")
-    modrinth.version("AAA", "1.0", ["1.21.1"])
-    home = tmp_path / "home"
-    # An installed server in servers/alpha, and a never-finished one in the home folder (mcsm 0.1-0.3).
-    alpha = home / "servers" / "alpha"
-    setupmod.configure(alpha, setupmod.SetupSpec.from_dict({"loader": "fabric", "minecraft": "1.21.1",
-                                                            "motd": "Alpha", "accept_eula": True}))
-    assert update(manager(configmod.load(alpha), http, ["1.21.1"])).ok
-    setupmod.configure(home, setupmod.SetupSpec.from_dict({"loader": "fabric", "accept_eula": True}))
-    setupmod.mark_pending(home)
-
-    hub = Hub(home, make_manager=lambda cfg: manager(cfg, http, ["1.21.1"]), http=http, tick=0.1)
-    hub.web.port = 0
-    t = threading.Thread(target=hub.run, daemon=True)
-    t.start()
-    wait_for(lambda: hub.ui is not None and hub.ui.httpd is not None)
-    yield hub, Client(hub.ui.url.rstrip("/"))
-    hub.stop_requested.set()
-    t.join(30)
 
 
 def login(c):

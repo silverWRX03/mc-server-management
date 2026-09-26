@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import logging
 import re
 import secrets
@@ -64,6 +65,8 @@ SECURITY_HEADERS = {
 
 # Reachable before the first-run notice has been accepted.
 NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses", "/api/auth/change", "/api/hub"}
+# Routes whose request body is a file, streamed to disk rather than parsed as JSON.
+RAW_UPLOADS = {"/api/hub/stage", "/api/mods/local"}
 SERVER_PATH = re.compile(r"^/api/servers/([a-z0-9][a-z0-9-]{0,63})(/.*)$")
 
 
@@ -324,6 +327,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             if handler is not None:
                 if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
                     raise ApiError(428, "accept the notice first")
+                if path in RAW_UPLOADS:
+                    return self._json(200, handler(q, self))
                 return self._json(200, handler(q, self._body() if method == "POST" else {}))
             if m := SERVER_PATH.match(path):
                 sid, path = m.group(1), "/api" + m.group(2)
@@ -340,6 +345,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not found")
             if path == "/api/manual/upload":
                 return self._json(200, api.upload(self, q))
+            if path in RAW_UPLOADS:
+                return self._json(200, handler(q, self))
             if path == "/api/players/skin":
                 try:
                     png = api.skins.png(q.get("name", ""))
@@ -397,6 +404,43 @@ def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_l
     return {"results": results}
 
 
+def browse_search(browser, q: dict, manager=None) -> dict:
+    from .browse import BrowseError
+    kind = q.get("type", "mod")
+    loader = q.get("loader") or (manager.config.server.loader if manager else None)
+    if loader == "vanilla":
+        loader = None
+    version = q.get("version")
+    if version is None and manager is not None:
+        version = manager.lock.minecraft or None
+    try:
+        return browser.search(q.get("source", "modrinth"), kind, q.get("q", "").strip()[:100], loader or None,
+                              version or None, q.get("category") or None, q.get("sort", "relevance"),
+                              int(q.get("offset", 0) or 0))
+    except BrowseError as e:
+        raise ApiError(400, str(e)) from None
+
+
+def browse_project(browser, q: dict) -> dict:
+    from .browse import BrowseError
+    pid = q.get("id", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", pid):
+        raise ApiError(400, "bad project id")
+    try:
+        return browser.project(q.get("source", "modrinth"), pid)
+    except BrowseError as e:
+        raise ApiError(400, str(e)) from None
+
+
+def browse_categories(browser, q: dict) -> dict:
+    from .browse import BrowseError
+    try:
+        return {"categories": browser.categories(q.get("source", "modrinth"), q.get("type", "mod")),
+                "sources": browser.sources}
+    except BrowseError as e:
+        raise ApiError(400, str(e)) from None
+
+
 class HubApi:
     """The parts of the API that aren't about one server: the server list, new servers,
     the first-run notice, licenses and mcsm's own updates."""
@@ -413,6 +457,10 @@ class HubApi:
         r[("POST", "/api/hub/network")] = self.network
         r[("POST", "/api/hub/share")] = self.save_share
         r[("GET", "/api/hub/port")] = self.port_check
+        r[("POST", "/api/hub/stage")] = self.stage
+        r[("GET", "/api/hub/browse/search")] = lambda q, b: browse_search(self.browser(), q)
+        r[("GET", "/api/hub/browse/project")] = lambda q, b: browse_project(self.browser(), q)
+        r[("GET", "/api/hub/browse/categories")] = lambda q, b: browse_categories(self.browser(), q)
         r[("POST", "/api/hub/delete")] = lambda q, b: {
             "ok": True, "message": self.hub.delete(str(b.get("id", "")), b.get("delete_files") is True)}
         r[("GET", "/api/notice")] = lambda q, b: {"accepted": notice.accepted(self.hub.root), "version": notice.NOTICE_VERSION,
@@ -436,6 +484,18 @@ class HubApi:
             "servers": hub.summary(),
             "share": hub.share_status() if not hub.is_single else None,
         }
+
+    def browser(self):
+        from .browse import Browser
+        return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+
+    def stage(self, q, handler) -> dict:
+        if handler.headers.get("X-MCSM") != "1":
+            raise ApiError(403, "missing X-MCSM header")
+        name = q.get("filename", "")
+        if not re.fullmatch(r"[A-Za-z0-9 ()\[\]+_.,'-]{1,120}\.(jar|zip)", name):
+            raise ApiError(400, "only .jar and .zip files can be added here")
+        return self.hub.stage_upload(handler, name, MAX_UPLOAD * 8 if name.endswith(".zip") else MAX_UPLOAD)
 
     def port_check(self, q, b) -> dict:
         try:
@@ -540,6 +600,11 @@ class Api:
         post("/api/java/use", self.java_use)
         get("/api/settings", self.settings)
         post("/api/settings", self.save_settings)
+        get("/api/browse/search", lambda q, b: browse_search(self._browser(), q, self.m))
+        get("/api/browse/project", lambda q, b: browse_project(self._browser(), q))
+        get("/api/browse/categories", lambda q, b: browse_categories(self._browser(), q))
+        post("/api/mods/add-many", self.add_many)
+        post("/api/mods/local", self.upload_local)
         get("/api/client", self.client)
         post("/api/client", self.save_client)
         post("/api/client/new-link", self.new_client_link)
@@ -654,6 +719,8 @@ class Api:
         if not self.d.setup_pending:
             raise ApiError(409, "this server is already set up")
         spec = setupmod.SetupSpec.from_dict(b)
+        if spec.local_mods:
+            self.web.hub.take_staged(spec.local_mods, self.m.server_dir / "mods")
         return self._job("set up server", self.d.run_setup, spec)
 
     # ---------------------------------------------------------------- mods
@@ -661,6 +728,7 @@ class Api:
         lk = self.m.lock
         return {
             "loader": self.m.config.server.loader,
+            "minecraft": lk.minecraft,
             "installed": [{"key": x.key, "name": x.name, "version": x.version_number, "filename": x.filename,
                            "source": x.source, "dependency_of": x.dependency_of, "manual": x.manual}
                           for x in lk.mods],
@@ -693,6 +761,55 @@ class Api:
         self.m.reload_config()
         log.info("added %s", project.name)
         return {"ok": True, "name": project.name}
+
+    def _browser(self):
+        from .browse import Browser
+        return Browser(self.m.http, self.m.config.curseforge_api_key)
+
+    def add_many(self, q, b) -> dict:
+        """Add the mods ticked in the mod browser."""
+        items = b.get("mods")
+        if not isinstance(items, list) or not 0 < len(items) <= 100:
+            raise ApiError(400, "pick between 1 and 100 mods")
+        added, skipped = [], []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                added.append(self.add_mod(q, {"source": item.get("source", "modrinth"), "id": item.get("id"),
+                                              "required": b.get("required", True) is not False})["name"])
+            except (ApiError, ModError, ConfigError) as e:
+                skipped.append({"name": item.get("name") or item.get("id"), "reason": str(e)})
+        return {"ok": True, "added": added, "skipped": skipped}
+
+    def upload_local(self, q, handler) -> dict:
+        """A mod jar from this computer ("Local files"). If Modrinth knows it, it becomes a normal
+        mod that mcsm keeps up to date; otherwise it stays as your own file in mods/."""
+        from .hub import receive
+        if handler.headers.get("X-MCSM") != "1":
+            raise ApiError(403, "missing X-MCSM header")
+        name = q.get("filename", "")
+        if not re.fullmatch(r"[A-Za-z0-9 ()\[\]+_.,'-]{1,120}\.jar", name):
+            raise ApiError(400, "only .jar files can be added as mods")
+        mods_dir = self.m.server_dir / "mods"
+        dest = receive(handler, mods_dir / name, MAX_UPLOAD)
+        try:
+            found = self._modrinth().identify([sha1_file(dest)])
+        except Exception:
+            found = {}
+        version = next(iter(found.values()), None)
+        if version:
+            try:
+                r = self.add_mod(q, {"source": "modrinth", "id": version["project_id"]})
+                dest.unlink(missing_ok=True)  # mcsm downloads the right file for each version from now on
+                return {"ok": True, "name": r["name"], "managed": True}
+            except ApiError as e:
+                if e.status == 409:  # already one of the server's mods
+                    dest.unlink(missing_ok=True)
+                    return {"ok": True, "name": name, "managed": True, "already": True}
+                log.info("%s is on Modrinth but can't be added (%s); keeping it as a local file", name, e)
+        log.info("added %s as a local mod (mcsm won't update it)", name)
+        return {"ok": True, "name": name, "managed": False}
 
     def remove_mod(self, q, b) -> dict:
         if not configmod.remove_mod(self.m.config.path, b.get("source", "modrinth"), str(b.get("id", ""))):
