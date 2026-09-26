@@ -192,8 +192,8 @@ class JoinUI:
                     elif rest == "api/open":
                         self._json(200, {"ok": ui.open_again(str(body.get("launcher", "")))})
                     elif rest == "api/quit":
+                        ui.done.set()  # before replying, so whoever asked sees it done
                         self._json(200, {"ok": True})
-                        ui.done.set()
                     else:
                         self._json(404, {"error": "not found"})
                 except (ValueError, RuntimeError) as e:
