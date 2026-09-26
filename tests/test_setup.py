@@ -125,6 +125,10 @@ def test_failed_setup_can_be_retried(pending_daemon):
     wait_for(lambda: d.last_job and d.last_job["name"] == "set up server")
     assert not d.last_job["ok"] and "no-such-mod" in d.last_job["message"]
     assert d.setup_pending and d.state == "stopped"
+    # where to read more: a report with the error and what happened before it
+    where = d.last_job["message"].split("The details are in ", 1)[1].strip()
+    report = open(where, encoding="utf-8").read()
+    assert "set up server failed" in report and "no-such-mod" in report and "Minecraft's own log" in report
 
     assert c.post("/api/setup", {"loader": "fabric", "mods": ["goodmod"], "accept_eula": True})[0] == 200
     wait_for(lambda: d.state == "running" and not d.setup_pending, timeout=30)

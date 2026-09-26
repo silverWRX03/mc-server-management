@@ -45,13 +45,15 @@ class FakeHttp:
         self.posts: dict[str, object] = {}
         self.downloads: list[str] = []
 
-    def get_json(self, url, params=None, headers=None):
+    def get_json(self, url, params=None, headers=None, cache=True):
         full = url + ("?" + urllib.parse.urlencode(params) if params else "")
         for key in (full, url):
             if key in self.json:
                 value = self.json[key]
                 if isinstance(value, Exception):
                     raise value
+                if callable(value):  # answers depending on the query
+                    value = value(params or {})
                 return json.loads(json.dumps(value))
         raise HttpError(full, 404, "HTTP 404")
 
@@ -158,6 +160,13 @@ class ModrinthFixture:
         url = f"{MODRINTH}/project/{pid}/version?" + urllib.parse.urlencode({"loaders": json.dumps(["fabric"])})
         self.http.json[url] = list(reversed(self.versions[pid]))
 
+        def serve(params, pid=pid):  # like Modrinth: filtered by loaders and game_versions
+            loaders = set(json.loads(params.get("loaders", "[]")))
+            games = set(json.loads(params.get("game_versions", "[]")))
+            return [v for v in reversed(self.versions[pid]) if (not loaders or loaders & set(v["loaders"]))
+                    and (not games or games & set(v["game_versions"]))]
+        self.http.json[f"{MODRINTH}/project/{pid}/version"] = serve
+
 
 @pytest.fixture(autouse=True)
 def notice_accepted(tmp_path, monkeypatch):
@@ -184,7 +193,7 @@ FAKE_JAVA = textwrap.dedent("""\
     if args[:1] == ["-version"]:
         print('openjdk version "21.0.4" 2024-07-16', file=sys.stderr)
         sys.exit(0)
-    while args and args[0].startswith("-X"):
+    while args and args[0].startswith("-"):  # JVM flags
         args.pop(0)
     sys.argv = args
     runpy.run_path(args[0], run_name="__main__")

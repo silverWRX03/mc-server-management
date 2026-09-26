@@ -40,7 +40,8 @@ from .minecraft import Mojang
 from .http import HttpError, sha1_file
 from .java import JavaError
 from .mods import ModError
-from .mods.modrinth import ModrinthProvider
+from .mods.modrinth import ModrinthProvider, keep_buildable
+from .planner import lowest
 from .players import PlayerError, Players
 from .properties import read_properties, write_properties
 from .skins import SkinError, Skins
@@ -49,6 +50,18 @@ log = logging.getLogger(__name__)
 
 SESSION_COOKIE = "mcsm_session"
 SESSION_TTL = 7 * 86400
+DEVICE_COOKIE = "mcsm_device"
+# What a paired phone may do: look at things, and the everyday controls. Not uploads, config
+# files, the console, settings, Java, mods, exports or the sign-in itself.
+DEVICE_POSTS = {"/api/server/start", "/api/server/stop", "/api/server/restart", "/api/backups/create",
+                "/api/updates/check", "/api/updates/apply", "/api/players/action", "/api/logout"}
+DEVICE_HIDDEN_GETS = {"/api/configs/file", "/api/export/download", "/api/settings", "/api/hub/curseforge",
+                      "/api/hub/discord", "/api/hub/discord/guilds", "/api/hub/discord/channels",
+                      "/api/hub/remote", "/api/hub/saves"}
+
+
+def device_allowed(method: str, path: str) -> bool:
+    return path in DEVICE_POSTS if method == "POST" else path not in DEVICE_HIDDEN_GETS
 MAX_JSON = 1 << 20
 MAX_UPLOAD = 512 << 20
 MAX_ARCHIVE = 64 << 30
@@ -56,7 +69,10 @@ LOCAL_ONLY = {"/api/open", "/api/hub/open"}  # they act on this computer's scree
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
-          "/icon.png": ("icon.png", "image/png")}
+          "/icon.png": ("icon.png", "image/png"),
+          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+          "/help-network.svg": ("help-network.svg", "image/svg+xml"),
+          "/help-router.svg": ("help-router.svg", "image/svg+xml")}
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' https: data:; style-src 'self'; "
                                "script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
@@ -67,9 +83,11 @@ SECURITY_HEADERS = {
 
 
 # Reachable before the first-run notice has been accepted.
+# A sign-in with mcsm's one-time password (headless first run) can only replace it.
+FIRST_SIGN_IN_OK = {"/api/auth/change", "/api/logout", "/api/hub", "/api/notice", "/api/notice/accept", "/api/licenses"}
 NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses", "/api/auth/change", "/api/hub"}
 # Routes whose request body is a file, streamed to disk rather than parsed as JSON.
-RAW_UPLOADS = {"/api/hub/stage", "/api/mods/local"}
+RAW_UPLOADS = {"/api/hub/stage", "/api/mods/local", "/api/client/local"}
 SERVER_PATH = re.compile(r"^/api/servers/([a-z0-9][a-z0-9-]{0,63})(/.*)$")
 
 
@@ -115,7 +133,9 @@ class WebUI:
         self.port = cfg.port if port is None else port
         self.store = webauth.AuthStore(hub)   # the hub has the state_dir and [web] settings
         self.sessions: dict[str, float] = {}
+        self.first_sign_in: set[str] = set()   # sessions that may only choose a password
         self.failures: dict[str, list[float]] = {}
+        self.devices = webauth.Devices(hub.state_dir)
         self.lock = threading.Lock()
         self.httpd: ThreadingHTTPServer | None = None
         self._apis: dict[str, Api] = {}
@@ -143,9 +163,15 @@ class WebUI:
         return self.api_for(only[0])
 
     @property
+    def tls(self) -> bool:
+        """HTTPS, with a certificate the user provides (encrypts sign-ins over a network)."""
+        cfg = self.hub.web
+        return bool(cfg.tls_cert and cfg.tls_key and Path(cfg.tls_cert).is_file() and Path(cfg.tls_key).is_file())
+
+    @property
     def url(self) -> str:
         host = "localhost" if self.host in ("127.0.0.1", "0.0.0.0", "::") else self.host
-        return f"http://{host}:{self.httpd.server_address[1] if self.httpd else self.port}/"
+        return f"{'https' if self.tls else 'http'}://{host}:{self.httpd.server_address[1] if self.httpd else self.port}/"
 
     def start(self) -> None:
         ui = self
@@ -154,6 +180,16 @@ class WebUI:
             web = ui
         self.httpd = _Server((self.host, self.port), Handler)
         self.httpd.daemon_threads = True
+        if self.tls:
+            import ssl
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            try:
+                context.load_cert_chain(self.hub.web.tls_cert, self.hub.web.tls_key)
+                self.httpd.socket = context.wrap_socket(self.httpd.socket, server_side=True)
+            except (OSError, ssl.SSLError) as e:
+                log.error("couldn't use the HTTPS certificate (%s); the control panel stays on plain HTTP", e)
+                self.hub.web.tls_cert = ""
         threading.Thread(target=self.httpd.serve_forever, daemon=True, name="web").start()
         log.info("web UI at %s - password: %s", self.url, webauth.describe(self.auth))
 
@@ -163,9 +199,12 @@ class WebUI:
             self.httpd.server_close()
 
     # ------------------------------------------------------------ sessions
-    def login(self, password: str, client: str) -> str:
+    def login(self, password: str, client: str, local: bool = True) -> str:
         now = time.time()
         auth = self.auth
+        if not local and not auth.remote_ready and not auth.temporary:
+            raise ApiError(403, "signing in from another device needs a strong password "
+                                f"({webauth.STRONG_RULES}); set one in mcsm settings on the server's own computer")
         with self.lock:
             recent = [t for t in self.failures.get(client, []) if now - t < 300]
             if len(recent) >= 5:
@@ -176,7 +215,10 @@ class WebUI:
             raise ApiError(401, "wrong PIN" if auth.mode == "pin" else "wrong password")
         with self.lock:
             self.failures.pop(client, None)
-            return self._new_session(now)
+            token = self._new_session(now)
+            if auth.temporary:
+                self.first_sign_in.add(token)
+            return token
 
     def _new_session(self, now: float) -> str:
         token = secrets.token_urlsafe(32)
@@ -185,18 +227,33 @@ class WebUI:
         return token
 
     def change(self, mode: str, secret: str, local: bool) -> str:
-        """Change how the panel is protected; signs out everyone else and returns a new session."""
+        """Change how the panel is protected; signs out everyone else (paired phones too) and
+        returns a new session."""
         if mode == "none" and not local:
             raise ApiError(400, "\"No password\" only works on the server's own computer; "
                                 "turn it on from there (or pick a PIN)")
+        if self.remote_on() and not (mode == "password" and webauth.strong_password(secret)):
+            raise ApiError(400, "remote access is on, so the password must be strong: " + webauth.STRONG_RULES
+                           + ". PINs can't be used then")
+        if self.auth.temporary and not local and not (mode == "password" and webauth.strong_password(secret)):
+            raise ApiError(400, "choose a strong password: " + webauth.STRONG_RULES)
         self.store.set(mode, secret)
+        removed = self.devices.remove(None)
+        if removed:
+            log.info("signed out %d paired phone(s) because the password changed", removed)
         log.info("web UI sign-in changed to %s", {"none": "no password"}.get(mode, mode))
         with self.lock:
             self.sessions.clear()
+            self.first_sign_in.clear()
             return self._new_session(time.time())
+
+    def remote_on(self) -> bool:
+        """Other devices can reach the panel (network access is on)."""
+        return self.hub.web.host not in ("127.0.0.1", "localhost", "::1")
 
     def reset_to_default(self) -> None:
         self.store.reset()
+        self.devices.remove(None)
         log.info("web UI password reset to the default from this computer")
         with self.lock:
             self.sessions.clear()
@@ -239,6 +296,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         headers = {"Cache-Control": "no-store", **SECURITY_HEADERS, **(headers or {})}
+        if self.web.tls:
+            headers["Strict-Transport-Security"] = "max-age=31536000"
         for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
@@ -278,8 +337,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise ApiError(400, "expected a JSON object")
         return data
 
-    def _cookie(self, token: str) -> str:
-        return f"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
+    def _cookie(self, token: str, name: str = SESSION_COOKIE, ttl: int = SESSION_TTL) -> str:
+        secure = "; Secure" if self.web.tls else ""
+        return f"{name}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}{secure}"
+
+    def _cookie_value(self, name: str) -> str | None:
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        return cookie[name].value if name in cookie else None
+
+    def _pair(self):
+        """A phone that scanned the pairing QR code: swap the one-time code for its own key."""
+        now = time.time()
+        client = self.client_address[0]
+        if not self.web.auth.remote_ready:
+            raise ApiError(403, "set a strong password on the server's computer before pairing a phone")
+        with self.web.lock:
+            recent = [t for t in self.web.failures.get("pair:" + client, []) if now - t < 300]
+            if len(recent) >= 5:
+                raise ApiError(429, "too many attempts; wait a few minutes")
+        b = self._body()
+        try:
+            token, device = self.web.devices.pair(str(b.get("code", "")), str(b.get("name", "")), client, now)
+        except ConfigError as e:
+            with self.web.lock:
+                self.web.failures["pair:" + client] = recent + [now]
+            raise ApiError(400, str(e)) from None
+        log.info("paired a phone: %s (from %s)", device["name"], client)
+        return self._json(200, {"ok": True, "name": device["name"]},
+                          {"Set-Cookie": self._cookie(token, DEVICE_COOKIE, webauth.DEVICE_DAYS * 86400)})
 
     def _local(self) -> bool:
         """A browser on this computer, talking to us directly (not through a proxy)."""
@@ -320,8 +405,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             if path == "/api/auth" and method == "GET":
                 return self._json(200, {**self.web.auth.info(), "local": local})
             if path == "/api/login" and method == "POST":
-                token = self.web.login(str(self._body().get("password", "")), self.client_address[0])
+                token = self.web.login(str(self._body().get("password", "")), self.client_address[0], local)
                 return self._json(200, {"ok": True}, {"Set-Cookie": self._cookie(token)})
+            if path == "/api/pair" and method == "POST":
+                return self._pair()
             if path == "/api/auth/reset-local" and method == "POST":
                 # Forgot the password? Whoever sits at the server's own computer can go back to
                 # the default (the same as `mcsm web-password --reset`); never over the network.
@@ -329,8 +416,20 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raise ApiError(403, "this only works in a browser on the server's own computer")
                 self.web.reset_to_default()
                 return self._json(200, {"ok": True, **self.web.auth.info()})
+            device = None
             if not self.web.valid(self._token(), local):
-                raise ApiError(401, "login required")
+                device = self.web.devices.find(self._cookie_value(DEVICE_COOKIE), time.time())
+                if device is None or not self.web.auth.remote_ready:
+                    raise ApiError(401, "login required")
+                self.web.devices.seen(device["id"], self.client_address[0], time.time())
+                if path == "/api/logout":  # a phone signing out forgets its key
+                    self.web.devices.remove(device["id"])
+                    log.info("paired phone %s signed out", device["name"])
+                    return self._json(200, {"ok": True}, {"Set-Cookie": f"{DEVICE_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict"})
+                if path == "/api/auth/change":
+                    raise ApiError(403, "a paired phone can't change the password; use the server's computer")
+            elif self._token() in self.web.first_sign_in and path not in FIRST_SIGN_IN_OK:
+                raise ApiError(403, "choose your own password first (mcsm settings → Sign-in)")
             if path == "/api/auth/change" and method == "POST":
                 b = self._body()
                 token = self.web.change(str(b.get("mode", "")), str(b.get("secret", "")), local)
@@ -344,13 +443,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(403, "opening folders only works in a browser on the server's own computer")
             handler = self.web.hub_api.routes.get((method, path))
             if handler is not None:
+                if device and not device_allowed(method, path):
+                    raise ApiError(403, "a paired phone can't do that; use the server's computer")
                 if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
                     raise ApiError(428, "accept the notice first")
                 if path in RAW_UPLOADS:
                     return self._json(200, handler(q, self))
                 result = handler(q, self._body() if method == "POST" else {})
-                if path == "/api/hub":
-                    result = {**result, "local": local}  # whether "Open folder" buttons can work
+                if path == "/api/hub":  # whether "Open folder" buttons can work; who's signed in
+                    result = {**result, "local": local, "device": device["name"] if device else None}
                 return self._json(200, result)
             if m := SERVER_PATH.match(path):
                 sid, path = m.group(1), "/api" + m.group(2)
@@ -362,8 +463,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(428, "accept the notice first")
             if path in LOCAL_ONLY and not local:
                 raise ApiError(403, "opening folders only works in a browser on the server's own computer")
+            if device and not device_allowed(method, path):
+                raise ApiError(403, "a paired phone can't do that; use the server's computer")
             api = self.web.api_for(sid)
             set_current_server(api.d.server_id)  # so this server's activity feed shows what happens
+            if device and method == "POST":
+                log.info("paired phone %s: %s", device["name"], path.removeprefix("/api/"))
             handler = api.routes.get((method, path))
             if handler is None:
                 raise ApiError(404, "not found")
@@ -383,6 +488,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return self._json(200, handler(q, body))
         except ApiError as e:
             self._json(e.status, {"error": str(e)})
+        except HttpError as e:  # a website mcsm depends on didn't answer
+            log.warning("web request needed %s, which failed: %s", e.url, e)
+            self._json(502, {"error": e.friendly})
         except (ConfigError, ModError, JavaError, PlayerError, RuntimeError, ValueError, OSError) as e:
             self._json(400, {"error": str(e)})
         except Exception as e:  # pragma: no cover - last resort
@@ -429,11 +537,57 @@ def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_l
     version = q.get("version", default_version) or None  # only mods with a build for it
     if version and not re.fullmatch(r"[A-Za-z0-9.+-]{1,32}", version):
         raise ApiError(400, "bad Minecraft version")
-    results = provider.search(query, LOADERS[loader_name].mod_loaders, limit=20,
-                              index="relevance" if query else "downloads", minecraft=version)
+    loaders = LOADERS[loader_name].mod_loaders
+    results = provider.search(query, loaders, limit=20, index="relevance" if query else "downloads", minecraft=version)
     for r in results:
         r["listed"] = r["id"] in listed or r["slug"] in listed
-    return {"results": results}
+    if not version:
+        return {"results": results, "hidden": 0, "early_hidden": 0}
+    # Only mods with a build for this loader *and* version (the search can't tell).
+    return keep_buildable(provider.best_channels([r["id"] for r in results], loaders, version), results,
+                          early=q.get("early") == "1")
+
+
+def tailscale_ip() -> str | None:
+    """This computer's Tailscale address, if Tailscale is installed and connected."""
+    import shutil
+    import subprocess
+    from .desktop import NO_WINDOW
+    exe = shutil.which("tailscale") or next((p for p in (r"C:\Program Files\Tailscale\tailscale.exe",
+                                                         "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+                                              if os.path.exists(p)), None)
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "ip", "-4"], capture_output=True, text=True, timeout=4, **NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    ip = out.strip().splitlines()[0].strip() if out.strip() else ""
+    try:
+        return ip if ipaddress.ip_address(ip) in ipaddress.ip_network("100.64.0.0/10") else None
+    except ValueError:
+        return None
+
+
+def early_channel(b: dict, mod: str) -> str | None:
+    """The early channel a mod was picked with (``"channels": {mod: "beta"}``), if any."""
+    channels = b.get("channels")
+    value = channels.get(mod) if isinstance(channels, dict) else None
+    return value if value in ("beta", "alpha") else None
+
+
+def run_check(hub, b: dict, work) -> dict:
+    """A quick mod check: in the background with ``"background": true`` (poll GET
+    /api/hub/mods/check?id=...), otherwise answered straight away."""
+    from . import trial
+    if not b.get("background"):
+        return work(None)
+    hub.checks = {k: v for k, v in hub.checks.items() if v.state == "running" or time.time() - v.started < 600}
+    if len(hub.checks) >= 20:
+        raise ApiError(429, "too many checks at once; wait for one to finish")
+    job = trial.CheckJob(work).start()
+    hub.checks[job.id] = job
+    return {"ok": True, "id": job.id}
 
 
 def mod_requirements(provider: ModrinthProvider, mod_id: str, loaders: tuple[str, ...], minecraft: str | None,
@@ -441,7 +595,7 @@ def mod_requirements(provider: ModrinthProvider, mod_id: str, loaders: tuple[str
     """Whether a Modrinth mod has a build for ``minecraft`` (any version when None), and the
     mods it needs (their dependencies too), so pickers can select them along with it."""
     def newest(project_id: str):
-        ok = [v for v in provider._versions(project_id, loaders) if provider._acceptable(v, channel)
+        ok = [v for v in provider._versions(project_id, loaders, minecraft) if provider._acceptable(v, channel)
               and (minecraft is None or minecraft in v.get("game_versions", []))]
         return max(ok, key=lambda v: v.get("date_published", "")) if ok else None
 
@@ -489,7 +643,9 @@ def requirements_query(provider: ModrinthProvider, q: dict, manager=None) -> dic
     version = q.get("version")
     if version is None and manager is not None:
         version = manager.lock.minecraft
-    return mod_requirements(provider, mod_id, LOADERS[loader].mod_loaders, version or None)
+    channel = manager.config.updates.mod_channel if manager else "release"
+    return mod_requirements(provider, mod_id, LOADERS[loader].mod_loaders, version or None,
+                            channel=lowest(channel, q.get("channel") if q.get("channel") in ("beta", "alpha") else None))
 
 
 def browse_search(browser, q: dict, manager=None) -> dict:
@@ -504,7 +660,8 @@ def browse_search(browser, q: dict, manager=None) -> dict:
     try:
         return browser.search(q.get("source", "modrinth"), kind, q.get("q", "").strip()[:100], loader or None,
                               version or None, q.get("category") or None, q.get("sort", "relevance"),
-                              int(q.get("offset", 0) or 0))
+                              int(q.get("offset", 0) or 0), early=q.get("early") == "1",
+                              side="client" if q.get("side") == "client" else "server")
     except BrowseError as e:
         raise ApiError(400, str(e)) from None
 
@@ -549,8 +706,19 @@ class HubApi:
         r[("POST", "/api/hub/stage")] = self.stage
         r[("POST", "/api/hub/open")] = self.open_folder
         r[("POST", "/api/hub/quit")] = self.quit
+        r[("GET", "/api/hub/curseforge")] = self.curseforge_info
+        r[("POST", "/api/hub/curseforge")] = self.save_curseforge
         r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
+        r[("GET", "/api/hub/remote")] = self.remote_info
+        r[("POST", "/api/hub/remote/tls")] = self.save_tls
+        r[("POST", "/api/hub/devices/pair")] = self.pair_device
+        r[("POST", "/api/hub/devices/remove")] = self.remove_device
+        r[("GET", "/api/hub/discord")] = self.discord_info
+        r[("POST", "/api/hub/discord")] = self.save_discord
+        r[("GET", "/api/hub/discord/guilds")] = lambda q, b: {"guilds": self._discord().guilds()}
+        r[("GET", "/api/hub/discord/channels")] = lambda q, b: {"channels": self._discord().channels(q.get("guild", ""))}
         r[("POST", "/api/hub/mods/check")] = self.check_mods
+        r[("GET", "/api/hub/mods/check")] = self.check_status
         r[("POST", "/api/hub/trial")] = self.start_trial
         r[("GET", "/api/hub/trial")] = self.trial_status
         r[("POST", "/api/hub/trial/cancel")] = self.cancel_trial
@@ -585,7 +753,8 @@ class HubApi:
 
     def browser(self):
         from .browse import Browser
-        return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+        return Browser(self.hub.http, self.hub.curseforge_key() if not self.hub.is_single else
+                       os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
 
     # ------------------------------------------------ try before you buy
     def check_mods(self, q, b) -> dict:
@@ -597,7 +766,16 @@ class HubApi:
             raise ApiError(400, "that server type doesn't run mods")
         mods = [str(x) for x in (b.get("mods") or []) if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", str(x))]
         minecraft = str(b.get("minecraft") or "") or None
-        return trial.check(ModrinthProvider(self.hub.http), LOADERS[loader].mod_loaders, minecraft, mods)
+        provider = ModrinthProvider(self.hub.http)
+        channels = {m: early_channel(b, m) for m in mods if early_channel(b, m)}
+        return run_check(self.hub, b, lambda progress: trial.check(provider, LOADERS[loader].mod_loaders, minecraft, mods,
+                                                                    progress=progress, channels=channels))
+
+    def check_status(self, q, b) -> dict:
+        job = self.hub.checks.get(q.get("id", ""))
+        if job is None:
+            raise ApiError(404, "that check isn't running any more")
+        return job.to_dict()
 
     def start_trial(self, q, b) -> dict:
         """A test boot of a set of mods, in a throwaway server; ``bisect`` finds culprits."""
@@ -613,7 +791,7 @@ class HubApi:
             cfg = d.m.config
             loader = cfg.server.loader
             minecraft = d.m.lock.minecraft or cfg.server.minecraft
-            mods = [ModSpec(s.source, s.id) for s in cfg.mods]
+            mods = [ModSpec(s.source, s.id, channel=s.channel) for s in cfg.mods]
             java_from = cfg.state_dir / "java"
         else:
             loader = str(b.get("loader", ""))
@@ -626,7 +804,7 @@ class HubApi:
                 source, _, mod_id = str(item).partition(":") if ":" in str(item) else ("modrinth", "", str(item))
                 if source not in configmod.MOD_SOURCES or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", mod_id):
                     raise ApiError(400, f"{item!r} isn't a mod id")
-                mods.append(ModSpec(source, mod_id))
+                mods.append(ModSpec(source, mod_id, channel=early_channel(b, str(item))))
             java_from = next((dd.m.config.state_dir / "java" for dd in self.hub.daemons.values()
                               if (dd.m.config.state_dir / "java").is_dir()), None)
         if loader not in configmod.LOADERS or loader == "vanilla" and mods:
@@ -649,6 +827,100 @@ class HubApi:
         t.cancel.set()
         return {"ok": True}
 
+    # ---------------------------------------------------- remote access
+    def _addresses(self) -> list[dict]:
+        """Addresses a phone might reach this computer at: the home network, a Tailscale
+        network (private and encrypted, works away from home), and an address you set."""
+        from .cli import lan_ip
+        out = []
+        lan = lan_ip()
+        if lan:
+            out.append({"label": f"Home network ({lan})", "host": lan, "kind": "lan"})
+        ts = tailscale_ip()
+        if ts:
+            out.append({"label": f"Tailscale ({ts}), works away from home", "host": ts, "kind": "tailscale"})
+        custom = (self.hub.share_settings().get("address") or "").strip("[]")
+        if custom and custom not in {a["host"] for a in out}:
+            out.append({"label": f"Your address ({custom})", "host": custom, "kind": "custom"})
+        return out
+
+    def remote_info(self, q, b) -> dict:
+        auth = self.web.auth
+        return {"available": not self.hub.is_single, "network_access": self.web.remote_on(),
+                "configured": self.hub.web.host not in ("127.0.0.1", "localhost", "::1"),
+                "running_on_network": self.web.host not in ("127.0.0.1", "localhost", "::1"),
+                "strong": auth.remote_ready, "mode": auth.mode, "rules": webauth.STRONG_RULES,
+                "port": self.web.httpd.server_address[1] if self.web.httpd else self.web.port,
+                "tls": self.web.tls, "tls_cert": self.hub.web.tls_cert, "tls_key": self.hub.web.tls_key,
+                "addresses": self._addresses(), "devices": self.web.devices.list()}
+
+    def save_tls(self, q, b) -> dict:
+        if self.hub.is_single:
+            raise ApiError(400, "set [web] tls_cert and tls_key in mcsm.toml for `mcsm run`")
+        cert, key = str(b.get("cert", "")).strip(), str(b.get("key", "")).strip()
+        if bool(cert) != bool(key):
+            raise ApiError(400, "give both the certificate file and its key file (or neither)")
+        if cert:
+            import ssl
+            for p in (cert, key):
+                if not Path(p).is_file():
+                    raise ApiError(400, f"{p} doesn't exist")
+            try:
+                ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
+            except (OSError, ssl.SSLError) as e:
+                raise ApiError(400, f"that certificate and key don't work together ({e})") from None
+        self.hub.save_web(tls_cert=cert, tls_key=key)
+        log.info("HTTPS for the control panel %s (applies when mcsm restarts)", "set up" if cert else "turned off")
+        return {"ok": True, "restart_needed": True}
+
+    def pair_device(self, q, b) -> dict:
+        """A one-time code, as a QR code, for a phone to scan (five minutes, once)."""
+        from . import qr
+        if self.hub.is_single:
+            raise ApiError(400, "phone pairing needs `mcsm start` (the server list)")
+        if not self.web.auth.remote_ready:
+            raise ApiError(400, "first set a strong password (" + webauth.STRONG_RULES + ")")
+        if not self.web.remote_on() or self.web.host in ("127.0.0.1", "localhost", "::1"):
+            raise ApiError(400, "turn on access from other devices first (and restart mcsm), so the phone can reach this computer")
+        host = str(b.get("host", ""))
+        if host not in {a["host"] for a in self._addresses()}:
+            raise ApiError(400, "pick one of the addresses listed")
+        code = self.web.devices.new_code(time.time())
+        port = self.web.httpd.server_address[1] if self.web.httpd else self.web.port
+        shown = f"[{host}]" if ":" in host else host
+        url = f"{'https' if self.web.tls else 'http'}://{shown}:{port}/#pair={code}"
+        log.info("made a phone pairing code (valid for five minutes)")
+        return {"url": url, "qr": qr.svg(url), "expires_in": webauth.PAIR_SECONDS}
+
+    def remove_device(self, q, b) -> dict:
+        which = b.get("id")
+        n = self.web.devices.remove(None if which == "all" else str(which or ""))
+        if not n:
+            raise ApiError(404, "no such phone")
+        log.info("removed %d paired phone(s)", n)
+        return {"ok": True, "devices": self.web.devices.list()}
+
+    # --------------------------------------------------------- Discord
+    def _discord(self):
+        if self.hub.is_single:
+            raise ApiError(400, "posting to Discord needs `mcsm start` (the server list)")
+        bot = self.hub.discord()
+        if bot is None:
+            raise ApiError(400, "set up the Discord bot first")
+        return bot
+
+    def discord_info(self, q, b) -> dict:
+        from .discord import DEVELOPER_PORTAL, Discord
+        s = self.hub.discord_settings() if not self.hub.is_single else {"set": False, "bot": None}
+        return {**s, "portal": DEVELOPER_PORTAL,
+                "invite_url": Discord.invite_url(s["bot"]["id"]) if s.get("bot") else None}
+
+    def save_discord(self, q, b) -> dict:
+        if self.hub.is_single:
+            raise ApiError(400, "posting to Discord needs `mcsm start` (the server list)")
+        bot = self.hub.save_discord_token(str(b.get("token", "")))
+        return self.discord_info(q, b) | {"ok": True, "bot": bot}
+
     def use_public_ip(self, q, b) -> dict:
         """Find this network's public address and use it for friends' invite links."""
         if self.hub.is_single:
@@ -657,6 +929,22 @@ class HubApi:
         self.hub.save_share(self.hub.share_settings()["port"], ip)
         log.info("friends outside your network now use %s", ip)
         return {"ok": True, "ip": ip, "share": self.hub.share_status()}
+
+    def curseforge_info(self, q, b) -> dict:
+        from .mods.curseforge import bundled_key
+        key = self.curseforge_key_now()
+        own = bool(key) and key != bundled_key()
+        return {"set": bool(key), "own": own, "builtin": bool(bundled_key())}
+
+    def curseforge_key_now(self) -> str:
+        return self.hub.curseforge_key() if not self.hub.is_single else os.environ.get("MCSM_CURSEFORGE_API_KEY", "")
+
+    def save_curseforge(self, q, b) -> dict:
+        if self.hub.is_single:
+            raise ApiError(400, "set [curseforge] api_key in mcsm.toml for a server run with `mcsm run`")
+        self.hub.save_curseforge_key(str(b.get("key", "")))
+        log.info("CurseForge API key %s", "saved" if b.get("key") else "removed")
+        return {"ok": True, "set": bool(self.hub.curseforge_key())}
 
     def quit(self, q, b) -> dict:
         """Close mcsm (stopping every server), for when there's no window to close."""
@@ -729,6 +1017,9 @@ class HubApi:
         if self.hub.is_single:
             raise ApiError(400, "set [web] host in mcsm.toml for `mcsm run`")
         enabled = b.get("enabled") is True
+        if enabled and not self.web.auth.remote_ready:
+            raise ApiError(400, "first set a strong password (" + webauth.STRONG_RULES + "); "
+                                "PINs and \"no password\" can't be used for access from other devices")
         self.hub.save_web(host="0.0.0.0" if enabled else "127.0.0.1")
         log.info("network access to the control panel turned %s (applies when mcsm restarts)", "on" if enabled else "off")
         return {"ok": True, "restart_needed": enabled != (self.web.host in ("0.0.0.0", "::"))}
@@ -770,6 +1061,7 @@ class Api:
         post("/api/server/stop", lambda q, b: self._job("stop", self.d.stop_server))
         post("/api/server/restart", lambda q, b: self._job("restart", self.d.restart_server))
         get("/api/updates", lambda q, b: {"check": self.d.last_check})
+        get("/api/updates/readiness", self.readiness)
         get("/api/beta", self.betas)
         post("/api/updates/check", lambda q, b: self._job("update check", self.d.check_only, b.get("target")))
         post("/api/updates/apply", lambda q, b: self._job(
@@ -815,6 +1107,9 @@ class Api:
         get("/api/client", self.client)
         post("/api/client", self.save_client)
         post("/api/client/new-link", self.new_client_link)
+        post("/api/client/discord", self.post_to_discord)
+        post("/api/client/local", self.upload_client_jar)
+        post("/api/client/local/remove", self.remove_client_jar)
         get("/api/client/search", self.client_search)
         self.routes = r
         self.sampler = stats.Sampler()
@@ -880,6 +1175,54 @@ class Api:
                 "memory_max_bytes": stats.heap_bytes(self.m.config.server.memory, setupmod.suggested_memory_gb()),
                 "system_memory_bytes": int(total * 1024 ** 3) if total else None}
 
+    def readiness(self, q, b) -> dict:
+        """For one Minecraft version (default: the newest release): is the loader ready, and does
+        each installed mod have a build for it? green: a release; yellow: only alpha/beta
+        builds; red: nothing yet; unknown: couldn't tell (a file of your own, or a lookup failed)."""
+        from .mods.base import CHANNEL_RANK
+        from .mods.modrinth import ModrinthProvider
+        version = q.get("version") or self.m.mojang.latest_release()
+        if not re.fullmatch(r"\d+(\.\d+){1,3}(-[A-Za-z0-9.]+)?|\d{2}w\d{2}[a-z]", version):
+            raise ApiError(400, "that isn't a Minecraft version")
+        loader = self.m.loader
+        try:
+            loader_version = loader.latest_version(version)
+            loader_state = "green" if loader_version else "red"
+        except HttpError:
+            loader_version, loader_state = None, "unknown"
+        mods = list(self.m.lock.mods)
+        loaders = loader.mod_loaders
+        channels: dict[str, str | None] = {}
+        modrinth_ids = [x.project_id for x in mods if x.source == "modrinth" and not x.manual]
+        if modrinth_ids and loaders:
+            provider = self.m.providers.get("modrinth")
+            channels.update((provider if isinstance(provider, ModrinthProvider) else ModrinthProvider(self.m.http))
+                            .best_channels(modrinth_ids, loaders, version))
+        names = {x.key: x.name for x in mods}
+        out = []
+        for x in mods:
+            if x.source == "modrinth" and x.project_id in channels:
+                channel = channels[x.project_id]
+            else:  # CurseForge and others: ask the provider which versions each channel covers
+                provider = self.m.providers.get(x.source)
+                channel = "unknown"
+                if provider is not None and loaders:
+                    try:
+                        spec = ModSpec(x.source, x.project_id)
+                        channel = next((c for c in sorted(CHANNEL_RANK, key=CHANNEL_RANK.get)
+                                        if version in provider.supported_versions(spec, loaders, c)), None)
+                    except (HttpError, ModError):
+                        channel = "unknown"
+            state = {"release": "green", None: "red", "unknown": "unknown"}.get(channel, "yellow")
+            out.append({"name": x.name, "key": x.key, "version": x.version_number, "state": state,
+                        "channel": channel if channel not in (None, "unknown") else None,
+                        "required": x.required, "needed_by": names.get(x.dependency_of or "", None)})
+        order = {"red": 0, "yellow": 1, "unknown": 2, "green": 3}
+        out.sort(key=lambda m: (order[m["state"]], m["name"].lower()))
+        return {"minecraft": version, "installed": self.m.lock.minecraft,
+                "loader": {"name": loader.name, "state": loader_state, "version": loader_version},
+                "mods": out, "counts": {k: sum(m["state"] == k for m in out) for k in order}}
+
     def _update_summary(self) -> dict | None:
         c = self.d.last_check
         if not c:
@@ -928,7 +1271,7 @@ class Api:
         spec = setupmod.SetupSpec.from_dict(b)
         spec.world_source = self.web.hub.world_source(spec.world)
         if spec.local_mods:
-            self.web.hub.take_staged(spec.local_mods, self.m.server_dir / "mods")
+            self.web.hub.take_staged(spec.local_mods, self.m.mods_dir)
         return self._job("set up server", self.d.run_setup, spec)
 
     # ---------------------------------------------------------------- mods
@@ -955,19 +1298,19 @@ class Api:
         if not loaders:
             return {"ok": True, "mods": [], "conflicts": [], "problems": [], "minecraft": self.m.lock.minecraft}
         mods = [s.id for s in self.m.config.mods if s.source == "modrinth"]
+        channels = {s.id: s.channel for s in self.m.config.mods if s.channel}
         if client:
             mods += list(self.m.config.client.mods)
         minecraft = self.m.lock.minecraft or (None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft)
-        return trial.check(self._modrinth(), loaders, minecraft, mods)
+        provider = self._modrinth()
+        channel = self.m.config.updates.mod_channel
+        return run_check(self.web.hub, b, lambda progress: trial.check(provider, loaders, minecraft, mods, channel=channel,
+                                                                        progress=progress, channels=channels))
 
     def _configured_with_deps(self) -> list[dict]:
-        """The mods in mcsm.toml, each with the dependencies installed for it (they go when it goes)."""
+        """The mods in mcsm.toml, each with the dependencies installed for it (several mods can share one)."""
         lk = self.m.lock
         installed = {x.key: x for x in lk.mods}
-        children: dict[str, list] = {}
-        for x in lk.mods:
-            if x.dependency_of:
-                children.setdefault(x.dependency_of, []).append(x)
         out = []
         for spec in self.m.config.mods:
             key = f"{spec.source}:{spec.id}"
@@ -980,15 +1323,16 @@ class Api:
                         key = self._modrinth().project(spec.id).key  # a slug in mcsm.toml
                     except Exception:
                         pass
-            deps, todo, seen = [], list(children.get(key, [])), {key}
-            while todo:
-                d = todo.pop(0)
-                if d.key in seen:
-                    continue
-                seen.add(d.key)
-                deps.append({"key": d.key, "name": d.name})
-                todo += children.get(d.key, [])
-            out.append({"source": spec.source, "id": spec.id, "required": spec.required, "key": key,
+            deps, todo, seen = [], [key], {key}
+            while todo:  # follow each installed mod's own list of what it needs
+                mod = installed.get(todo.pop(0))
+                for pid in (mod.dependencies if mod else []):
+                    dk = f"{mod.source}:{pid}"
+                    if dk in installed and dk not in seen:
+                        seen.add(dk)
+                        deps.append({"key": dk, "name": installed[dk].name})
+                        todo.append(dk)
+            out.append({"source": spec.source, "id": spec.id, "required": spec.required, "key": key, "channel": spec.channel,
                         "name": installed[key].name if key in installed else spec.id, "deps": deps})
         return out
 
@@ -1003,16 +1347,20 @@ class Api:
         mod_id = str(b.get("id", "")).strip()
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", mod_id):
             raise ApiError(400, "invalid mod id")
+        if source != "modrinth" and self.m.loader.mods_folder != "mods":
+            raise ApiError(400, "Paper plugins come from Modrinth")
         project = self.m.providers[source].project(mod_id)
         if project.server_side == "unsupported":
             raise ApiError(400, f"{project.name} is client-side only")
         if any(s.source == source and s.id in (mod_id, project.id, project.slug) for s in self.m.config.mods):
             raise ApiError(409, f"{project.name} is already listed")
+        early = b.get("channel") if b.get("channel") in ("beta", "alpha") else None  # picked with only early builds
         deps = []
         if source == "modrinth" and self.m.loader.mod_loaders:
             # Only mods that work on this server's Minecraft, and say what comes along with them.
             try:
-                req = mod_requirements(self._modrinth(), project.id, self.m.loader.mod_loaders, self.m.lock.minecraft)
+                req = mod_requirements(self._modrinth(), project.id, self.m.loader.mod_loaders, self.m.lock.minecraft,
+                                       channel=lowest(self.m.config.updates.mod_channel, early))
             except (ModError, HttpError) as e:
                 log.debug("couldn't check %s's requirements: %s", project.name, e)
                 req = None
@@ -1021,7 +1369,7 @@ class Api:
                     raise ApiError(400, f"can't add {project.name}: " + (req["reason"] or "no compatible build"))
                 deps = [d["name"] for d in req["deps"]]
         configmod.append_mod(self.m.config.path, ModSpec(source, project.slug or project.id,
-                                                         required=bool(b.get("required", True))))
+                                                         required=bool(b.get("required", True)), channel=early))
         self.m.reload_config()
         log.info("added %s%s", project.name, f" (with {', '.join(deps)})" if deps else "")
         return {"ok": True, "name": project.name, "deps": deps}
@@ -1041,7 +1389,8 @@ class Api:
                 continue
             try:
                 added.append(self.add_mod(q, {"source": item.get("source", "modrinth"), "id": item.get("id"),
-                                              "required": b.get("required", True) is not False})["name"])
+                                              "required": b.get("required", True) is not False,
+                                              "channel": item.get("channel")})["name"])
             except (ApiError, ModError, ConfigError) as e:
                 skipped.append({"name": item.get("name") or item.get("id"), "reason": str(e)})
         return {"ok": True, "added": added, "skipped": skipped}
@@ -1055,7 +1404,7 @@ class Api:
         name = q.get("filename", "")
         if not re.fullmatch(r"[A-Za-z0-9 ()\[\]+_.,'-]{1,120}\.jar", name):
             raise ApiError(400, "only .jar files can be added as mods")
-        mods_dir = self.m.server_dir / "mods"
+        mods_dir = self.m.mods_dir
         dest = receive(handler, mods_dir / name, MAX_UPLOAD)
         try:
             found = self._modrinth().identify([sha1_file(dest)])
@@ -1164,11 +1513,65 @@ class Api:
             out["internet"] = Invite(share["address"].strip("[]"), share["port"], c.token).url
         return out
 
+    def upload_client_jar(self, q, handler) -> dict:
+        """One of your own mod files for players (e.g. a mod that isn't on Modrinth)."""
+        from .clientpack import JAR_NAME, client_dir
+        from .hub import receive
+        if handler.headers.get("X-MCSM") != "1":
+            raise ApiError(403, "missing X-MCSM header")
+        name = q.get("filename", "")
+        if not JAR_NAME.fullmatch(name):
+            raise ApiError(400, "only .jar files can be added for players")
+        folder = client_dir(self.m.config)
+        folder.mkdir(parents=True, exist_ok=True)
+        receive(handler, folder / name, MAX_UPLOAD)
+        log.info("added %s for players", name)
+        return {"ok": True, "name": name}
+
+    def remove_client_jar(self, q, b) -> dict:
+        from .clientpack import local_jars
+        jar = next((p for p in local_jars(self.m.config) if p.name == str(b.get("name", ""))), None)
+        if jar is None:
+            raise ApiError(404, "no such file")
+        jar.unlink()
+        log.info("removed %s for players", jar.name)
+        return {"ok": True}
+
+    def post_to_discord(self, q, b) -> dict:
+        """Post this server's invite to a Discord channel (the links come from here, not the page)."""
+        from .discord import SNOWFLAKE, invite_message
+        from .properties import read_properties
+        hub = self.web.hub
+        if hub.is_single:
+            raise ApiError(400, "posting to Discord needs `mcsm start` (the server list)")
+        bot = hub.discord()
+        if bot is None:
+            raise ApiError(400, "set up the Discord bot first")
+        if not self.m.config.client.enabled:
+            raise ApiError(400, "turn on the friends' download first")
+        guild, channel = str(b.get("guild", "")), str(b.get("channel", ""))
+        if not (SNOWFLAKE.fullmatch(guild) and SNOWFLAKE.fullmatch(channel)):
+            raise ApiError(400, "pick a Discord server and channel")
+        if channel not in {c["id"] for c in bot.channels(guild)}:
+            raise ApiError(400, "that channel isn't in that Discord server")
+        wanted = [x for x in (b.get("links") or ["internet"]) if x in ("internet", "local")]
+        links = {k: v for k, v in self._invite_links().items() if k in wanted and v}
+        if not links:
+            raise ApiError(400, "there's no invite link to post yet"
+                           + ("; set your internet address (or use your public IP) first" if "internet" in wanted else ""))
+        name = read_properties(self.m.server_dir / "server.properties").get("motd") or self.d.server_id
+        text, embed = invite_message(str(b.get("message", "")), name, self.m.lock.minecraft or "", links)
+        r = bot.post(channel, text, embed)
+        hub.remember_discord_channel(guild, channel)
+        log.info("posted the friends' invite to Discord")
+        return {"ok": True, **r}
+
     def _invite_link(self) -> str | None:
         links = self._invite_links()
         return links.get("internet") or links.get("local")
 
     def client(self, q, b) -> dict:
+        from .clientpack import local_jars
         c = self.m.config.client
         hub = self.web.hub
         preview, error = None, None
@@ -1188,7 +1591,8 @@ class Api:
             "links": self._invite_links() if c.enabled else {},
             "share": hub.share_status() if not hub.is_single else None,
             "pack": preview, "pack_error": error,
-            "loader": self.m.config.server.loader,
+            "loader": self.m.config.server.loader, "minecraft": self.m.lock.minecraft or "",
+            "local_mods": [p.name for p in local_jars(self.m.config)],
         }
 
     def save_client(self, q, b) -> dict:
@@ -1230,18 +1634,24 @@ class Api:
     def client_search(self, q, b) -> dict:
         from .loaders import LOADERS
         loaders = LOADERS[self.m.config.server.loader].mod_loaders
-        if not loaders:
-            return {"results": []}
+        if not loaders or LOADERS[self.m.config.server.loader].mods_folder != "mods":
+            return {"results": []}  # vanilla, or Paper: players join with plain Minecraft
         query = q.get("q", "").strip()
         if not query and q.get("top") != "1":
             return {"results": []}
-        results = self._modrinth().search(query, loaders, limit=20, index="relevance" if query else "downloads",
-                                          side="client", minecraft=self.m.lock.minecraft or (
-                                              None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft))
+        minecraft = self.m.lock.minecraft or (
+            None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft)
+        provider = self._modrinth()
+        results = provider.search(query, loaders, limit=20, index="relevance" if query else "downloads",
+                                  side="client", minecraft=minecraft)
         listed = set(self.m.config.client.mods)
         for r in results:
             r["listed"] = r["id"] in listed or r["slug"] in listed
-        return {"results": results}
+        if not minecraft:
+            return {"results": results}
+        # Players' mods follow the server's release channel.
+        return keep_buildable(provider.best_channels([r["id"] for r in results], loaders, minecraft), results,
+                              early=self.m.config.updates.mod_channel != "release")
 
     # ------------------------------------------------------------- backups
     def backups(self, q, b) -> dict:
@@ -1276,7 +1686,7 @@ class Api:
             return sd / (read_properties(sd / "server.properties").get("level-name") or "world")
         paths = {"server": cfg.root, "files": sd, "mods": sd / "mods", "config": sd / "config", "logs": sd / "logs",
                  "crash": sd / "crash-reports", "backups": cfg.backups.dir, "exports": self.exports_dir,
-                 "manual": cfg.manual_dir, "java": cfg.state_dir / "java"}
+                 "manual": cfg.manual_dir, "java": cfg.state_dir / "java", "reports": cfg.state_dir / "logs"}
         if what not in paths:
             raise ApiError(400, "unknown folder")
         return paths[what]
@@ -1480,6 +1890,7 @@ class Api:
     SETTINGS = {
         # key: (table, toml key, type)
         "memory": ("server", "memory", str),
+        "aikar_flags": ("server", "aikar_flags", bool),
         "restart_on_crash": ("server", "restart_on_crash", bool),
         "strategy": ("updates", "strategy", str),
         "mod_channel": ("updates", "mod_channel", str),
@@ -1496,7 +1907,7 @@ class Api:
         c = self.m.config
         interval = c.updates.check_interval
         return {
-            "memory": c.server.memory, "restart_on_crash": c.restart_on_crash,
+            "memory": c.server.memory, "aikar_flags": c.server.aikar_flags, "restart_on_crash": c.restart_on_crash,
             "strategy": c.updates.strategy, "mod_channel": c.updates.mod_channel,
             "auto_upgrade": c.updates.auto_upgrade,
             "check_interval": f"{interval // 3600}h" if interval % 3600 == 0 else f"{interval // 60}m",

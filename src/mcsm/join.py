@@ -48,6 +48,11 @@ PROFILE_FILES = ("launcher_profiles.json", "launcher_profiles_microsoft_store.js
 INVITE_IN_NAME = re.compile(r"\(mcsm-([A-Za-z0-9_-]{8,200})\)")
 LOADERS = ("vanilla", "fabric", "quilt", "neoforge", "forge")
 MANIFEST = ".mcsm-client.json"
+FOLDERS = ("mods", "resourcepacks", "shaderpacks")  # where a pack's files go in the game directory
+
+
+def folder_of(m: dict) -> str:
+    return m.get("folder") if m.get("folder") in FOLDERS else "mods"
 
 
 class JoinError(Exception):
@@ -149,8 +154,10 @@ def _write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
-def validate_pack(pack: object) -> dict:
-    """Refuse anything unexpected in a pack before acting on it."""
+def validate_pack(pack: object, base: str | None = None) -> dict:
+    """Check a pack before using it. ``base`` is the invite link it came from: the server's
+    own files for players are downloaded from there (and only from there). Anything
+    unexpected is refused before it's acted on."""
     if not isinstance(pack, dict) or pack.get("format") != FORMAT:
         raise JoinError("the server sent something this version of mcsm doesn't understand; "
                         "download the invite again")
@@ -166,10 +173,15 @@ def validate_pack(pack: object) -> dict:
         raise JoinError("the server's mod loader version is missing")
     if not isinstance(pack.get("address"), str) or not re.fullmatch(r"[A-Za-z0-9.:\[\]-]{1,260}", pack["address"]):
         raise JoinError("the server's address is missing")
+    own = f"{base}/mods/" if base else None
+    if not own:  # no invite (a server folder on this computer): its own files can't be fetched
+        pack["mods"] = [m for m in pack.get("mods", []) if not (isinstance(m, dict) and m.get("local"))]
     for m in pack.get("mods", []):
         if not isinstance(m, dict) or not re.fullmatch(r"[^/\\:*?\"<>|]{1,200}\.jar", str(m.get("filename", ""))) \
                 or str(m["filename"]).startswith("."):
             raise JoinError("the server's mod list has a bad file name in it")
+        if m.get("local") and own and str(m.get("url", "")).startswith(own) and m.get("sha1"):
+            continue  # one of the server owner's own files, from the server itself
         if not allowed_url(str(m.get("url", ""))):
             raise JoinError(f"{m.get('name')}: mcsm only downloads mods from Modrinth or CurseForge")
         if not (m.get("sha512") or m.get("sha1")):
@@ -196,7 +208,7 @@ class Joiner:
                 raise JoinError("the server doesn't recognise this invite any more; ask for a new one") from e
             raise JoinError(f"couldn't reach the server at {self.invite.host}:{self.invite.port} ({e}). "
                             "Is mcsm running there, and is the share port forwarded?") from e
-        return validate_pack(pack)
+        return validate_pack(pack, self.invite.url)
 
     def profiles(self) -> list[Path]:
         found = [self.mc / f for f in PROFILE_FILES if (self.mc / f).exists()]
@@ -255,7 +267,8 @@ class Joiner:
         return vid
 
     def sync_mods(self, pack: dict, game_dir: Path) -> tuple[int, int]:
-        """Download what's missing or changed; remove mods mcsm put here that the server dropped."""
+        """Download what's missing or changed; remove files mcsm put here that are no longer wanted
+        (the server dropped a mod, or the friend removed one of their extras)."""
         mods_dir = game_dir / "mods"
         mods_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = game_dir / MANIFEST
@@ -265,8 +278,10 @@ class Joiner:
             placed = set()
         wanted, fetched = set(), 0
         for m in pack.get("mods", []):
-            dest = mods_dir / m["filename"]
-            wanted.add(m["filename"])
+            folder = folder_of(m)
+            dest = game_dir / folder / m["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            wanted.add(m["filename"] if folder == "mods" else f"{folder}/{m['filename']}")
             if dest.exists() and m.get("sha1") and sha1_file(dest) == m["sha1"]:
                 continue
             self.say(f"  downloading {m['name']}")
@@ -276,11 +291,17 @@ class Joiner:
                 raise JoinError(f"{m['name']} didn't match its checksum, so it wasn't installed") from e
             fetched += 1
         removed = 0
+        gone_packs = []
         for old in placed - wanted:
-            if "/" not in old and "\\" not in old and (mods_dir / old).is_file():
-                (mods_dir / old).unlink()
+            folder, _, name = old.rpartition("/")
+            if folder == "resourcepacks":
+                gone_packs.append(name)
+            if (folder or "mods") in FOLDERS and name and "\\" not in name and (game_dir / (folder or "mods") / name).is_file():
+                (game_dir / (folder or "mods") / name).unlink()
                 removed += 1
         _write_json(manifest_path, {"mods": sorted(wanted), "server": pack["name"], "synced": _now()})
+        from .friendextras import enable_packs
+        enable_packs(game_dir, [m for m in pack.get("mods", []) if m.get("extra")], tuple(gone_packs))
         return fetched, removed
 
     def add_server(self, pack: dict, game_dir: Path) -> None:

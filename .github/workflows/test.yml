@@ -72,3 +72,18 @@ jobs:
           name: test-build-${{ env.BUILD_NAME }}
           path: test-build/
           retention-days: 14
+
+  docker:
+    # The container image builds and starts (the image itself is published by release.yml).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t mcsm:ci .
+      - name: It starts and answers
+        run: |
+          docker run -d --name mcsm-ci -p 8765:8765 mcsm:ci
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8765/api/auth && break; sleep 1; done
+          docker logs mcsm-ci 2>&1 | grep -q "one-time" || { docker logs mcsm-ci; exit 1; }
+          docker stop mcsm-ci

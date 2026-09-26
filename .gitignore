@@ -12,3 +12,4 @@ dist/
 /mcsm.toml
 /mcsm.lock.json
 /.build-venv/
+src/mcsm/_buildkeys.py

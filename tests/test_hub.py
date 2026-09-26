@@ -193,7 +193,12 @@ def test_start_opens_the_server_list(tmp_path, monkeypatch, fake_template, capsy
     assert cli.main(["-C", str(empty), "start", "--no-browser"]) == 0
     assert ran and not (home / "mcsm.toml").exists()  # no placeholder server any more
     out = capsys.readouterr().out
-    assert "Create your first server" in out and "Password:       PASSWORD" in out
+    assert "Create your first server" in out
+    if cli.has_display():
+        assert "Password:       PASSWORD" in out
+    else:  # no screen: other devices sign in, with a one-time password until you choose one
+        assert "Password:       Mcsm-" in out and "one-time" in out
+        assert (home / ".mcsm" / "first-password.txt").is_file()
 
     # A server folder elsewhere is listed too; a home-folder server that never installed goes to setup.
     other = tmp_path / "other-server"

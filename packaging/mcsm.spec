@@ -34,7 +34,8 @@ a = Analysis(
     pathex=[str(root / "src")],
     # The web UI's HTML/JS/CSS, loaded with importlib.resources at runtime.
     datas=[(str(root / "src" / "mcsm" / "webui"), "mcsm/webui"), *license_files()],
-    hiddenimports=["mcsm.web"],  # imported lazily by the daemon
+    hiddenimports=["mcsm.web"]  # imported lazily by the daemon
+    + (["mcsm._buildkeys"] if (root / "src" / "mcsm" / "_buildkeys.py").is_file() else []),  # release builds' CurseForge key
     excludes=["tkinter", "unittest", "pydoc_data", "test"],
     noarchive=False,
 )

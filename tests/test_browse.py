@@ -29,11 +29,12 @@ def test_search_is_normalised_and_filtered(http):
     assert r["total"] == 45 and r["offset"] == 20
     hit = r["results"][0]
     assert hit["name"] == "Good Mod" and hit["url"] == "https://modrinth.com/mod/goodmod" and hit["downloads"] == 1200
-    facets = json.loads(seen[-1]["facets"])
+    query = [p for p in seen if p and "facets" in p][-1]
+    facets = json.loads(query["facets"])
     assert ["project_type:mod"] in facets and ["versions:1.21.1"] in facets and ["categories:utility"] in facets
     assert ["categories:quilt", "categories:fabric"] in facets  # Quilt runs Fabric mods
     assert ["server_side:required", "server_side:optional"] in facets  # no client-only mods
-    assert seen[-1]["index"] == "downloads" and seen[-1]["offset"] == 20
+    assert query["index"] == "downloads" and query["offset"] == 20
 
     with pytest.raises(BrowseError):
         b.search(sort="random")

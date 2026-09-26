@@ -1,10 +1,11 @@
 """Mods' config files, for viewing and editing in the web UI.
 
-Config files live in the server's ``config/`` folder (Fabric, Quilt, NeoForge, Forge),
-``defaultconfigs/`` (copied into new worlds) and ``<world>/serverconfig/`` (Forge and
-NeoForge per-world settings). Each is matched to the mod it belongs to by the mod ids
-declared inside the mod jars (fabric.mod.json, quilt.mod.json, META-INF/mods.toml,
-META-INF/neoforge.mods.toml).
+Config files live in the server's ``config/`` folder (Fabric, Quilt, NeoForge, Forge,
+Paper's own settings), ``defaultconfigs/`` (copied into new worlds), ``<world>/serverconfig/``
+(Forge and NeoForge per-world settings) and ``plugins/<plugin>/`` (Paper plugins). Each is
+matched to the mod it belongs to by the ids declared inside the jars (fabric.mod.json,
+quilt.mod.json, META-INF/mods.toml, META-INF/neoforge.mods.toml, plugin.yml,
+paper-plugin.yml).
 
 Only text config formats inside those folders can be read or written, and every save
 keeps the previous version in ``.mcsm/config-backups/``.
@@ -37,7 +38,17 @@ class ConfigFileError(ValueError):
 
 def roots(server_dir: Path) -> list[Path]:
     level = read_properties(server_dir / "server.properties").get("level-name") or "world"
-    return [server_dir / "config", server_dir / "defaultconfigs", server_dir / level / "serverconfig"]
+    return [server_dir / "config", server_dir / "defaultconfigs", server_dir / level / "serverconfig",
+            server_dir / "plugins"]
+
+
+def jars(server_dir: Path) -> list[Path]:
+    """Mod jars in mods/ and plugin jars in plugins/."""
+    out = []
+    for folder in ("mods", "plugins"):
+        if (server_dir / folder).is_dir():
+            out += sorted((server_dir / folder).glob("*.jar"))
+    return out
 
 
 # ------------------------------------------------------------ which mod is it
@@ -74,6 +85,12 @@ def jar_mods(jar: Path) -> list[tuple[str, str]]:
                         name = re.search(r'^\s*displayName\s*=\s*"([^"]+)"', block, re.M)
                         if mid:
                             found.append((mid.group(1), name.group(1) if name else mid.group(1)))
+                    break
+            for yml in ("paper-plugin.yml", "plugin.yml"):
+                if yml in names:
+                    name = re.search(r"^name:\s*['\"]?([\w.-]+)", z.read(yml).decode("utf-8", "replace"), re.M)
+                    if name:
+                        found.append((name.group(1), name.group(1)))
                     break
     except (OSError, zipfile.BadZipFile, ValueError, KeyError):
         pass
@@ -115,9 +132,7 @@ def grouped(server_dir: Path, lock_mods) -> dict:
     mods = []
     by_id: dict[str, dict] = {}
     names = {m.filename: m.name for m in lock_mods}
-    mods_dir = server_dir / "mods"
-    jars = sorted(mods_dir.glob("*.jar")) if mods_dir.is_dir() else []
-    for jar in jars:
+    for jar in jars(server_dir):
         for mod_id, display in jar_mods(jar):
             if mod_id in ("minecraft", "java", "fabricloader") or mod_id in by_id:
                 continue
@@ -127,7 +142,7 @@ def grouped(server_dir: Path, lock_mods) -> dict:
     ids = sorted(by_id, key=len, reverse=True)  # "create_sa" before "create"
     other = []
     for rel in list_files(server_dir):
-        within = rel.split("/", 1)[1] if "/" in rel else rel  # without config/
+        within = rel.split("/", 1)[1] if "/" in rel else rel  # without config/ (or plugins/)
         if rel.count("/") >= 2 and "/serverconfig/" in "/" + rel:
             within = rel.split("/serverconfig/", 1)[1]
         stem = _stem(within)

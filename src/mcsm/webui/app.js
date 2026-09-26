@@ -360,7 +360,8 @@ async function refreshStatus() {
     return;
   }
   const hb = hubInfo;
-  $("#version").textContent = "v" + hb.version;
+  $("#version").textContent = "v" + hb.version + " beta";
+  $("#version").title = "mcsm is in beta: expect some rough edges, and keep backups.";
   $("#logout").classList.toggle("hidden", hb.auth.mode === "none");
   $("#quit").classList.toggle("hidden", !!hb.single);
   if (!hb.notice_accepted) { showNotice(); return; }
@@ -666,6 +667,46 @@ function laggingNotice(lag, installed, always = false) {
   return el;
 }
 
+// Why a newer Minecraft isn't installable yet: the loader and every installed mod, coloured.
+function openReadiness(versions, installed) {
+  const body = h("div", { class: "readiness-body" }, h("p", { class: "muted" }, "Checking each mod…"));
+  const pick = h("select", { "aria-label": "Minecraft version" }, versions.map((v) => h("option", { value: v }, `Minecraft ${v}`)));
+  const legend = h("div", { class: "row small legend" },
+    h("span", { class: "dotc green" }), "ready (a release build)",
+    h("span", { class: "dotc yellow" }), "only an alpha/beta build (may be unstable)",
+    h("span", { class: "dotc red" }), "no build yet",
+    h("span", { class: "dotc unknown" }), "can't tell");
+  const load = async () => {
+    fill(body, h("p", { class: "muted" }, `Checking each mod for Minecraft ${pick.value}…`));
+    const r = await api(`/api/updates/readiness?version=${encodeURIComponent(pick.value)}`).catch((e) => { fill(body, h("div", { class: "notice bad" }, e.message)); return null; });
+    if (!r || r.minecraft !== pick.value) return;
+    const row = (state, name, detail, extra) => h("li", { class: "ready-row " + state }, h("span", { class: "dotc " + state, title: state }),
+      h("div", { class: "grow" }, h("strong", {}, name), extra || null, h("div", { class: "muted small" }, detail)));
+    const n = r.counts;
+    const verdict = r.loader.state === "red" ? `${r.loader.name} doesn't support Minecraft ${r.minecraft} yet, so nothing can move until it does.`
+      : n.red ? `${n.red} mod${n.red === 1 ? " has" : "s have"} no build for Minecraft ${r.minecraft} yet.`
+        : n.yellow ? `Every mod has a build, but ${n.yellow} only ${n.yellow === 1 ? "has" : "have"} alpha/beta builds. mcsm waits for releases unless you allow early builds.`
+          : `Everything is ready for Minecraft ${r.minecraft}. Run a check on the Updates tab to move.`;
+    fill(body,
+      h("div", { class: "notice " + (r.loader.state === "red" || n.red ? "bad" : n.yellow ? "warn" : "ok") }, verdict),
+      h("ul", { class: "list mt-s" },
+        row(r.loader.state, `${r.loader.name[0].toUpperCase()}${r.loader.name.slice(1)} (server type)`,
+          r.loader.state === "green" ? `ready (${r.loader.version})` : r.loader.state === "red" ? `no ${r.loader.name} build for Minecraft ${r.minecraft} yet` : "couldn't check it right now"),
+        r.mods.map((m) => row(m.state, m.name,
+          { green: "has a release build", yellow: `only ${m.channel} builds so far`, red: `no build for Minecraft ${r.minecraft} yet`, unknown: "can't tell (your own file, or the lookup failed)" }[m.state] +
+            ` · installed ${m.version}`,
+          [m.needed_by ? h("span", { class: "tag" }, `needed by ${m.needed_by}`) : null, m.required ? null : h("span", { class: "tag" }, "optional")]))),
+      r.mods.length ? null : h("p", { class: "empty" }, "No mods installed."));
+  };
+  pick.addEventListener("change", load);
+  openSidePane(h("div", { class: "readiness" },
+    h("div", { class: "row" }, h("h2", { class: "grow" }, "Why it's waiting"), pick,
+      h("button", { class: "btn ghost small", onclick: () => closeBrowser() }, "Close")),
+    h("p", { class: "muted small" }, `This server is on Minecraft ${installed || "(not installed yet)"}. Each installed mod, checked for the version above:`),
+    legend, body), "Update readiness");
+  load();
+}
+
 views.updates = () => {
   const body = h("div");
   const load = async () => {
@@ -701,12 +742,16 @@ views.updates = () => {
       },
     }, c.installed ? "Apply update" : "Install server");
 
+    // Newer versions to explain, newest first (the blocked ones the check found, and the latest).
+    const newer = [...new Set([c.latest, ...c.blocked.map((b) => b.minecraft)].filter((v) => v && v !== c.installed))];
     const summary = c.up_to_date
       ? h("div", { class: c.latest === c.installed ? "notice ok" : "notice warn" },
           c.latest === c.installed ? `Up to date on the latest release, Minecraft ${c.installed}.`
-            : `Up to date on Minecraft ${c.installed}, the newest version your mods support. ${c.latest} is blocked; see below.`)
+            : [`Up to date on Minecraft ${c.installed}, the newest version your mods support. ${c.latest} is waiting. `,
+              h("button", { class: "btn small", onclick: () => openReadiness(newer, c.installed) }, "Show why")])
       : c.target
-        ? h("div", { class: "notice warn" }, h("strong", {}, `Ready: Minecraft ${c.installed || "(new install)"} → ${c.target}`),
+        ? h("div", { class: "notice warn" }, h("strong", {}, c.installed === c.target ? `Ready: mod updates for Minecraft ${c.target}`
+            : `Ready: Minecraft ${c.installed || "(new install)"} → ${c.target}`),
             c.loader_version ? h("span", { class: "muted" }, `  (loader ${c.loader_version})`) : null)
         : h("div", { class: "notice bad" }, "No installable combination of Minecraft, loader and required mods was found.");
 
@@ -732,6 +777,7 @@ views.updates = () => {
       h("li", { class: line.startsWith("+") ? "change-add" : line.startsWith("-") ? "change-rm" : "" }, line)))) : null;
 
     const blocked = c.blocked.length ? card("Newer versions that are blocked",
+      h("div", { class: "row mb" }, h("button", { class: "btn small", onclick: () => openReadiness(newer, c.installed) }, "Show why, mod by mod")),
       h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Minecraft"), h("th", {}, "Waiting on"))),
         h("tbody", {}, c.blocked.map((b) => h("tr", {},
           h("td", {}, b.minecraft),
@@ -843,31 +889,41 @@ views.players = () => {
 };
 
 views.mods = () => {
+  const me = hubInfo && hubInfo.servers ? hubInfo.servers.find((x) => x.id === server) : null;
+  const plugins = !!me && me.loader === "paper";  // Paper runs plugins
   const results = h("div");
   const configured = h("div");
   const installed = h("div");
-  const q = h("input", { placeholder: "Search Modrinth for server mods…", type: "search" });
+  const q = h("input", { placeholder: plugins ? "Search Modrinth for plugins…" : "Search Modrinth for server mods…", type: "search" });
   let searchTimer;
 
+  let early = false;
+  const earlyBox = h("input", { type: "checkbox", onchange: (e) => { early = e.target.checked; search(); } });
+  const earlyRow = h("label", { class: "row small early-opt", title: EARLY_WARNING }, earlyBox,
+    h("span", {}, `Also show ${plugins ? "plugins" : "mods"} with only alpha/beta builds (less stable)`));
   const search = async () => {
     const term = q.value.trim();
     if (!term) { fill(results, ); return; }
     fill(results, h("p", { class: "empty" }, "Searching…"));
-    const r = await api(`/api/mods/search?q=${encodeURIComponent(term)}`).catch((e) => { toast(e.message, true); return null; });
+    const r = await api(`/api/mods/search?q=${encodeURIComponent(term)}` + (early ? "&early=1" : "")).catch((e) => { toast(e.message, true); return null; });
     if (!r) return;
-    fill(results, ...(r.results.length ? r.results.map((m) => h("div", { class: "mod" },
+    const note = r.hidden || r.early_hidden ? h("p", { class: "muted small" },
+      r.hidden ? `${r.hidden} result(s) hidden: no build for this server's Minecraft ${info.minecraft || ""}. ` : "",
+      r.early_hidden ? [`${r.early_hidden} only ${r.early_hidden === 1 ? "has" : "have"} alpha/beta builds. `,
+        h("button", { class: "link-btn", onclick: () => { earlyBox.checked = early = true; search(); } }, "Show them")] : null) : null;
+    fill(results, note, ...(r.results.length ? r.results.map((m) => h("div", { class: "mod" },
       m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
       h("div", { class: "info" },
         h("div", { class: "name" }, m.name, h("span", { class: "tag" }, `${(m.downloads / 1e6).toFixed(1)}M downloads`),
-          m.server_side === "optional" ? h("span", { class: "tag" }, "server optional") : null),
+          m.server_side === "optional" ? h("span", { class: "tag" }, "server optional") : null, channelTag(m.channel)),
         h("div", { class: "desc" }, m.description)),
       m.listed ? h("span", { class: "tag ok" }, "added") : h("div", { class: "row" },
-        h("button", { class: "btn primary small", onclick: () => add(m.slug, true) }, "Add"),
-        h("button", { class: "btn small", title: "Won't hold back Minecraft upgrades", onclick: () => add(m.slug, false) }, "Add optional")),
+        h("button", { class: "btn primary small", onclick: () => confirmEarly([m]) && add(m.slug, true, "modrinth", m.channel) }, "Add"),
+        h("button", { class: "btn small", title: "Won't hold back Minecraft upgrades", onclick: () => confirmEarly([m]) && add(m.slug, false, "modrinth", m.channel) }, "Add optional")),
     )) : [h("p", { class: "empty" }, "No server mods found" + (info.minecraft ? ` that work on Minecraft ${info.minecraft}.` : "."))]));
   };
-  const add = async (id, required, source = "modrinth") => {
-    const r = await act(() => api("/api/mods/add", { method: "POST", body: { source, id, required } }));
+  const add = async (id, required, source = "modrinth", channel = null) => {
+    const r = await act(() => api("/api/mods/add", { method: "POST", body: { source, id, required, channel: channel !== "release" ? channel : null } }));
     if (r) {
       toast(`Added ${r.name}` + (r.deps && r.deps.length ? `, with the mods it needs: ${r.deps.join(", ")}` : "") + ". Run an update check to install it.");
       load(); search();
@@ -903,14 +959,22 @@ views.mods = () => {
     };
     const needersOf = (depKey) => r.configured.filter((c) => c.deps.some((d) => d.key === depKey));
     fill(configured, r.configured.length ? h("ul", { class: "list" }, r.configured.flatMap((s) => [h("li", {},
-      h("div", { class: "grow" }, h("strong", {}, s.name), h("span", { class: "tag" }, s.source)),
+      h("div", { class: "grow" }, h("strong", {}, s.name), h("span", { class: "tag" }, s.source), channelTag(s.channel)),
       h("label", { class: "row", title: "Every mod holds back Minecraft upgrades until it supports the new version. Required ones also decide the Minecraft version a new server starts on." },
         h("input", { type: "checkbox", checked: s.required, onchange: (e) => act(() => api("/api/mods/required", { method: "POST", body: { source: s.source, id: s.id, required: e.target.checked } })) }),
         "required"),
       cfgBtn(groupFor(s.key)),
-      h("button", { class: "btn danger small", onclick: () => confirm(`Remove ${s.name}?` +
-        (s.deps.length ? ` The mods it needs (${s.deps.map((d) => d.name).join(", ")}) go too, unless another mod needs them.` : "") +
-        " It's uninstalled at the next update.") && removeMods([s], s.name) }, "Remove")),
+      h("button", { class: "btn danger small", onclick: () => {
+        // Dependencies another mod also needs stay; say so before and after.
+        const shared = s.deps.map((d) => [d, needersOf(d.key).filter((c) => c.key !== s.key)]).filter(([, others]) => others.length);
+        const going = s.deps.filter((d) => !shared.some(([x]) => x.key === d.key));
+        if (!confirm(`Remove ${s.name}?` +
+          (going.length ? ` The mods it needs (${going.map((d) => d.name).join(", ")}) go too.` : "") +
+          (shared.length ? ` ${shared.map(([d]) => d.name).join(", ")} ${shared.length === 1 ? "stays" : "stay"}, because other mods need ${shared.length === 1 ? "it" : "them"}.` : "") +
+          " It's uninstalled at the next update.")) return;
+        removeMods([s], s.name);
+        for (const [d, others] of shared) toast(`${d.name} wasn't removed: ${others.map((c) => c.name).join(" and ")} ${others.length === 1 ? "needs" : "need"} it too.`);
+      } }, "Remove")),
       ...s.deps.map((d) => h("li", { class: "dep" },
         h("div", { class: "grow" }, "↳ ", h("strong", {}, d.name), h("span", { class: "tag" }, `needed by ${needersOf(d.key).map((c) => c.name).join(", ")}`)),
         h("button", { class: "btn ghost small", onclick: () => {
@@ -945,20 +1009,21 @@ views.mods = () => {
     h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
       h("span", { class: "small muted" }, ".jar files on this computer")),
     h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: server, loader: info.loader || "", version: info.minecraft || "" }) },
-      "🔎 Download mods", h("span", { class: "small muted" }, "Browse Modrinth and CurseForge")),
+      plugins ? "🔎 Download plugins" : "🔎 Download mods", h("span", { class: "small muted" }, plugins ? "Browse Modrinth" : "Browse Modrinth and CurseForge")),
     hubInfo && hubInfo.single ? null : h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup" }) },
       "📦 Modpacks", h("span", { class: "small muted" }, "Start a new server from a pack")),
     picker);
 
   fill($("#main"), 
-    h("h2", { class: "view-title" }, "Mods"),
-    card("Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, results,
-      h("div", { class: "row mt-s" }, cfId,
-        h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
+    h("h2", { class: "view-title" }, plugins ? "Plugins" : "Mods"),
+    card(plugins ? "Add plugins" : "Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, earlyRow, results,
+      plugins ? h("p", { class: "muted small mt-s" }, "Paper runs Paper, Spigot and Bukkit plugins from its plugins folder. Players don't need them.")
+        : h("div", { class: "row mt-s" }, cfId,
+          h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
     h("div", { class: "mt" }, configsCard),
     h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured,
       h("div", { class: "row mt-s" }, testButton({
-        quick: () => api("/api/mods/check", { method: "POST", body: {} }),
+        check: ["/api/mods/check", {}],
         trial: { server },
         keepWorking: async (res) => {
           for (const o of res.outliers) await api("/api/mods/remove", { method: "POST", body: { source: o.source, id: o.id } }).catch((e) => toast(e.message, true));
@@ -1063,7 +1128,9 @@ views.settings = () => {
         h("label", {}, "Port players connect to", txt("port", { type: "number", min: 1024, max: 65535 })),
         h("label", {}, "Backups to keep", txt("backups_keep", { type: "number", min: 1 })),
         h("label", {}, "Discord webhook URL", txt("discord_webhook", { type: "url", placeholder: "https://discord.com/api/webhooks/…" }))),
-      h("div", { class: "grid mt-s" }, chk("restart_on_crash", "Restart after crashes")),
+      h("div", { class: "grid mt-s" }, chk("restart_on_crash", "Restart after crashes"),
+        h("label", { class: "row", title: "Garbage-collection settings that avoid lag spikes with lots of memory" },
+          (f.aikar_flags = h("input", { type: "checkbox", checked: s.aikar_flags })), h("span", {}, "Use Aikar's flags (smoother with 16 GB+)"))),
       advancedEl,
       h("div", { class: "row mt" }, h("button", { class: "btn primary", type: "submit" }, "Save settings"),
         h("span", { class: "muted small" }, "Memory, port and advanced changes apply at the next restart.")),
@@ -1076,9 +1143,13 @@ views.settings = () => {
         auto_upgrade: f.auto_upgrade.checked, wait_for_empty: f.wait_for_empty.checked, verify_boot: f.verify_boot.checked,
         memory: f.memory.value.trim(), backups_keep: Number(f.backups_keep.value), discord_webhook: f.discord_webhook.value.trim(),
         port: Number(f.port.value),
-        restart_on_crash: f.restart_on_crash.checked,
+        restart_on_crash: f.restart_on_crash.checked, aikar_flags: f.aikar_flags.checked,
         properties: changedProps(advanced, s.properties),
       };
+      const gb = memoryGb(body.memory);
+      if (gb > AIKAR_ABOVE_GB && !body.aikar_flags) {
+        offerAikar(gb, () => { f.aikar_flags.checked = true; act(() => api("/api/settings", { method: "POST", body: { aikar_flags: true } }), "Aikar's flags on").then(load); });
+      }
       act(() => api("/api/settings", { method: "POST", body }), "Settings saved").then(load);
     };
   };
@@ -1137,30 +1208,35 @@ views.settings = () => {
 // A download friends run to set up their Minecraft for this server (mods and all).
 views.friends = () => {
   const body = h("div");
-  const results = h("div");
-  const q = h("input", { type: "search", placeholder: "Search Modrinth for mods players can add, e.g. minimap, JEI, Sodium" });
   let data = null;
-  let timer;
   const save = async (changes, message) => {
     const r = await act(() => api("/api/client", { method: "POST", body: changes }), message);
     if (r) { data = r; render(); }
   };
-  const search = async () => {
-    if (!data || !data.enabled) return;
-    const term = q.value.trim();
-    const r = await api(`/api/client/search?${term ? "q=" + encodeURIComponent(term) : "top=1"}`).catch((e) => { toast(e.message, true); return null; });
-    if (!r || q.value.trim() !== term) return;
-    fill(results, term ? null : h("h3", { class: "mt-s" }, "Popular mods for players"),
-      r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
-        m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
-        h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
-        (data.pack && data.pack.mods.some((x) => x.project === "modrinth:" + m.id)) && !data.mods.includes(m.slug)
-          ? h("span", { class: "tag" }, "included")
-        : data.mods.includes(m.slug) || data.mods.includes(m.id) ? h("span", { class: "tag ok" }, "added")
-          : h("button", { class: "btn small primary", onclick: () => save({ mods: [...data.mods, m.slug] }, `${m.name} added for players`).then(search) }, "Add"),
-      )) : [h("p", { class: "empty" }, "No player mods found.")]);
+  const reload = async () => { const r = await api("/api/client").catch(() => null); if (r) { data = r; render(); } };
+  // Your own mod files for players (e.g. ones that aren't on Modrinth).
+  const picker = h("input", { type: "file", multiple: true, accept: ".jar", class: "hidden" });
+  picker.addEventListener("change", async () => {
+    for (const f of [...picker.files]) {
+      const r = await api(`/api/client/local?filename=${encodeURIComponent(f.name)}`, { method: "POST", raw: f })
+        .catch((e) => { toast(`${f.name}: ${e.message}`, true); return null; });
+      if (r) toast(`${f.name} added for players`);
+    }
+    picker.value = "";
+    reload();
+  });
+  // Mods the server's mods need on players' computers are added by themselves; say so once.
+  const announceCompanions = (d) => {
+    const key = `mcsm-companions-${server}`;
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem(key) || "[]"); } catch (_) { /* private mode */ }
+    const fresh = ((d.pack && d.pack.mods) || []).filter((m) => m.needed_by && !seen.includes(m.project));
+    if (!fresh.length) return;
+    const byMod = new Map();
+    for (const m of fresh) byMod.set(m.needed_by, [...(byMod.get(m.needed_by) || []), m.name]);
+    for (const [by, names] of byMod) toast(`Added ${names.join(", ")} for players, because ${by} needs ${names.length === 1 ? "it" : "them"} on their computers.`);
+    try { localStorage.setItem(key, JSON.stringify([...seen, ...fresh.map((m) => m.project)])); } catch (_) { /* private mode */ }
   };
-  q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
 
   const render = () => {
     const d = data;
@@ -1169,7 +1245,7 @@ views.friends = () => {
       return;
     }
     const toggle = h("input", { type: "checkbox", checked: d.enabled, onchange: (e) => save({ enabled: e.target.checked },
-      e.target.checked ? "Friend download switched on" : "Friend download switched off").then(search) });
+      e.target.checked ? "Friend download switched on" : "Friend download switched off") });
     const intro = card("Let friends set up their Minecraft",
       h("p", {}, "Share a link. Your friends download a small file that adds a ", h("strong", {}, (status && status.motd) || "server"),
         " instance to their launcher (Minecraft Launcher, Prism Launcher, Modrinth App or CurseForge: they choose) with the right Minecraft version, mod loader and mods, and puts this server in their multiplayer list. They sign in with their own Minecraft account as usual."),
@@ -1192,6 +1268,7 @@ views.friends = () => {
       if (r) { toast(`Your public address is ${r.ip}`); data = await api("/api/client"); render(); }
     } }, links.internet ? "Check my public IP again" : "🌐 Use my public IP");
     const pack = d.pack;
+    const companions = ((pack && pack.mods) || []).filter((m) => m.needed_by);
     const sideTag = (m) => h("span", { class: "tag" }, m.side === "client" ? "players only" : "server + players");
     fill(body,
       intro,
@@ -1201,6 +1278,7 @@ views.friends = () => {
           : h("div", { class: "invite" }, h("strong", {}, "Internet link"),
             h("div", { class: "muted small" }, "For friends elsewhere, mcsm needs your public address. It can find it for you.")),
         h("div", { class: "row mt-s" }, findIp,
+          links.internet || links.local ? h("button", { class: "btn", onclick: () => openDiscord(links) }, "💬 Post to Discord") : null,
           h("button", { class: "btn ghost", onclick: () => {
             if (confirm("Make a new link? The old one stops working (friends who already set up keep playing, but can't update until they get the new link).")) {
               act(() => api("/api/client/new-link", { method: "POST", body: {} }), "New link made").then((r) => { if (r) { data = r; render(); } });
@@ -1227,17 +1305,28 @@ views.friends = () => {
         h("label", { class: "mt" }, "Memory for friends' Minecraft",
           (() => { const sel = h("select", { onchange: (e) => save({ memory_gb: Number(e.target.value) }, "Saved") },
             [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32].map((g) => h("option", { value: String(g) }, `${g} GB`))); sel.value = String(d.memory_gb); return sel; })()))),
-      d.loader === "vanilla" ? null : h("div", { class: "mt" }, card("Add mods just for players",
-        h("p", { class: "muted small" }, "Client-side mods like minimaps, recipe viewers or performance mods. The server's own mods that players need are included automatically."),
-        h("h3", { class: "mt-s" }, "Your players' mods"),
-        d.mods.length ? h("ul", { class: "list" }, d.mods.map((x) => h("li", {}, h("strong", { class: "grow" }, x),
-          h("button", { class: "btn small danger", onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`).then(search) }, "Remove"))))
-          : h("p", { class: "empty" }, "None yet. Add some below, or leave it: players get the server's mods either way."),
-        h("div", { class: "row mt-s" }, testButton({ quick: () => api("/api/client/check", { method: "POST", body: {} }), trial: null }),
-          h("span", { class: "muted small" }, "Checks the server's mods and these together.")),
-        h("h3", { class: "mt" }, "Find mods"), q, results)),
+      d.loader === "vanilla" || d.loader === "paper" ? null : h("div", { class: "mt" }, card("Mods for players",
+        h("p", { class: "muted small" }, "Client-side mods like minimaps, recipe viewers or performance mods. The server's own mods that players need are included automatically, and so are the client-side mods they need."),
+        h("div", { class: "source-buttons" },
+          h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: server, side: "client", loader: d.loader, version: d.minecraft || "" }) },
+            "🔎 Set up now", h("span", { class: "small muted" }, "Browse mods that run on players' computers")),
+          h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
+            h("span", { class: "small muted" }, ".jar files on this computer, for players")),
+          picker),
+        h("h3", { class: "mt" }, "Your players' mods"),
+        d.mods.length || d.local_mods.length || companions.length ? h("ul", { class: "list" },
+          d.mods.map((x) => h("li", {}, h("strong", { class: "grow" }, x),
+            h("button", { class: "btn small danger", onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`) }, "Remove"))),
+          d.local_mods.map((x) => h("li", {}, h("div", { class: "grow" }, h("strong", {}, x), h("span", { class: "tag" }, "local file")),
+            h("button", { class: "btn small danger", onclick: () => confirm(`Remove ${x} from the players' download?`) &&
+              act(() => api("/api/client/local/remove", { method: "POST", body: { name: x } }), `${x} removed`).then(reload) }, "Remove"))),
+          companions.map((m) => h("li", { class: "dep" }, h("div", { class: "grow" }, "↳ ", h("strong", {}, m.name),
+            h("span", { class: "tag" }, `added automatically: ${m.needed_by} needs it`)))))
+          : h("p", { class: "empty" }, "None yet. Leave it empty if you like: players get the server's mods either way."),
+        h("div", { class: "row mt-s" }, testButton({ check: ["/api/client/check", {}], trial: null }),
+          h("span", { class: "muted small" }, "Checks the server's mods and these together.")))),
     );
-    if (!results.childElementCount) search();
+    announceCompanions(d);
   };
   // Reached from a new server's setup: it's still installing (see the bar at the bottom).
   const installing = dock && dock.sid === server && !dock.done;
@@ -1247,7 +1336,7 @@ views.friends = () => {
       h("div", { class: "row mt-s" }, h("a", { class: "btn small", href: `#s/${server}/setup` }, "Back to the progress"))) : null,
     body);
   api("/api/client").then((r) => { data = r; render(); }).catch((e) => { if (!(e instanceof Unauthorized)) toast(e.message, true); });
-  return {};
+  return { refresh: reload };
 };
 
 // ---------------------------------------------------------- rich text (mod pages)
@@ -1338,46 +1427,91 @@ function richText(text, format) {
   return h("div", { class: "rich" }, richFromHtml(format === "html" ? text : mdToHtml(text || "")));
 }
 
-// ---------------------------------------------------------- mod browser window
-// Opened from setup and the Mods page: search, filters and sort at the top left, results
-// with checkboxes below, "Add selected" at the bottom, and the mod's page on the right.
+// ------------------------------------------------------------------ mod browser
+// Opened from setup, the Mods page and Friends: the page slides left into a narrow rail
+// (click it or press Escape to go back) and the browser takes the screen, with search,
+// filters and sort at the top left, results with checkboxes below, "Add selected" at the
+// bottom, and the mod's page on the right.
+let browserOpen = null;
 function openBrowser(params) {
-  const url = `${location.pathname}#browse?${new URLSearchParams(params)}`;
-  const win = window.open(url, "mcsm-browse", "width=1400,height=900");
-  if (!win) location.hash = `#browse?${new URLSearchParams(params)}`;  // popups blocked: open it here
-  else win.focus();
+  const refresh = () => { if (current && current.refresh) current.refresh(); };
+  const b = browserPanel(new URLSearchParams(params), {
+    close: () => closeBrowser(),
+    addMods: (mods) => {
+      for (const m of mods) setupAddMod(setupModKey(m), m.name, m.channel);
+      toast(`${mods.length} mod(s) added`);
+      closeBrowser();
+      refresh();
+    },
+    pickPack: (pack) => {
+      Object.assign(setupState, { modpack: pack, loader: pack.loader, minecraft: pack.minecraft });
+      toast(`Modpack chosen: ${pack.name}`);
+      closeBrowser();
+      if (currentName === "new" || currentName === "setup") refresh(); else location.hash = "#new";
+    },
+    changed: () => { closeBrowser(); refresh(); },
+  });
+  openSidePane(b.el, "Mod browser");
+  b.start();
 }
-window.addEventListener("message", (e) => {
-  if (e.origin !== location.origin || !e.data || typeof e.data !== "object") return;
-  const d = e.data;
-  if (d.type === "mcsm-add-mods" && Array.isArray(d.mods)) {
-    for (const m of d.mods) setupAddMod(setupModKey(m), m.name);
-    toast(`${d.mods.length} mod(s) added`);
-    if (current && current.refresh) current.refresh();
-  } else if (d.type === "mcsm-modpack" && d.pack) {
-    Object.assign(setupState, { modpack: d.pack, loader: d.pack.loader, minecraft: d.pack.minecraft });
-    toast(`Modpack chosen: ${d.pack.name}`);
-    if ((currentName === "new" || currentName === "setup") && current && current.refresh) current.refresh();
-    else location.hash = "#new";
-  } else if (d.type === "mcsm-mods-changed" && current && current.refresh) current.refresh();
+// The page slides left into a narrow rail (click it or press Escape to go back) and ``el``
+// takes the screen: the mod browser, and the Updates tab's "Show why".
+function openSidePane(el, label) {
+  closeBrowser(true);
+  const stage = $("#stage");
+  const back = { setup: "setup", new: "setup", mods: "Mods", friends: "Friends", updates: "Updates" }[currentName] || "the page";
+  const rail = h("button", { type: "button", class: "browse-rail", title: `Back to ${back} (Esc)`, "aria-label": `Back to ${back}`,
+    onclick: () => closeBrowser() }, h("span", { class: "rail-arrow" }, "‹"), h("span", { class: "rail-label" }, `Back to ${back}`));
+  const panel = h("section", { class: "inpage-browser", "aria-label": label }, el);
+  stage.append(rail, panel);
+  stage.classList.add("browsing");
+  browserOpen = { rail, panel };
+}
+function closeBrowser(instant = false) {
+  if (!browserOpen) return;
+  const { rail, panel } = browserOpen;
+  browserOpen = null;
+  const stage = $("#stage");
+  stage.classList.remove("browsing");
+  if (instant || matchMedia("(prefers-reduced-motion: reduce)").matches) { rail.remove(); panel.remove(); return; }
+  panel.classList.add("leaving");
+  rail.remove();
+  setTimeout(() => panel.remove(), 260);
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && browserOpen && !document.querySelector(".modal")) closeBrowser();
 });
 
-views.browse = (params) => {
+views.browse = (params) => {  // a direct #browse link: the browser on its own
   document.body.classList.add("browse-mode");
+  const b = browserPanel(params, null);
+  fill($("#main"), b.el);
+  b.start();
+  return {};
+};
+
+function browserPanel(params, host) {
   const kind = params.get("type") === "modpack" ? "modpack" : "mod";
   const target = params.get("target") || "setup";
   const loader = params.get("loader") || "";
+  const noun = loader === "paper" ? "plugin" : kind;  // Paper runs plugins (from Modrinth)
+  const forPlayers = params.get("side") === "client";  // the Friends page: mods for players' computers
   const base = target === "setup" ? "/api/hub/browse" : `/api/servers/${encodeURIComponent(target)}/browse`;
   const st = { q: "", source: "modrinth", sort: "relevance", category: "", version: params.get("version") || "",
-    offset: 0, total: 0, results: [], selected: new Map(), active: null };
+    offset: 0, total: 0, results: [], selected: new Map(), active: null, early: false, hidden: 0, earlyHidden: 0 };
+  const earlyBox = h("input", { type: "checkbox", onchange: (e) => { st.early = e.target.checked; search(); } });
+  const earlyRow = kind === "mod" && !forPlayers ? h("label", { class: "row small early-opt", title: EARLY_WARNING }, earlyBox,
+    h("span", {}, "Also show mods with only alpha/beta builds (less stable)")) : null;
   const list = h("div", { class: "browse-results" });
-  const details = h("div", { class: "browse-right" }, h("p", { class: "empty" }, `Pick a ${kind} on the left to read about it here.`));
+  const details = h("div", { class: "browse-right" }, h("p", { class: "empty" }, `Pick a ${noun} on the left to read about it here.`));
   const count = h("span", { class: "grow muted small" });
-  const addBtn = h("button", { class: "btn primary" + (kind === "modpack" ? " hidden" : ""), disabled: true }, "Add selected mods");
-  const q = h("input", { type: "search", placeholder: kind === "modpack" ? "Search modpacks…" : "Search mods…", "aria-label": "Search" });
+  const addBtn = h("button", { class: "btn primary" + (kind === "modpack" ? " hidden" : ""), disabled: true }, `Add selected ${noun}s`);
+  const q = h("input", { type: "search", placeholder: `Search ${noun}s…`, "aria-label": "Search" });
   const sort = h("select", { "aria-label": "Sort by" }, [["relevance", "Best match"], ["downloads", "Most downloaded"],
     ["follows", "Most followed"], ["newest", "Newest"], ["updated", "Recently updated"]].map(([v, l]) => h("option", { value: v }, l)));
-  const source = h("select", { "aria-label": "Source" }, h("option", { value: "modrinth" }, "Modrinth"));
+  const source = h("select", { "aria-label": "Source" }, h("option", { value: "modrinth" }, "Modrinth"),
+    kind === "mod" && noun !== "plugin" && !forPlayers ? h("option", { value: "curseforge" }, "CurseForge") : null);
+  let cfKey = null;  // whether a CurseForge API key is set (asked once)
   const category = h("select", { "aria-label": "Category" }, h("option", { value: "" }, "All categories"));
   const version = h("input", { value: st.version, placeholder: "Any version", "aria-label": "Minecraft version", class: "narrow" });
   let timer, seq = 0;
@@ -1385,9 +1519,10 @@ views.browse = (params) => {
   const fmtNum = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
   // What a ticked mod brings along (the page adds those too).
   const needs = async (m) => {
-    if (m.source !== "modrinth" || m.deps) return;
+    if (m.source !== "modrinth" || m.deps || forPlayers) return;
     const reqBase = target === "setup" ? "/api/hub/mods/requires" : `/api/servers/${encodeURIComponent(target)}/mods/requires`;
     const p = new URLSearchParams({ id: m.id });
+    if (m.channel && m.channel !== "release") p.set("channel", m.channel);
     if (target === "setup" && loader) p.set("loader", loader);
     if (st.version || target === "setup") p.set("version", st.version);
     const r = await api(`${reqBase}?${p}`).catch(() => null);
@@ -1403,14 +1538,42 @@ views.browse = (params) => {
     count.textContent = kind === "modpack" ? (st.active ? "" : "Pick a modpack to see its versions.")
       : n ? `${n} selected: ${[...st.selected.values()].map((m) => m.name).slice(0, 3).join(", ")}${n > 3 ? "…" : ""}` +
         (extra.length ? ` · also adds ${extra.join(", ")} (needed)` : "") + (bad.length ? ` · ⚠ ${bad.map((m) => m.bad).join("; ")}` : "")
-        : "Tick the mods you want.";
+        : `Tick the ${noun}s you want.`;
     addBtn.disabled = kind === "modpack" ? true : n === 0;
   };
+  // CurseForge only answers apps with an API key (free); explain and take one here.
+  const keyPanel = () => {
+    const input = h("input", { type: "password", placeholder: "Paste your CurseForge API key", autocomplete: "off", "aria-label": "CurseForge API key" });
+    const save = h("button", { class: "btn primary", onclick: async () => {
+      save.disabled = true;
+      try {
+        await api("/api/hub/curseforge", { method: "POST", body: { key: input.value } });
+        cfKey = true;
+        toast("CurseForge key saved. It works for all your servers.");
+        loadCategories();
+        search();
+      } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, true); save.disabled = false; }
+    } }, "Save key");
+    fill(list, h("div", { class: "notice key-panel" },
+      h("strong", {}, "CurseForge needs an API key"),
+      h("p", { class: "small" }, "CurseForge only lets apps search it with a key. It's free and takes a minute:"),
+      h("ol", { class: "small" },
+        h("li", {}, "Open ", h("a", { href: "https://console.curseforge.com/", target: "_blank", rel: "noopener noreferrer" }, "console.curseforge.com ↗"), " and sign in (a CurseForge or Google account works)."),
+        h("li", {}, "Go to ", h("strong", {}, "API keys"), " and copy your key."),
+        h("li", {}, "Paste it here. mcsm checks it with CurseForge and keeps it in mcsm settings.")),
+      h("div", { class: "row" }, input, save)));
+  };
   const search = async (more = false) => {
+    if (st.source === "curseforge") {
+      if (cfKey === null) cfKey = (await api("/api/hub/curseforge").catch(() => ({ set: false }))).set;
+      if (!cfKey) { keyPanel(); st.results = []; updateFooter(); return; }
+    }
     const mine = ++seq;
     if (!more) { st.offset = 0; list.scrollTop = 0; }
     const p = new URLSearchParams({ type: kind, q: st.q, source: st.source, sort: st.sort, offset: String(st.offset) });
     if (st.category) p.set("category", st.category);
+    if (st.early) p.set("early", "1");
+    if (forPlayers) p.set("side", "client");
     p.set("version", st.version);
     if (loader) p.set("loader", loader);
     if (!more) fill(list, h("p", { class: "empty" }, "Searching…"));
@@ -1418,10 +1581,18 @@ views.browse = (params) => {
     if (!r || mine !== seq) return;
     st.results = more ? st.results.concat(r.results) : r.results;
     st.total = r.total;
+    st.hidden = (more ? st.hidden : 0) + (r.hidden || 0);
+    st.earlyHidden = (more ? st.earlyHidden : 0) + (r.early_hidden || 0);
     renderList();
   };
   const renderList = () => {
-    fill(list, st.results.length ? st.results.map((m) => {
+    // Search results the chosen version can't run are left out; say so.
+    const where = `${loader ? loader + " " : ""}Minecraft ${st.version}`;
+    const note = st.version && (st.hidden || st.earlyHidden) ? h("p", { class: "muted small hidden-note" },
+      st.hidden ? `${st.hidden} result(s) hidden: no build for ${where}. ` : "",
+      st.earlyHidden ? [`${st.earlyHidden} only ${st.earlyHidden === 1 ? "has" : "have"} alpha/beta builds. `,
+        h("button", { class: "link-btn", onclick: () => { earlyBox.checked = st.early = true; search(); } }, "Show them")] : null) : null;
+    fill(list, note, st.results.length ? st.results.map((m) => {
       const key = `${m.source}:${m.id}`;
       const box = kind === "mod" ? h("input", { type: "checkbox", checked: st.selected.has(key), "aria-label": `Select ${m.name}`,
         onclick: (e) => e.stopPropagation(),
@@ -1431,7 +1602,7 @@ views.browse = (params) => {
         box || h("span"),
         m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
         h("div", { class: "info" },
-          h("div", { class: "name" }, m.name, m.author ? h("span", { class: "muted small" }, ` by ${m.author}`) : null),
+          h("div", { class: "name" }, m.name, m.author ? h("span", { class: "muted small" }, ` by ${m.author}`) : null, " ", channelTag(m.channel)),
           h("div", { class: "desc" }, m.summary),
           h("div", { class: "muted small" }, `⬇ ${fmtNum(m.downloads)}`, m.follows ? ` · ♥ ${fmtNum(m.follows)}` : "",
             m.updated ? ` · updated ${new Date(m.updated).toLocaleDateString()}` : "")));
@@ -1456,7 +1627,7 @@ views.browse = (params) => {
       const v = p.versions.find((x) => x.id === versionSel.value);
       const packLoader = (v.loaders.find((l) => ["fabric", "neoforge", "forge", "quilt"].includes(l)) || "vanilla");
       const pack = { project: p.id, version_id: v.id, name: p.name, version: v.name, minecraft: v.minecraft[0], loader: packLoader, icon: p.icon };
-      if (window.opener) { window.opener.postMessage({ type: "mcsm-modpack", pack }, location.origin); window.close(); }
+      if (host) host.pickPack(pack);
       else { Object.assign(setupState, { modpack: pack, loader: pack.loader, minecraft: pack.minecraft }); location.hash = "#new"; }
     } }, "Use this modpack") : null;
     fill(details,
@@ -1480,10 +1651,20 @@ views.browse = (params) => {
   };
 
   addBtn.addEventListener("click", async () => {
-    const mods = [...st.selected.values()].map((m) => ({ source: m.source, id: m.id, slug: m.slug, name: m.name }));
+    const mods = [...st.selected.values()].map((m) => ({ source: m.source, id: m.id, slug: m.slug, name: m.name,
+      channel: m.channel && m.channel !== "release" ? m.channel : null }));
+    if (!confirmEarly(mods)) return;
+    if (forPlayers) {  // extras in the friends' download (their dependencies come along there)
+      const cur = await api(`/api/servers/${encodeURIComponent(target)}/client`).catch(() => null);
+      if (!cur) return;
+      const r = await act(() => api(`/api/servers/${encodeURIComponent(target)}/client`, { method: "POST",
+        body: { mods: [...new Set([...cur.mods, ...mods.map((m) => m.slug || m.id)])] } }), `Added ${mods.map((m) => m.name).join(", ")} for players`);
+      if (r && host) host.changed();
+      return;
+    }
     if (target === "setup") {
-      if (window.opener) { window.opener.postMessage({ type: "mcsm-add-mods", mods }, location.origin); window.close(); return; }
-      for (const m of mods) setupAddMod(setupModKey(m), m.name);
+      if (host) { host.addMods(mods); return; }
+      for (const m of mods) setupAddMod(setupModKey(m), m.name, m.channel);
       location.hash = "#new";
       return;
     }
@@ -1491,7 +1672,7 @@ views.browse = (params) => {
     if (!r) return;
     toast(`Added ${r.added.length} mod(s)` + (r.skipped.length ? `; skipped ${r.skipped.map((x) => `${x.name} (${x.reason})`).join(", ")}` : ""), r.skipped.length > 0);
     st.selected.clear(); renderList();
-    if (window.opener) window.opener.postMessage({ type: "mcsm-mods-changed" }, location.origin);
+    if (host) host.changed();
   });
   q.addEventListener("input", () => { st.q = q.value.trim(); clearTimeout(timer); timer = setTimeout(() => search(), 350); });
   sort.addEventListener("change", () => { st.sort = sort.value; search(); });
@@ -1500,31 +1681,28 @@ views.browse = (params) => {
   version.addEventListener("change", () => { st.version = version.value.trim(); search(); });
   const loadCategories = async () => {
     const r = await api(`${base}/categories?type=${kind}&source=${st.source}`).catch(() => null);
-    if (!r) return;
-    fill(category, h("option", { value: "" }, "All categories"), r.categories.map((c) => h("option", { value: c.id }, c.name)));
-    if (source.options.length === 1 && r.sources.includes("curseforge") && kind === "mod") source.append(h("option", { value: "curseforge" }, "CurseForge"));
+    fill(category, h("option", { value: "" }, "All categories"), r ? r.categories.map((c) => h("option", { value: c.id }, c.name)) : []);
   };
 
-  fill($("#main"), h("div", { class: "browse" },
+  const el = h("div", { class: "browse" },
     h("div", { class: "browse-left" },
       h("div", { class: "browse-filters" },
-        h("div", { class: "row" }, h("strong", { class: "grow" }, kind === "modpack" ? "Modpacks" : "Mods"),
+        h("div", { class: "row" }, h("strong", { class: "grow" }, forPlayers ? "Mods for players" : { modpack: "Modpacks", plugin: "Plugins", mod: "Mods" }[noun]),
           loader ? h("span", { class: "tag" }, loader) : null,
-          window.opener ? h("button", { class: "btn ghost small", onclick: () => window.close() }, "Close") : h("a", { class: "btn ghost small", href: target === "setup" ? "#new" : `#s/${target}/mods` }, "Back")),
+          host ? h("button", { class: "btn ghost small", onclick: () => host.close() }, "Close") : h("a", { class: "btn ghost small", href: target === "setup" ? "#new" : `#s/${target}/mods` }, "Back")),
         q,
         h("div", { class: "row" }, source, sort),
-        h("div", { class: "row" }, category, version)),
+        h("div", { class: "row" }, category, version),
+        earlyRow),
       list,
       h("div", { class: "browse-footer" }, count, addBtn)),
-    details));
-  q.focus();
-  loadCategories();
-  search();
-  return {};
-};
+    details);
+  return { el, start: () => { q.focus(); loadCategories(); search(); } };
+}
 
 // ------------------------------------------------------------ advanced settings
 // Every other server.properties setting, grouped; edits `values` (key -> string) in place.
+const WORLD_CARD_PROPS = ["level-seed", "level-type", "generate-structures", "hardcore"];
 function propsEditor(schema, values) {
   const pretty = (c) => c.replace(/^minecraft:/, "").replace(/_/g, " ").replace(/^./, (x) => x.toUpperCase());
   const field = (p) => {
@@ -1552,6 +1730,299 @@ function changedProps(values, base) {
   return Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== base[k]));
 }
 
+// ------------------------------------------------------------------ help
+// The router guide: shown on the Help page, and under a new server's progress (friends
+// outside your home can only join once the router passes Minecraft's port to this computer).
+function routerHelp(opts = {}) {
+  const mc = opts.port || 25565;
+  const share = opts.sharePort || ((hubInfo && hubInfo.share && hubInfo.share.port) || 8798);
+  const ip = opts.lanIp || (hubInfo && hubInfo.share && hubInfo.share.lan_ip) || "this computer's address";
+  return h("div", { class: "help-router" },
+    h("p", {}, "Friends on your home Wi-Fi can join straight away. Friends ", h("strong", {}, "anywhere else"),
+      " reach your server through your router, which has to be told to pass Minecraft's port on to this computer. That's called ",
+      h("strong", {}, "port forwarding"), ", and you set it up once:"),
+    h("img", { class: "help-img", src: "/help-network.svg", alt: "A friend on the internet connects to your router, which forwards port " + mc + " to this computer." }),
+    h("ol", { class: "steps" },
+      h("li", {}, "Give this computer a fixed address on your network, so the rule keeps working: in the router's ", h("strong", {}, "LAN / DHCP"),
+        " settings, look for ", h("em", {}, "address reservation"), " or ", h("em", {}, "static lease"), ` and reserve ${ip} for it.`),
+      h("li", {}, "Open your router's page in a browser. It's usually ", h("code", {}, "http://192.168.0.1"), " or ", h("code", {}, "http://192.168.1.1"),
+        ", and the address and admin password are often on a sticker on the router."),
+      h("li", {}, "Find ", h("strong", {}, "Port Forwarding"), ". Routers also call it Virtual Server, NAT, Port Mapping, or Applications & Gaming."),
+      h("li", {}, "Add a rule: protocol ", h("strong", {}, "TCP"), ", external and internal port ", h("strong", {}, String(mc)),
+        ", to ", h("strong", {}, ip), ". That's Minecraft."),
+      h("li", {}, "If friends download their setup from you over the internet, add a second rule for port ", h("strong", {}, String(share)), " the same way."),
+      h("li", {}, "Save, then test: ask a friend (or use your phone with Wi-Fi off) to connect.")),
+    h("img", { class: "help-img", src: "/help-router.svg", alt: "An example port forwarding rule: Minecraft, TCP, port " + mc + ", to this computer's address." }),
+    h("div", { class: "notice warn" }, h("strong", {}, "Every router is different. "),
+      "The menus and names above are typical, not exact. If you can't find the setting, check your router's manual or its maker's support site ",
+      "(search for your router's model and “port forwarding”), or ask your internet provider. Some providers share one public address between ",
+      "customers (called CGNAT); port forwarding can't work then, and they may give you your own address if you ask."),
+    h("p", { class: "muted small" }, "Only forward the ports above. Never forward the control panel's port (8765): to manage mcsm from elsewhere, use ",
+      h("button", { type: "button", class: "link-btn", onclick: openRemoteAccess }, "Remote access & phones"), " instead."));
+}
+
+const HELP = [
+  ["start", "Getting started", () => [
+    h("p", {}, "mcsm keeps your Minecraft servers running and up to date by themselves. Make a server under ", h("strong", {}, "New server"),
+      ": pick the server type (Fabric, NeoForge, Forge, Quilt, Paper or plain Minecraft), the Minecraft version and your mods, then press ",
+      h("strong", {}, "Create my server"), ". mcsm downloads Java, Minecraft, the mod loader and the mods, and checks that the server starts."),
+    h("p", {}, "Press ", h("strong", {}, "Start"), " when you want to play. In Minecraft, choose Multiplayer → Add Server and use this computer's address.")]],
+  ["friends", "Letting friends join", () => [
+    h("p", {}, "On a server's ", h("strong", {}, "Friends"), " page, turn on the friends' download and send the link. Their copy of mcsm sets up ",
+      "the right Minecraft version, mod loader and mods in their launcher, and adds your server to their list."),
+    h("p", {}, "Friends outside your home also need the router set up (below).")]],
+  ["router", "Router setup (port forwarding)", () => [routerHelp()]],
+  ["mods", "Mods and updates", () => [
+    h("p", {}, "Every mod you add is kept up to date. A new Minecraft version is only installed once every mod supports it; ",
+      "the ", h("strong", {}, "Updates"), " tab says what it's waiting for (", h("strong", {}, "Show why"), ")."),
+    h("p", {}, "Before installing, use ", h("strong", {}, "🧪 Test these mods"), " to check that a set of mods works together.")]],
+  ["crash", "When something goes wrong", () => [
+    h("p", {}, "If a server won't start or crashes, mcsm says which mod it suspects and writes a report. The message shows where it is ",
+      "(in the server's ", h("code", {}, ".mcsm/logs"), " folder), and Minecraft's own log is in the server's ", h("code", {}, "logs/latest.log"), "."),
+    h("p", {}, "Every update makes a backup first and rolls back by itself if the new version doesn't start. Backups are on the ", h("strong", {}, "Backups"), " tab.")]],
+  ["headless", "Running mcsm on another computer", () => [
+    h("p", {}, "mcsm can run on a spare Linux computer or a Raspberry Pi (64-bit) with no screen, and you manage it from here in the browser. " +
+      "From your own computer (PowerShell on Windows, Terminal on a Mac or Linux), run one command, using that computer's user and address:"),
+    h("pre", { class: "log" }, 'ssh minecraft@192.168.1.50 "curl -fsSL https://raw.githubusercontent.com/silverWRX03/mc-server-management/main/packaging/install.sh | sh"'),
+    h("p", {}, "It installs mcsm there, starts it at boot, and prints the address to open and a one-time password. ",
+      h("a", { href: "https://github.com/silverWRX03/mc-server-management/blob/main/docs/headless.md", target: "_blank", rel: "noopener noreferrer" }, "Step-by-step guide ↗"),
+      " · ", h("a", { href: "https://github.com/silverWRX03/mc-server-management/blob/main/docs/docker.md", target: "_blank", rel: "noopener noreferrer" }, "Docker ↗"))]],
+  ["remote", "Using mcsm from your phone", () => [
+    h("p", {}, "Open ", h("button", { type: "button", class: "link-btn", onclick: openRemoteAccess }, "Remote access & phones"),
+      ": set a strong password, allow other devices, and pair your phone by scanning a QR code. Away from home, use Tailscale rather than opening ports.")]],
+];
+
+views.help = () => {
+  fill($("#main"), h("h2", { class: "view-title" }, "Help"),
+    h("nav", { class: "help-toc card" }, h("strong", {}, "Contents"),
+      h("ul", {}, HELP.map(([id, title]) => h("li", {}, h("a", { href: "#help", onclick: (e) => { e.preventDefault(); $(`#help-${id}`).scrollIntoView({ behavior: "smooth" }); } }, title))))),
+    HELP.map(([id, title, body]) => h("section", { class: "card mt help-section", id: `help-${id}` }, h("h3", {}, title), body())));
+  return {};
+};
+
+// ------------------------------------------------------------ remote access
+// Using mcsm from other devices: a strong password (never a PIN), then phones paired by
+// scanning a QR code. A paired phone gets its own key and only the everyday controls.
+function strongPassword(p) {
+  return p.length >= 12 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[^A-Za-z0-9\s]/.test(p);
+}
+function passwordChecklist(input) {
+  const rules = [["12 or more characters", (p) => p.length >= 12], ["an uppercase letter", (p) => /[A-Z]/.test(p)],
+    ["a lowercase letter", (p) => /[a-z]/.test(p)], ["a special character (like ! ? # %)", (p) => /[^A-Za-z0-9\s]/.test(p)]];
+  const list = h("ul", { class: "rules small" });
+  const update = () => fill(list, rules.map(([text, ok]) => h("li", { class: ok(input.value) ? "ok-text" : "muted" }, (ok(input.value) ? "✓ " : "• ") + text)));
+  input.addEventListener("input", update);
+  update();
+  return list;
+}
+function openRemoteAccess() {
+  if ($("#remote")) return;
+  const body = h("div", {});
+  let timer = null;
+  const close = () => { clearInterval(timer); $("#remote").remove(); };
+  document.body.append(h("div", { class: "modal-backdrop", id: "remote", role: "dialog", "aria-modal": "true", "aria-labelledby": "remote-title" },
+    h("div", { class: "modal remote" },
+      h("div", { class: "row" }, h("h2", { id: "remote-title", class: "grow" }, "Remote access & phones"), h("button", { class: "btn ghost small", onclick: close }, "Close")),
+      body)));
+  const step = (n, title, ...kids) => h("section", { class: "remote-step" }, h("h3", {}, `${n}. ${title}`), ...kids);
+  const load = async () => {
+    const r = await api("/api/hub/remote").catch((e) => { fill(body, h("div", { class: "notice bad" }, e.message)); return null; });
+    if (!r) return;
+    if (!r.available) { fill(body, h("p", {}, "Remote access is part of mcsm's server list. Start mcsm by double-clicking it (or `mcsm start`).")); return; }
+    // 1. a strong password
+    let pw;
+    if (r.strong) pw = h("p", { class: "ok-text" }, "✓ Your password is strong enough for remote access.");
+    else {
+      const p1 = h("input", { type: "password", autocomplete: "new-password", "aria-label": "New password" });
+      const p2 = h("input", { type: "password", autocomplete: "new-password", "aria-label": "Repeat it" });
+      const save = h("button", { class: "btn primary", onclick: async () => {
+        if (!strongPassword(p1.value)) { toast(`The password needs ${r.rules}.`, true); return; }
+        if (p1.value !== p2.value) { toast("The two passwords don't match", true); return; }
+        const ok = await act(() => api("/api/auth/change", { method: "POST", body: { mode: "password", secret: p1.value } }), "Password changed");
+        if (ok) load();
+      } }, "Set password");
+      pw = [h("p", { class: "small" }, r.mode === "pin" ? "PINs can't be used for remote access: they're too easy to guess. Choose a password:"
+          : "Choose a strong password (PINs aren't allowed for remote access):"),
+        h("div", { class: "grid" }, h("label", {}, "New password", p1), h("label", {}, "Repeat it", p2)), passwordChecklist(p1),
+        h("div", { class: "row" }, save)];
+    }
+    // 2. other devices
+    const toggle = h("input", { type: "checkbox", checked: r.network_access, disabled: !r.strong && !r.network_access, onchange: async (e) => {
+      const ok = await act(() => api("/api/hub/network", { method: "POST", body: { enabled: e.target.checked } }));
+      if (ok) toast(ok.restart_needed ? "Saved. Close and reopen mcsm (Quit, then start it again) for this to take effect." : "Saved");
+      load();
+    } });
+    const restartNote = r.configured !== r.running_on_network ? h("div", { class: "notice warn small mt-s" }, "Close and reopen mcsm (Quit, then start it again) for this to take effect.") : null;
+    // 3. away from home
+    const away = [
+      h("p", { class: "small" }, "On your home Wi-Fi, a phone reaches this computer directly. To use it away from home, use a private network app instead of opening ports:"),
+      h("ol", { class: "steps small" },
+        h("li", {}, "Install ", h("a", { href: "https://tailscale.com/download", target: "_blank", rel: "noopener noreferrer" }, "Tailscale ↗"), " (free for personal use) on this computer and on your phone."),
+        h("li", {}, "Sign in to the same account on both."),
+        h("li", {}, "Reopen this window: a Tailscale address appears under “Pair a phone”.")),
+      h("div", { class: "notice warn small" }, h("strong", {}, "Don't forward the control panel's port on your router. "),
+        "That puts it on the open internet, where bots try passwords all day. Tailscale keeps it private and encrypted.")];
+    // HTTPS (optional)
+    const cert = h("input", { value: r.tls_cert || "", placeholder: "Certificate file (.crt / .pem)", "aria-label": "Certificate file" });
+    const key = h("input", { value: r.tls_key || "", placeholder: "Key file (.key / .pem)", "aria-label": "Key file" });
+    const https = h("details", { class: "mt-s" }, h("summary", {}, `HTTPS (encryption) ${r.tls ? "· on" : "· optional"}`),
+      h("p", { class: "small muted" }, "Tailscale already encrypts everything between your devices. To also serve the panel over HTTPS, " +
+        "give mcsm a certificate: with Tailscale, run `tailscale cert <this computer's name>` and enter the two files it makes."),
+      h("div", { class: "grid" }, cert, key),
+      h("div", { class: "row mt-s" }, h("button", { class: "btn", onclick: () => act(() => api("/api/hub/remote/tls", { method: "POST", body: { cert: cert.value, key: key.value } }),
+        "Saved. Close and reopen mcsm to switch to HTTPS.").then(load) }, "Save")));
+    // 4. pair a phone
+    const pairBox = h("div", { class: "pair-box" });
+    const addr = h("select", { "aria-label": "Address the phone uses" }, r.addresses.map((a) => h("option", { value: a.host }, a.label)));
+    const pair = h("button", { class: "btn primary", disabled: !r.strong || !r.running_on_network || !r.addresses.length, onclick: async () => {
+      const p = await api("/api/hub/devices/pair", { method: "POST", body: { host: addr.value } }).catch((e) => { toast(e.message, true); return null; });
+      if (!p) return;
+      let left = p.expires_in;
+      const clock = h("span", { class: "muted small" });
+      const tick = () => { left -= 1; clock.textContent = left > 0 ? `This code works once, for ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} more.` : "This code has expired; make a new one."; if (left <= 0) { clearInterval(timer); pairBox.querySelector("img").classList.add("expired"); } };
+      clearInterval(timer);
+      timer = setInterval(tick, 1000);
+      tick();
+      fill(pairBox, h("img", { class: "qr", alt: "QR code for pairing a phone", src: "data:image/svg+xml;base64," + btoa(p.qr) }),
+        h("p", { class: "small" }, "Scan it with the phone's camera, open the link, and give the phone a name. Then use ", h("strong", {}, "Add to Home screen"), " in the phone's browser for an app icon."),
+        clock);
+    } }, "Show a pairing QR code");
+    const devices = r.devices.length ? h("ul", { class: "list" }, r.devices.map((d) => h("li", {},
+      h("div", { class: "grow" }, h("strong", {}, d.name), h("div", { class: "muted small" }, `paired ${new Date(d.created * 1000).toLocaleDateString()} · last used ${ago(d.last_seen)}${d.last_ip ? " from " + d.last_ip : ""}`)),
+      h("button", { class: "btn small danger", onclick: () => confirm(`Sign out ${d.name}? It will need to be paired again.`) &&
+        act(() => api("/api/hub/devices/remove", { method: "POST", body: { id: d.id } }), `${d.name} signed out`).then(load) }, "Sign out"))))
+      : h("p", { class: "empty" }, "No phones paired yet.");
+    fill(body,
+      step(1, "A strong password", pw),
+      step(2, "Let other devices connect", h("label", { class: "row" }, toggle, h("span", {}, "Allow access to this control panel from other devices (phones, other computers)")),
+        !r.strong ? h("p", { class: "small muted" }, "Set a strong password first.") : null, restartNote),
+      step(3, "Away from home", ...away, https),
+      step(4, "Pair a phone",
+        h("p", { class: "small" }, "A paired phone signs in by itself and can start, stop and restart servers, make backups, run updates and manage players. " +
+          "It can't change settings, mods or files, or use the console. Changing your password signs all phones out."),
+        r.addresses.length ? h("div", { class: "row" }, addr, pair) : h("p", { class: "small muted" }, "No network address found for this computer."),
+        !r.running_on_network ? h("p", { class: "small muted" }, "Pairing works once access from other devices is on and mcsm has been reopened.") : null,
+        pairBox),
+      step(5, "Paired phones", devices,
+        r.devices.length > 1 ? h("button", { class: "btn ghost small", onclick: () => confirm("Sign out every paired phone?") &&
+          act(() => api("/api/hub/devices/remove", { method: "POST", body: { id: "all" } }), "All phones signed out").then(load) }, "Sign out all") : null));
+  };
+  load();
+}
+// The page a phone opens from the QR code: name it, and it's paired.
+function showPairing(code) {
+  $("#app").classList.add("hidden");
+  const name = h("input", { value: /Android/i.test(navigator.userAgent) ? "Android phone" : /iPhone|iPad/i.test(navigator.userAgent) ? "iPhone" : "My phone",
+    maxlength: 40, "aria-label": "Name for this phone" });
+  const go = h("button", { class: "btn primary", onclick: async () => {
+    go.disabled = true;
+    try {
+      await api("/api/pair", { method: "POST", body: { code, name: name.value } });
+      history.replaceState(null, "", location.pathname);
+      toast("Paired. This phone now signs in by itself.");
+      start();
+    } catch (e) { toast(e.message, true); go.disabled = false; }
+  } }, "Pair this phone");
+  const box = h("div", { class: "login-card" }, h("div", { class: "brand big" }, h("span", { class: "logo" }), "mcsm"),
+    h("p", {}, "Pair this phone with your Minecraft server manager?"),
+    h("label", {}, "Name it (so you can tell phones apart)", name), go,
+    h("p", { class: "muted small" }, "Only pair your own phone. You can sign it out any time in mcsm settings on the computer."));
+  document.body.append(h("div", { class: "login", id: "pairing" }, box));
+}
+
+// ------------------------------------------------------------------ Discord
+// Posting the invite to a channel, through the user's own bot (a webhook only reaches one
+// channel). The first time, it walks through making the bot and adding it to a server.
+function openDiscord(links) {
+  if ($("#discord")) return;
+  const body = h("div", {});
+  const close = () => $("#discord").remove();
+  document.body.append(h("div", { class: "modal-backdrop", id: "discord", role: "dialog", "aria-modal": "true", "aria-labelledby": "discord-title" },
+    h("div", { class: "modal discord" },
+      h("div", { class: "row" }, h("h2", { id: "discord-title", class: "grow" }, "Post the invite to Discord"),
+        h("button", { class: "btn ghost small", onclick: close }, "Close")),
+      body)));
+  const ext = (href, text) => h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text);
+
+  const askToken = (info) => {
+    const input = h("input", { type: "password", autocomplete: "off", placeholder: "Paste the bot token", "aria-label": "Bot token", class: "grow" });
+    const save = h("button", { class: "btn primary", onclick: async () => {
+      save.disabled = true;
+      try {
+        const r = await api("/api/hub/discord", { method: "POST", body: { token: input.value } });
+        toast(`Connected as ${r.bot.name}`);
+        load();
+      } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, true); save.disabled = false; }
+    } }, "Connect");
+    fill(body,
+      h("p", {}, "mcsm posts through a Discord bot that belongs to you. Setting one up takes a couple of minutes, once:"),
+      h("ol", { class: "steps" },
+        h("li", {}, "Open the ", ext(info.portal, "Discord Developer Portal ↗"), " and press ", h("strong", {}, "New Application"), ". Name it (e.g. “Minecraft server”)."),
+        h("li", {}, "Open the ", h("strong", {}, "Bot"), " tab, press ", h("strong", {}, "Reset Token"), ", then ", h("strong", {}, "Copy"), "."),
+        h("li", {}, "Paste the token here. mcsm checks it with Discord and keeps it in mcsm settings; it never leaves this computer otherwise.")),
+      h("div", { class: "row" }, input, save),
+      h("p", { class: "muted small" }, "The bot only needs to see channels and send messages. mcsm never reads messages, and its posts can't ping @everyone."));
+    input.focus();
+  };
+
+  const pick = async (info) => {
+    let guilds;
+    try { guilds = (await api("/api/hub/discord/guilds")).guilds; }
+    catch (e) { fill(body, h("div", { class: "notice bad" }, e.message), h("button", { class: "btn mt-s", onclick: () => askToken(info) }, "Use another bot token")); return; }
+    const addBot = h("p", { class: "small" }, ext(info.invite_url, `Add ${info.bot.name} to a Discord server ↗`),
+      " (you need “Manage Server” there), then ", h("button", { class: "link-btn", onclick: load }, "refresh the list"), ".");
+    if (!guilds.length) {
+      fill(body, h("div", { class: "notice" }, h("strong", {}, `${info.bot.name} isn't in any Discord server yet. `), "Add it to the one you want to post in:"), addBot);
+      return;
+    }
+    const guildSel = h("select", { "aria-label": "Discord server" }, guilds.map((g) => h("option", { value: g.id }, g.name)));
+    const chanSel = h("select", { "aria-label": "Channel" });
+    const loadChannels = async () => {
+      fill(chanSel, h("option", { value: "" }, "Loading…"));
+      const r = await api(`/api/hub/discord/channels?guild=${guildSel.value}`).catch((e) => { toast(e.message, true); return null; });
+      const chans = r ? r.channels : [];
+      fill(chanSel, chans.length ? chans.map((c) => h("option", { value: c.id }, (c.category ? `${c.category} / ` : "") + "#" + c.name + (c.kind === "announcements" ? " (announcements)" : "")))
+        : h("option", { value: "" }, "No text channels the bot can see"));
+      if (chans.some((c) => c.id === info.channel)) chanSel.value = info.channel;
+    };
+    guildSel.addEventListener("change", loadChannels);
+    if (guilds.some((g) => g.id === info.guild)) guildSel.value = info.guild;
+    const name = (hubInfo && hubInfo.servers && (hubInfo.servers.find((x) => x.id === server) || {}).name) || "our Minecraft server";
+    const message = h("textarea", { rows: 3, maxlength: 1800, "aria-label": "Message" },
+      `${name} is up! Open the link, run the download, and it sets up Minecraft with everything you need to join.`);
+    const useInternet = h("input", { type: "checkbox", checked: !!links.internet, disabled: !links.internet });
+    const useLocal = h("input", { type: "checkbox", checked: !links.internet && !!links.local, disabled: !links.local });
+    const post = h("button", { class: "btn primary", onclick: async () => {
+      const chosen = [useInternet.checked ? "internet" : null, useLocal.checked ? "local" : null].filter(Boolean);
+      if (!chanSel.value) { toast("Pick a channel", true); return; }
+      if (!chosen.length) { toast("Pick at least one link to post", true); return; }
+      post.disabled = true;
+      try {
+        await api("/api/client/discord", { method: "POST", body: { guild: guildSel.value, channel: chanSel.value, message: message.value, links: chosen } });
+        toast(`Posted to #${chanSel.selectedOptions[0].textContent.split("#").pop().replace(/ \(.*$/, "")}`);
+        close();
+      } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, true); post.disabled = false; }
+    } }, "Post");
+    fill(body,
+      h("div", { class: "grid" }, h("label", {}, "Discord server", guildSel), h("label", {}, "Channel", chanSel)),
+      h("label", { class: "mt-s" }, "Message", message),
+      h("div", { class: "mt-s" },
+        h("label", { class: "row" }, useInternet, h("span", {}, "Internet link", links.internet ? "" : " (use your public IP on the Friends page first)")),
+        h("label", { class: "row" }, useLocal, h("span", {}, "Local link (only works on this computer's network)"))),
+      h("div", { class: "row mt" }, post, h("span", { class: "muted small grow" }, `Posting as ${info.bot.name}.`)),
+      addBot);
+    loadChannels();
+  };
+
+  const load = async () => {
+    fill(body, h("p", { class: "muted" }, "Loading…"));
+    const info = await api("/api/hub/discord").catch((e) => { fill(body, h("div", { class: "notice bad" }, e.message)); return null; });
+    if (!info) return;
+    if (info.set) pick(info); else askToken(info);
+  };
+  load();
+}
+
 // ------------------------------------------------------------ try before you buy
 // "Test these mods": an instant check (builds for this version, declared conflicts), then,
 // where a server can be started, a test boot in a throwaway server; if that fails, an
@@ -1563,19 +2034,54 @@ function testButton(opts) {
   return h("button", { type: "button", class: "btn", onclick: () => openTester(opts) }, "🧪 Test these mods");
 }
 function openTester(opts) {
-  if ($("#tester")) return;
-  const body = h("div", {}, h("p", { class: "muted" }, "Checking…"));
+  if ($("#tester")) { $("#tester").classList.remove("hidden"); return; }
+  const body = h("div", {});
   let poll = null, running = null, quickResult = null;
+  const clock = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  // What it's doing right now: in the dialog, and in a toast that stays while the dialog is hidden.
+  const stepText = h("span", { class: "grow" }, "Starting…");
+  const bar = h("div", { class: "bar" }, h("span", { class: "bar-fill" }));
+  const toastText = h("span", { class: "small" }, "Starting…");
+  const toastBar = h("div", { class: "bar" }, h("span", { class: "bar-fill" }));
+  const setStep = (text, fraction = null) => {
+    stepText.textContent = toastText.textContent = text;
+    for (const b of [bar, toastBar]) {
+      b.classList.toggle("indeterminate", fraction === null);
+      b.firstChild.style.width = fraction === null ? "" : `${Math.round(fraction * 100)}%`;
+    }
+  };
+  const hide = () => $("#tester").classList.add("hidden");
+  const show = () => $("#tester").classList.remove("hidden");
   const close = () => {
     if (running && !confirm("Stop the test?")) return;
     if (running) api("/api/hub/trial/cancel", { method: "POST", body: { id: running } }).catch(() => {});
     clearInterval(poll);
     $("#tester").remove();
+    closeToast("tester-toast");
+  };
+  const finished = (text) => {
+    closeToast("tester-toast");
+    if (!$("#tester") || !$("#tester").classList.contains("hidden")) return;
+    stickyToast("tester-toast", [h("strong", {}, "Mod test finished"), h("span", { class: "small" }, text),
+      h("div", { class: "row mt-s" }, h("button", { class: "btn small primary", onclick: () => { closeToast("tester-toast"); show(); } }, "See the results"),
+        h("button", { class: "btn small ghost", onclick: close }, "Close"))]);
   };
   const box = h("div", { class: "modal tester" },
-    h("div", { class: "row" }, h("h2", { id: "tester-title", class: "grow" }, "Test these mods"), h("button", { class: "btn ghost small", onclick: close }, "Close")),
+    h("div", { class: "row" }, h("h2", { id: "tester-title", class: "grow" }, "Test these mods"),
+      h("button", { class: "btn ghost small", title: "The test keeps going; its progress stays in a message at the bottom", onclick: hide }, "Keep working"),
+      h("button", { class: "btn ghost small", onclick: close }, "Close")),
+    h("div", { class: "tester-step" }, h("div", { class: "row" }, h("span", { class: "spinner" }), stepText,
+      h("span", { class: "muted small tester-time" })), bar),
     body);
   document.body.append(h("div", { class: "modal-backdrop", id: "tester", role: "dialog", "aria-modal": "true", "aria-labelledby": "tester-title" }, box));
+  const stepBox = box.querySelector(".tester-step");
+  const idle = () => stepBox.classList.add("hidden");
+  const busy = () => stepBox.classList.remove("hidden");
+  stickyToast("tester-toast", [h("strong", {}, "Testing mods"),
+    h("span", { class: "small" }, "This can take a long time: looking the mods up takes seconds, but a test boot takes a few minutes, and finding which mods break it can take much longer. You can keep using mcsm meanwhile."),
+    toastText, toastBar,
+    h("div", { class: "row mt-s" }, h("button", { class: "btn small", onclick: show }, "Show"),
+      h("button", { class: "btn small ghost", onclick: hide }, "Hide the dialog"))]);
 
   const issues = (r) => [
     ...r.conflicts.map((c) => h("li", {}, h("strong", {}, c.mods.join(" + ")), h("div", { class: "small muted" }, c.reason))),
@@ -1583,13 +2089,14 @@ function openTester(opts) {
 
   const runTrial = async (bisect) => {
     const log = h("pre", { class: "log" });
-    const head = h("div", { class: "row" }, h("span", { class: "spinner" }),
-      h("span", { class: "grow" }, bisect ? "Finding which mods don't work together…" : "Test boot: installing the mods in a throwaway server and starting it…"),
-      h("span", { class: "muted small tester-time" }));
-    fill(body, head, log, h("p", { class: "muted small" }, "Your servers aren't touched. The test server is deleted afterwards."));
+    busy();
+    setStep(bisect ? "Finding which mods don't work together…" : "Test boot: installing the mods in a throwaway server and starting it…");
+    fill(body, log, h("p", { class: "muted small" }, "Your servers aren't touched. The test server is deleted afterwards."));
+    if (!$("#tester-toast")) stickyToast("tester-toast", [h("strong", {}, "Testing mods"), toastText, toastBar,
+      h("div", { class: "row mt-s" }, h("button", { class: "btn small", onclick: show }, "Show"))]);
     let r;
     try { r = await api("/api/hub/trial", { method: "POST", body: { ...opts.trial, bisect } }); }
-    catch (e) { fill(body, h("div", { class: "notice bad" }, e.message)); return; }
+    catch (e) { idle(); fill(body, h("div", { class: "notice bad" }, e.message)); finished(e.message); return; }
     running = r.id;
     let seen = 0;
     poll = setInterval(async () => {
@@ -1598,11 +2105,17 @@ function openTester(opts) {
       seen = t.next;
       log.textContent += t.log.map((x) => x + "\n").join("");
       log.scrollTop = log.scrollHeight;
-      head.querySelector(".tester-time").textContent = `${Math.floor(t.elapsed / 60)}:${String(t.elapsed % 60).padStart(2, "0")}`;
+      box.querySelector(".tester-time").textContent = clock(t.elapsed);
+      const last = t.log.filter((x) => x.startsWith("Test ")).pop();
+      if (last) setStep(last + (bisect ? ` (${t.tests} test${t.tests === 1 ? "" : "s"} so far)` : ""));
       if (t.state === "running") return;
       clearInterval(poll);
       running = null;
+      idle();
       report(t, log.textContent);
+      const res = t.result || {};
+      finished(t.state === "cancelled" ? "The test was stopped." : res.ok ? "✓ The server started with these mods."
+        : res.bisected ? `${(res.outliers || []).length} mod(s) don't work.` : "✗ The server didn't start.");
     }, 1500);
   };
 
@@ -1642,9 +2155,26 @@ function openTester(opts) {
       details);
   };
 
+  // The quick check runs in the background too, so it can say which mod it's looking at.
+  const quick = async () => {
+    const [path, payload] = opts.check;
+    setStep("Looking the mods up on Modrinth…");
+    const started = await api(path, { method: "POST", body: { ...payload, background: true } });
+    for (;;) {
+      await new Promise((ok) => setTimeout(ok, 500));
+      if (!$("#tester")) throw new Error("closed");
+      const j = await api(`/api/hub/mods/check?id=${started.id}`);
+      box.querySelector(".tester-time").textContent = clock(j.elapsed);
+      if (j.total) setStep(`Checked ${j.current} (${j.done} of ${j.total})`, j.done / j.total);
+      if (j.state === "done") return j.result;
+      if (j.state === "failed") throw new Error(j.error || "the check failed");
+    }
+  };
+
   (async () => {
     let r;
-    try { r = await opts.quick(); } catch (e) { fill(body, h("div", { class: "notice bad" }, e.message)); return; }
+    try { r = await quick(); } catch (e) { idle(); fill(body, h("div", { class: "notice bad" }, e.message)); finished(e.message); return; }
+    idle();
     quickResult = r;
     const found = issues(r);
     fill(body,
@@ -1656,6 +2186,9 @@ function openTester(opts) {
         h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => runTrial(false) }, "Start a test boot"))]
         : h("p", { class: "muted small mt" }, "These mods run on players' computers, and a game can't be started here to try them, so this checks versions and known conflicts. " +
           "The server's own mods can be test-booted on its Mods page."));
+    const summary = found.length ? `Found ${found.length} problem(s).` : "✓ No known problems.";
+    if (opts.trial) setStep(`${summary} Next: a test boot, which takes a few minutes.`, 1);  // the toast stays till you're done
+    else finished(summary);
   })();
 }
 
@@ -1988,13 +2521,12 @@ views.mcsm = () => {
         h("span", { class: "grow" }, a.managed ? "Password set in mcsm.toml ([web] password)" : a.default ? "Default password (PASSWORD) — please change it" : label),
         a.managed ? null : h("button", { class: "btn", onclick: () => showSecurity(false) }, "Change"))));
     if (!hb || hb.single) { fill(network); return; }
-    const box = h("input", { type: "checkbox", checked: hb.network_access, onchange: async (e) => {
-      const r = await act(() => api("/api/hub/network", { method: "POST", body: { enabled: e.target.checked } }));
-      if (r) toast(r.restart_needed ? "Saved. Close and reopen mcsm for this to take effect." : "Saved");
-    } });
-    fill(network, card("Network access",
-      h("label", { class: "row" }, box, h("span", {}, "Let other devices on my network (like my phone) open this control panel")),
-      h("p", { class: "muted small" }, `Servers are kept in ${hb.home}. This applies the next time mcsm starts.`)));
+    fill(network, card("Remote access & phones",
+      h("p", { class: "muted small" }, hb.network_access
+        ? "Other devices can open this control panel (with your strong password), and paired phones get the everyday controls."
+        : "Only this computer can open the control panel. Turn on remote access to use it from a phone or another computer."),
+      h("div", { class: "row" }, h("button", { class: "btn", onclick: openRemoteAccess }, "🔒 Remote access & phones…")),
+      h("p", { class: "muted small" }, `Servers are kept in ${hb.home}.`)));
   };
   const about = h("div", { class: "mt" });
   const loadAbout = async () => {
@@ -2030,7 +2562,41 @@ views.mcsm = () => {
           x.url.startsWith("http") ? h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" }, "terms ↗") : h("span", { class: "muted small" }, x.url)))))),
     );
   };
-  fill($("#main"), security, network, sharing, about);
+  // CurseForge's API key (for CurseForge mods and searching CurseForge)
+  const cf = h("div", { class: "mb" });
+  const renderCf = async () => {
+    if (hubInfo && hubInfo.single) return;
+    const r = await api("/api/hub/curseforge").catch(() => null);
+    if (!r) return;
+    const input = h("input", { type: "password", placeholder: r.own ? "•••••••• (saved)" : "Paste your CurseForge API key", autocomplete: "off", "aria-label": "CurseForge API key" });
+    const saveKey = (key, msg) => act(() => api("/api/hub/curseforge", { method: "POST", body: { key } }), msg).then(renderCf);
+    fill(cf, card("CurseForge",
+      h("p", { class: "muted small" }, "Needed to search CurseForge and to use CurseForge mods (Modrinth works without it). Get a free key at ",
+        h("a", { href: "https://console.curseforge.com/", target: "_blank", rel: "noopener noreferrer" }, "console.curseforge.com ↗"), " → API keys."),
+      h("div", { class: "row" }, input,
+        h("button", { class: "btn primary", onclick: () => input.value.trim() && saveKey(input.value, "CurseForge key saved") }, r.own ? "Replace key" : "Save key"),
+        r.own ? h("button", { class: "btn ghost", onclick: () => confirm("Remove the CurseForge key?") && saveKey("", "CurseForge key removed") }, "Remove") : null),
+      r.own ? h("p", { class: "small ok-text" }, "✓ Your own key is saved.")
+        : r.builtin ? h("p", { class: "small ok-text" }, "✓ This version of mcsm has CurseForge built in. You only need your own key if CurseForge starts refusing requests.")
+        : null));
+  };
+  renderCf();
+  // The Discord bot that posts invites (set up from a server's Friends page)
+  const dc = h("div", { class: "mb" });
+  const renderDc = async () => {
+    if (hubInfo && hubInfo.single) return;
+    const r = await api("/api/hub/discord").catch(() => null);
+    if (!r) return;
+    fill(dc, card("Discord",
+      h("p", { class: "muted small" }, "Post your friends' invite to a Discord channel from a server's Friends page (“Post to Discord”)."),
+      r.set ? h("div", { class: "row" }, h("span", { class: "grow small ok-text" }, `✓ Connected as ${r.bot ? r.bot.name : "your bot"}.`),
+        r.invite_url ? h("a", { class: "btn small", href: r.invite_url, target: "_blank", rel: "noopener noreferrer" }, "Add it to another Discord server ↗") : null,
+        h("button", { class: "btn ghost small", onclick: () => confirm("Disconnect the Discord bot? (It stays in your Discord servers until you remove it there.)") &&
+          act(() => api("/api/hub/discord", { method: "POST", body: { token: "" } }), "Discord bot disconnected").then(renderDc) }, "Disconnect"))
+        : h("p", { class: "small" }, "Not set up. Use “Post to Discord” on a server's Friends page to connect a bot.")));
+  };
+  renderDc();
+  fill($("#main"), security, network, sharing, cf, dc, about);
   renderSecurity(hubInfo);
   renderSharing(hubInfo);
   loadAbout();
@@ -2049,32 +2615,47 @@ const setupState = { friends: false, loader: null, minecraft: "latest", mods: ne
 // the mods that need it (after asking).
 const setupModKey = (m) => (m.source === "curseforge" ? `curseforge:${m.id}` : m.slug || m.id);
 function setupChanged() { if (setupState.onChange) setupState.onChange(); }
+const earlyChannels = () => Object.fromEntries([...setupState.mods].filter(([, m]) => m.channel).map(([k, m]) => [k, m.channel]));
 function setupModVersion() {
   const st = setupState;
   return st.minecraft === "latest" ? (st.newest || "") : st.minecraft;
 }
-async function setupAddMod(key, name) {
+// Mods with only alpha/beta builds for this version: shown on request, added after a warning.
+const EARLY_WARNING = "Early builds (alpha and beta) are unfinished: they can crash the server, break other mods " +
+  "or damage your world. Back up before you rely on them.";
+const channelTag = (c) => (c && c !== "release" ? h("span", { class: "tag warn", title: EARLY_WARNING }, `${c} only`) : null);
+function confirmEarly(mods) {
+  const early = mods.filter((m) => m.channel && m.channel !== "release");
+  return !early.length || confirm(`${early.map((m) => m.name).join(", ")} ${early.length === 1 ? "only has" : "only have"} ` +
+    `alpha or beta builds for this Minecraft version.\n\n${EARLY_WARNING}\n\nAdd ${early.length === 1 ? "it" : "them"} anyway?`);
+}
+async function setupAddMod(key, name, channel = null) {
   const st = setupState;
   const e = st.mods.get(key);
-  if (e) e.explicit = true;
-  else st.mods.set(key, { name, required: true, explicit: true, by: new Set(), bad: "" });
+  if (e) { e.explicit = true; if (channel && channel !== "release") e.channel = channel; }
+  else st.mods.set(key, { name, required: true, explicit: true, by: new Set(), bad: "", channel: channel && channel !== "release" ? channel : null });
   setupChanged();
   await setupCheckMod(key);
 }
-async function setupCheckMod(key) {
+async function setupCheckMod(key, quiet = false) {
   const st = setupState;
   const e = st.mods.get(key);
   if (!e || !st.loader || key.startsWith("curseforge:")) return;
   const v = setupModVersion();
   const r = await api(`/api/hub/mods/requires?id=${encodeURIComponent(key)}&loader=${encodeURIComponent(st.loader)}` +
-    (v ? `&version=${encodeURIComponent(v)}` : "")).catch(() => null);
+    (v ? `&version=${encodeURIComponent(v)}` : "") + (e.channel ? `&channel=${e.channel}` : "")).catch(() => null);
   if (!r || st.mods.get(key) !== e) return;
   e.name = r.project.name;
   e.bad = r.compatible ? "" : r.reason;
+  const added = [];
   for (const d of r.deps) {
     const dk = d.slug || d.id;
-    if (!st.mods.has(dk)) st.mods.set(dk, { name: d.name, required: e.required, explicit: false, by: new Set(), bad: "" });
+    if (!st.mods.has(dk)) { st.mods.set(dk, { name: d.name, required: e.required, explicit: false, by: new Set(), bad: "", channel: e.channel }); added.push(d); }
     st.mods.get(dk).by.add(key);
+  }
+  if (added.length && !quiet) {
+    toast(`Added ${added.map((d) => d.name).join(", ")} because ${added.length === 1 ? "it's" : "they're"} needed by ` +
+      [...new Set(added.map((d) => d.needed_by))].join(" and ") + ".");
   }
   setupChanged();
 }
@@ -2085,21 +2666,55 @@ function setupRemoveMod(key) {
   const needers = [...e.by].filter((k) => st.mods.has(k));
   if (needers.length && !confirm(`${e.name} is needed by ${needers.map((k) => st.mods.get(k).name).join(", ")}. ` +
     `Remove ${needers.length === 1 ? "that" : "those"} too?`)) return;
+  const stays = new Map();  // dependency name -> the mods that still need it
   const drop = (k) => {
     const x = st.mods.get(k);
     if (!x) return;
     st.mods.delete(k);
+    stays.delete(x.name);
     for (const n of x.by) drop(n);  // what needs it goes with it
-    for (const [ok, o] of [...st.mods]) if (o.by.delete(k) && !o.explicit && o.by.size === 0) drop(ok);  // unneeded deps
+    for (const [ok, o] of [...st.mods]) {
+      if (!o.by.delete(k)) continue;
+      if (!o.explicit && o.by.size === 0) drop(ok);  // nothing needs it any more
+      else if (!o.explicit) stays.set(o.name, [...o.by].map((b) => (st.mods.get(b) || {}).name).filter(Boolean));
+    }
   };
   drop(key);
+  for (const [name, needers] of stays) {
+    if (needers.length) toast(`${name} stays: ${needers.join(" and ")} ${needers.length === 1 ? "needs" : "need"} it too.`);
+  }
   setupChanged();
 }
 function setupRecheckMods() {
   // The Minecraft version or server type changed: dependencies and compatibility may differ.
   const st = setupState;
   for (const [k, e] of [...st.mods]) { if (!e.explicit) st.mods.delete(k); else e.by.clear(); }
-  for (const k of st.mods.keys()) setupCheckMod(k);
+  for (const k of st.mods.keys()) setupCheckMod(k, true);
+}
+
+// A failed job's message, with where its details were written (and a button to open that folder).
+function failureText(message, sid) {
+  const [what, where] = String(message || "").split("\nThe details are in ");
+  if (!where) return what;
+  return h("span", {}, what, h("div", { class: "small mt-s" }, "The details are in ", h("code", { class: "path" }, where),
+    hubInfo && hubInfo.local && sid ? [" ", h("button", { type: "button", class: "link-btn", onclick: () =>
+      api(`/api/servers/${sid}/open`, { method: "POST", body: { what: "reports" } }).catch((e) => toast(e.message, true)) }, "Open the folder")] : null));
+}
+
+// Aikar's flags: tuned garbage collection so big heaps don't cause lag spikes. Offered when a
+// server gets more than 16 GB.
+const AIKAR_ABOVE_GB = 16;
+const memoryGb = (text) => { const m = /^(\d+)([MG])$/i.exec(String(text || "").trim()); return m ? Number(m[1]) / (m[2].toUpperCase() === "M" ? 1024 : 1) : 0; };
+function offerAikar(gb, accept, decline = () => {}) {
+  closeToast("aikar-offer");
+  stickyToast("aikar-offer", [
+    h("strong", {}, `${gb} GB: use Aikar's flags?`),
+    h("span", { class: "small" }, "With this much memory, Java's default garbage collection can pause the server for long enough to cause lag spikes. " +
+      "Aikar's flags are widely used settings that keep those pauses short. Recommended."),
+    h("div", { class: "row mt-s" },
+      h("button", { class: "btn small primary", onclick: () => { closeToast("aikar-offer"); accept(); } }, "Use them"),
+      h("button", { class: "btn small ghost", onclick: () => { closeToast("aikar-offer"); decline(); } }, "No thanks"),
+      h("a", { class: "small", href: "https://docs.papermc.io/paper/aikars-flags", target: "_blank", rel: "noopener noreferrer" }, "What are they? ↗"))]);
 }
 
 // ------------------------------------------------------ setup progress dock
@@ -2127,7 +2742,7 @@ function dockSetup(sid, name) {
     if (currentName === "friends" && server === sid) route();  // drop the "still installing" note
     el.classList.add(st.last_job.ok ? "done" : "failed");
     fill(el, h("strong", {}, st.last_job.ok ? `✓ ${name} is ready` : `${name}: setup didn't finish`),
-      h("span", { class: "grow dock-msg" }, st.last_job.ok ? "Press Start when you want to play." : st.last_job.message),
+      h("span", { class: "grow dock-msg" }, st.last_job.ok ? "Press Start when you want to play." : failureText(st.last_job.message, sid)),
       h("a", { class: "btn small primary", href: `#s/${sid}/${st.last_job.ok ? "dashboard" : "setup"}`, onclick: undock }, st.last_job.ok ? "Open" : "See why"),
       h("button", { class: "btn small ghost", "aria-label": "Close", onclick: undock }, "✕"));
   };
@@ -2146,7 +2761,6 @@ views.setup = () => {
   let opts = null;
   const st = setupState;
   const isNew = !server;  // #new: a brand-new server; #s/<id>/setup: finish one that exists
-  const topMods = new Map();  // loader -> the popular list, fetched once
   let propDefaults = {};
 
   const field = (label, input, hint) => h("label", {}, label, input, hint ? h("span", { class: "muted small" }, hint) : null);
@@ -2161,7 +2775,8 @@ views.setup = () => {
       h("h2", { class: "view-title" }, isNew ? "Create a new server" : "Set up your server"),
       h("p", { class: "muted" }, "Choose what kind of server you want. mcsm downloads everything it needs (Minecraft, the mod loader, mods and Java) and keeps it up to date from then on. " +
         (opts.network_option ? "" : "It won't start until you press Start.")),
-      error ? h("div", { class: "notice bad" }, h("strong", {}, "Setup didn't finish: "), error, h("div", { class: "small mt-s" }, "Change your choices below and try again.")) : null,
+      error ? h("div", { class: "notice bad" }, h("strong", {}, "Setup didn't finish: "), failureText(error, server),
+        h("div", { class: "small mt-s" }, "Change your choices below and try again.")) : null,
     ];
     if (!st.loader) {  // one step at a time: the rest depends on the server type
       fill(main, intro, card("1. Server type", loaderCards,
@@ -2191,7 +2806,6 @@ views.setup = () => {
     version.disabled = !!st.modpack;
 
     // Mods
-    const results = h("div");
     const selected = h("div");
     // Each picked mod, with the mods it needs listed under it.
     const modRows = () => {
@@ -2199,11 +2813,11 @@ views.setup = () => {
       const shown = new Set();
       const row = (key, depth) => {
         const m = st.mods.get(key);
-        if (!m || shown.has(key)) return;
+        if (!m || (depth === 0 && shown.has(key)) || depth > 6) return;  // (mods that need each other)
         shown.add(key);
         const needers = [...m.by].filter((k) => st.mods.has(k)).map((k) => st.mods.get(k).name);
         rows.push(h("li", { class: depth ? "dep" : null },
-          h("div", { class: "grow" }, depth ? "↳ " : null, h("strong", {}, m.name),
+          h("div", { class: "grow" }, depth ? "↳ " : null, h("strong", {}, m.name), depth ? null : channelTag(m.channel),
             key.startsWith("curseforge:") ? h("span", { class: "tag" }, "CurseForge") : null,
             !m.explicit || needers.length ? h("span", { class: "tag" }, `needed by ${needers.join(", ")}`) : null,
             m.bad ? h("div", { class: "small bad-text" }, m.bad) : null),
@@ -2222,33 +2836,10 @@ views.setup = () => {
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.localMods = st.localMods.filter((x) => x !== m); renderSelected(); } }, "Remove"))),
       modRows())
       : h("p", { class: "empty" }, st.modpack ? "No extra mods. The modpack's own mods are added when the server is created."
-        : "No mods yet. Search above, or leave empty for an unmodded server."));
-    const q = h("input", { type: "search", placeholder: "Search Modrinth, e.g. lithium, create, farmer's delight" });
-    let timer;
+        : "Nothing yet. Download mods or add files from this computer above, or leave it empty for an unmodded server."));
     const loaderLabel = (opts.loaders.find((l) => l.name === st.loader) || {}).label || st.loader;
-    const search = async () => {
-      const term = q.value.trim();
-      const mcv = setupModVersion();  // only mods with a build for the chosen Minecraft
-      const url = `${isNew ? "/api/hub" : "/api"}/mods/search?loader=${encodeURIComponent(st.loader)}&version=${encodeURIComponent(mcv)}&` +
-        (term ? `q=${encodeURIComponent(term)}` : "top=1");
-      const key = st.loader + "|" + mcv + "|" + term;
-      const r = term || !topMods.has(key)
-        ? await api(url).catch((e) => { toast(e.message, true); return null; }) : topMods.get(key);
-      if (!r || q.value.trim() !== term) return;  // a newer search is on its way
-      if (!term) topMods.set(key, r);
-      fill(results, term ? null : h("h3", { class: "mt-s" }, `Most popular ${loaderLabel} mods` + (mcv ? ` for Minecraft ${mcv}` : "")),
-        mcv ? h("p", { class: "muted small" }, `Only mods that work on Minecraft ${mcv} are shown` +
-          (st.minecraft === "latest" ? " (the newest release; pick a version above to see mods for another)." : ".")) : null,
-        r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
-        m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
-        h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
-        st.mods.has(m.slug) ? h("span", { class: "tag ok" }, "added")
-          : h("button", { type: "button", class: "btn small primary", onclick: () => { setupAddMod(m.slug, m.name); search(); } }, "Add"),
-      )) : [h("p", { class: "empty" }, `No ${loaderLabel} server mods found` + (mcv ? ` for Minecraft ${mcv}.` : "."))]);
-    };
-    q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
+    const plugins = st.loader === "paper";  // Paper: server plugins rather than mods
     renderSelected();
-    if (st.loader && opts.loaders.find((l) => l.name === st.loader).mods) search();  // the popular list
     // Three ways to add mods: files on this computer, the mod browser window, or a whole modpack.
     const picker = h("input", { type: "file", multiple: true, accept: ".jar", class: "hidden" });
     picker.addEventListener("change", async () => {
@@ -2264,8 +2855,8 @@ views.setup = () => {
       h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
         h("span", { class: "small muted" }, ".jar files on this computer")),
       h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: "setup", loader: st.loader, version: setupModVersion() }) },
-        "🔎 Download mods", h("span", { class: "small muted" }, "Browse Modrinth and CurseForge")),
-      h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup", loader: st.modpack ? "" : st.loader }) },
+        plugins ? "🔎 Download plugins" : "🔎 Download mods", h("span", { class: "small muted" }, plugins ? "Browse Modrinth" : "Browse Modrinth and CurseForge")),
+      plugins ? null : h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup", loader: st.modpack ? "" : st.loader }) },
         "📦 Modpacks", h("span", { class: "small muted" }, "A ready-made pack of mods")),
       picker);
     const packCard = st.modpack ? h("div", { class: "notice mt-s pack" },
@@ -2273,21 +2864,26 @@ views.setup = () => {
       h("div", { class: "grow" }, h("strong", {}, st.modpack.name), " ", h("span", { class: "tag" }, st.modpack.version || ""),
         h("div", { class: "small muted" }, `Minecraft ${st.minecraft}, ${loaderLabel}. The pack decides the version and server type; its mods are installed and kept up to date.`)),
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.modpack = null; st.minecraft = "latest"; renderForm(); } }, "Remove modpack")) : null;
-    const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card("3. Mods",
-      sources, packCard, h("h3", { class: "mt" }, "Quick add"), q, results, h("h3", { class: "mt" }, "Your mods"), selected,
+    const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card(plugins ? "3. Plugins" : "3. Mods",
+      sources, packCard, h("h3", { class: "mt" }, plugins ? "Your plugins" : "Your mods"), selected,
       h("div", { class: "row mt-s" }, testButton({
-        quick: () => api("/api/hub/mods/check", { method: "POST", body: { loader: st.loader, minecraft: setupModVersion(),
-          mods: [...st.mods].filter(([k, m]) => m.explicit && !k.startsWith("curseforge:")).map(([k]) => k) } }),
-        trial: { loader: st.loader, minecraft: st.minecraft, mods: [...st.mods].filter(([, m]) => m.explicit).map(([k]) => k) },
+        check: ["/api/hub/mods/check", { loader: st.loader, minecraft: setupModVersion(),
+          mods: [...st.mods].filter(([k, m]) => m.explicit && !k.startsWith("curseforge:")).map(([k]) => k), channels: earlyChannels() }],
+        trial: { loader: st.loader, minecraft: st.minecraft, mods: [...st.mods].filter(([, m]) => m.explicit).map(([k]) => k), channels: earlyChannels() },
         keepWorking: (res) => { for (const o of res.outliers) setupRemoveMod(o.source === "curseforge" ? `curseforge:${o.id}` : o.id); },
       }), h("span", { class: "muted small" }, "Check that these mods work together before creating the server.")),
-      st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null) : null;
+      st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null,
+      plugins ? h("p", { class: "muted small" }, "Paper runs server plugins (Paper, Spigot and Bukkit ones) from its plugins folder. Players join with plain Minecraft: plugins don't need anything on their side.") : null) : null;
 
     // Settings
     const inp = (key, attrs = {}) => h("input", { value: st[key], ...attrs, oninput: (e) => { st[key] = attrs.type === "number" ? Number(e.target.value) : e.target.value; } });
     const sel = (key, choices) => { const el = h("select", { onchange: (e) => { st[key] = e.target.value; } }, choices.map((c) => h("option", { value: c }, c[0].toUpperCase() + c.slice(1)))); el.value = st[key]; return el; };
     const ram = opts.total_ram_gb || 0;
-    const mem = h("select", { onchange: (e) => { st.memory_gb = Number(e.target.value); renderForm(); } },
+    const mem = h("select", { onchange: (e) => {
+      st.memory_gb = Number(e.target.value);
+      if (st.memory_gb > AIKAR_ABOVE_GB && !st.aikar) offerAikar(st.memory_gb, () => { st.aikar = true; renderForm(); }, () => { st.aikar = false; });
+      renderForm();
+    } },
       Array.from({ length: 32 }, (_, i) => i + 1).map((g) => h("option", { value: String(g) },
         `${g} GB${g === opts.memory_gb ? " (suggested)" : ""}${ram && g > ram ? " (more than this computer has)" : ""}`)));
     mem.value = String(st.memory_gb);
@@ -2356,14 +2952,16 @@ views.setup = () => {
       const mods = [...st.mods].filter(([, m]) => m.explicit && m.required).map(([slug]) => slug);
       const optional = [...st.mods].filter(([, m]) => m.explicit && !m.required).map(([slug]) => slug);
       const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
+        aikar_flags: !!st.aikar && st.memory_gb > AIKAR_ABOVE_GB,
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
         network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults),
-        friends: !!st.friends, local_mods: st.localMods.map((m) => m.id), world: st.world ? st.world.world : "" };
+        friends: !!st.friends, local_mods: st.localMods.map((m) => m.id), world: st.world ? st.world.world : "",
+        mod_channels: Object.fromEntries([...st.mods].filter(([, m]) => m.explicit && m.channel).map(([k, m]) => [k, m.channel])) };
       if (st.modpack) body.modpack_version = st.modpack.version_id;
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));
         if (r) {
-          setupState.offerFriends = body.friends ? { sid: r.id, name: body.motd } : null;
+          setupState.offerFriends = { sid: r.id, name: body.motd, friends: !!body.friends };  // slide the progress down
           Object.assign(setupState, { friends: false, loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
             prefilled: false, properties: null, advancedOpen: false, modpack: null, localMods: [], minecraft: "latest", world: null });
           location.hash = `#s/${r.id}/setup`;
@@ -2377,7 +2975,8 @@ views.setup = () => {
     const advanced = h("details", { class: "card advanced", open: st.advancedOpen },
       h("summary", {}, "Advanced settings (optional)"),
       h("p", { class: "muted small" }, "The rest of Minecraft's server settings: PvP, spawn protection, view distance and more. The defaults suit most servers, and you can change these later in the server's Settings."),
-      propsEditor(opts.properties_schema, st.properties));
+      // The World card above covers the seed, type, structures and hardcore.
+      propsEditor(opts.properties_schema.filter((p) => !WORLD_CARD_PROPS.includes(p.key)), st.properties));
     advanced.addEventListener("toggle", () => { st.advancedOpen = advanced.open; });
 
     fill(main, intro,
@@ -2395,9 +2994,13 @@ views.setup = () => {
             field("Max players", inp("max_players", { type: "number", min: 1, max: 1000 })),
             field("Difficulty", sel("difficulty", opts.difficulties)),
             field("Game mode", sel("gamemode", opts.gamemodes)),
-            field("Memory", mem, ram ? (st.memory_gb > ram - 2 ? `This computer has ${ram} GB. Leave some for Windows and other programs, or the server may crash.` : `This computer has ${ram} GB.`) : null),
+            field("Memory", mem, [ram ? (st.memory_gb > ram - 2 ? `This computer has ${ram} GB. Leave some for Windows and other programs, or the server may crash.` : `This computer has ${ram} GB.`) : "",
+              st.aikar && st.memory_gb > AIKAR_ABOVE_GB ? " Aikar's flags: on (smoother garbage collection)." : ""].join("") || null),
             portField()),
-          opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null)),
+          opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null,
+          opts.network_option ? null : h("div", { class: "row mt" },
+            h("button", { type: "button", class: "btn", onclick: openRemoteAccess }, "🔒 Remote access…"),
+            h("span", { class: "muted small" }, "Manage your servers from your phone or another computer (needs a strong password).")))),
         h("div", { class: "mt" }, advanced),
         opts.network_option ? null : h("div", { class: "mt" }, card("Friends (optional)",
           h("label", { class: "row check-row" },
@@ -2419,33 +3022,49 @@ views.setup = () => {
       h("h2", { class: "view-title" }, "Creating your server…"),
       h("div", { class: "notice" }, h("div", { class: "row" }, h("span", { class: "spinner" }),
         h("span", { class: "grow" }, "Downloading Java, the mod loader, Minecraft and your mods, then checking that the server starts. This usually takes a few minutes."))),
-      card("What's happening", events));
+      card("What's happening", events),
+      // While it installs: what friends outside your home will need (the lower part of the screen).
+      h("details", { class: "card mt router-help", open: true }, h("summary", {}, h("strong", {}, "While you wait: letting friends outside your home join")),
+        routerHelp({ port: (status && status.port) || st.port })));
     fill(main, panel);
     if (dock && dock.sid === server) undock();  // the full page is back
     const offer = st.offerFriends && st.offerFriends.sid === server ? st.offerFriends : null;
     if (offer) {
-      // Keep going at the bottom of the window, and meanwhile offer the friends' side.
+      // A new server: its progress slides down to the bottom of the window and keeps going
+      // there, so you can look around meanwhile (and, with friends ticked, set up their side).
       st.offerFriends = null;
       setTimeout(() => {
         if (currentName !== "setup" || server !== offer.sid) return;
         panel.classList.add("slide-away");
         setTimeout(() => {
           dockSetup(offer.sid, offer.name);
-          fill(main, h("div", { class: "empty mt-l" }, "Your server is installing: its progress is at the bottom of the window."));
-          stickyToast("friends-offer", [
+          fill(main, h("div", { class: "empty mt-l" }, "Your server is installing: its progress is at the bottom of the window.",
+            h("div", { class: "row mt-s center" },
+              h("button", { class: "btn small", onclick: () => { closeToast("friends-offer"); undock(); renderProgress(); } }, "Show the progress here"),
+              hubInfo && hubInfo.single ? null : h("a", { class: "btn small ghost", href: "#servers" }, "Your servers"))));
+          if (offer.friends) stickyToast("friends-offer", [
             h("strong", {}, "Set up your friends' download now?"),
             h("span", { class: "small" }, "While the server installs, choose the mods your friends get (a minimap, JEI, …)."),
             h("div", { class: "row mt-s" },
               h("button", { class: "btn small primary", onclick: () => { closeToast("friends-offer"); location.hash = `#s/${offer.sid}/friends`; } }, "Yes"),
-              h("button", { class: "btn small ghost", onclick: () => { closeToast("friends-offer"); undock(); renderProgress(); } }, "Not now"))]);
+              h("button", { class: "btn small ghost", onclick: () => closeToast("friends-offer") }, "Not now"))]);
         }, 650);
       }, 1800);
     }
+    let startedAt = null;  // only this setup's events, not an earlier attempt's
     every(1500, async () => {
+      if (!events.isConnected && seq) return;  // slid away (or shown again in a newer panel)
+      if (startedAt === null) {
+        const s = await api("/api/status").catch(() => null);
+        if (!s) return;
+        startedAt = s.job && s.job.started ? s.job.started - 1 : Date.now() / 1000 - 5;
+      }
       const r = await api(`/api/events?since=${seq}`).catch(() => null);
       if (!r) return;
       seq = r.last;
-      for (const e of r.events) events.prepend(h("div", { class: "ev " + e.level }, h("time", {}, fmtClock(e.time)), h("span", {}, e.message)));
+      for (const e of r.events.filter((x) => x.time >= startedAt)) {
+        events.prepend(h("div", { class: "ev " + e.level }, h("time", {}, fmtClock(e.time)), h("span", {}, e.message)));
+      }
     });
   };
 
@@ -2485,6 +3104,7 @@ views.setup = () => {
 };
 
 // ------------------------------------------------------------------- router
+const PHONE_VIEWS = ["dashboard", "players", "updates", "backups"];  // what a paired phone can use
 const SERVER_VIEWS = [["dashboard", "Dashboard"], ["console", "Console"], ["players", "Players"], ["updates", "Updates"],
   ["mods", "Mods"], ["friends", "Friends"], ["backups", "Backups"], ["java", "Java"], ["settings", "Settings"]];
 let currentName = null;
@@ -2499,23 +3119,26 @@ function renderNav() {
       hb.single ? null : a("#servers", "← All servers", false),
       h("div", { class: "nav-server" }, me ? me.name : server),
       pending ? a(link("setup"), "Setup", currentName === "setup")
-        : SERVER_VIEWS.map(([v, label]) => a(link(v), label, currentName === v,
+        : SERVER_VIEWS.filter(([v]) => !hb.device || PHONE_VIEWS.includes(v)).map(([v, label]) => a(link(v), label, currentName === v,
             v === "updates" ? h("span", { id: "nav-update-dot", class: "dot" + (me && me.update ? "" : " hidden") }) : null)),
     ] : [
       a("#servers", "Servers", currentName === "servers"),
-      hb.single ? null : a("#new", "New server", currentName === "new"),
+      hb.single || hb.device ? null : a("#new", "New server", currentName === "new"),
     ],
     h("div", { class: "nav-sep" }),
-    a("#mcsm", "mcsm settings", currentName === "mcsm"));
+    a("#help", "Help", currentName === "help"),
+    hb.device ? h("div", { class: "nav-server small", title: "A paired phone has the everyday controls only" }, `📱 ${hb.device} (limited)`)
+      : a("#mcsm", "mcsm settings", currentName === "mcsm"));
   const inServer = !!server;
   $(".server-id").classList.toggle("hidden", !inServer);
   $(".actions").classList.toggle("hidden", !inServer);
   $("#page-title").classList.toggle("hidden", inServer);
-  $("#page-title").textContent = { servers: "Your servers", new: "New server", mcsm: "mcsm settings" }[currentName] || "";
+  $("#page-title").textContent = { servers: "Your servers", new: "New server", mcsm: "mcsm settings", help: "Help" }[currentName] || "";
   if (!inServer) $("#job").classList.add("hidden");
 }
 
 function route() {
+  closeBrowser(true);
   const hash = (location.hash || "#servers").slice(1);
   document.body.classList.remove("browse-mode");
   if (hash.startsWith("browse")) {  // the mod browser window: no navigation around it
@@ -2532,7 +3155,7 @@ function route() {
     view = m[2] === "setup" || SERVER_VIEWS.some(([v]) => v === m[2]) ? m[2] : "dashboard";
   } else {
     server = null;
-    view = ["servers", "new", "mcsm"].includes(hash) ? hash : "servers";
+    view = ["servers", "new", "mcsm", "help"].includes(hash) ? hash : "servers";
   }
   if (server !== before) { status = null; lastJobSeen = null; }
   currentName = view;
@@ -2545,6 +3168,8 @@ function route() {
 window.addEventListener("hashchange", () => { if (!$("#app").classList.contains("hidden")) route(); });
 
 async function start() {
+  if (/^#pair=/.test(location.hash)) { showPairing(location.hash.slice(6)); return; }
+  if ($("#pairing")) $("#pairing").remove();
   try { hubInfo = await api("/api/hub"); } catch (_) { return; }
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");

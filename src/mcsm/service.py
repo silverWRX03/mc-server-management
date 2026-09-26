@@ -57,27 +57,36 @@ class Plan:
         return ["systemctl"] if self.system else ["systemctl", "--user"]
 
 
-def plan(root: Path, system: bool | None = None, home: Path | None = None) -> Plan:
+PANEL_UNIT = "mcsm.service"
+
+
+def plan(root: Path, system: bool | None = None, home: Path | None = None, panel: bool = False) -> Plan:
+    """The unit for one server (``mcsm run --web`` in ``root``), or with ``panel`` for the whole
+    control panel (``mcsm start``: every server in the mcsm folder ``root``)."""
     if system is None:
         system = getattr(os, "geteuid", lambda: -1)() == 0
-    name = unit_name(root)
+    name = PANEL_UNIT if panel else unit_name(root)
     if system:
         path = Path("/etc/systemd/system") / name
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or (home or Path.home()) / ".config")
         path = base / "systemd" / "user" / name
-    exec_start = " ".join(_quote(a) for a in [*mcsm_command(), "run", "--web"])
+    args = ["start", "--no-browser", "--web-host", "0.0.0.0"] if panel else ["run", "--web"]
+    exec_start = " ".join(_quote(a) for a in [*mcsm_command(), *args])
+    what = f"mcsm control panel and servers ({root})" if panel else f"Minecraft server managed by mcsm ({root})"
+    env = f"Environment=MCSM_HOME={_quote(str(root))}\n" if panel else ""
+    remove = "mcsm service uninstall --panel" if panel else "mcsm service uninstall"
     text = f"""\
-# Installed by `mcsm service install`. Remove with `mcsm service uninstall`.
+# Installed by `mcsm service install`. Remove with `{remove}`.
 [Unit]
-Description=Minecraft server managed by mcsm ({root})
+Description={what}
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory={root}
-ExecStart={exec_start}
+{env}ExecStart={exec_start}
 # mcsm stops the Minecraft server cleanly (saving the world) on SIGTERM.
 KillSignal=SIGTERM
 TimeoutStopSec=180
@@ -100,13 +109,17 @@ def _run(runner: Runner, args: list[str], check: bool = True) -> subprocess.Comp
     return proc
 
 
-def install(root: Path, runner: Runner = subprocess.run, system: bool | None = None) -> list[str]:
+def install(root: Path, runner: Runner = subprocess.run, system: bool | None = None, panel: bool = False) -> list[str]:
     """Write and start the service. Returns messages for the user."""
     if not supported():
-        raise ServiceError("services are set up with systemd, which this system doesn't have")
-    p = plan(root, system)
-    # The service can't answer a prompt, so record the acceptance for this server.
-    notice.accept(root, by="service")
+        raise ServiceError("services are set up with systemd, which this system doesn't have; "
+                           "run `mcsm start --no-browser` yourself (e.g. in tmux or screen) instead")
+    p = plan(root, system, panel=panel)
+    if not panel:
+        # The service can't answer a prompt, so record the acceptance for this server. (The
+        # control panel shows the notice at the first sign-in instead.)
+        notice.accept(root, by="service")
+    root.mkdir(parents=True, exist_ok=True)
     p.path.parent.mkdir(parents=True, exist_ok=True)
     p.path.write_text(p.text)
     _run(runner, [*p.systemctl, "daemon-reload"])
@@ -122,8 +135,8 @@ def install(root: Path, runner: Runner = subprocess.run, system: bool | None = N
     return messages
 
 
-def uninstall(root: Path, runner: Runner = subprocess.run, system: bool | None = None) -> str:
-    p = plan(root, system)
+def uninstall(root: Path, runner: Runner = subprocess.run, system: bool | None = None, panel: bool = False) -> str:
+    p = plan(root, system, panel=panel)
     if not p.path.exists():
         raise ServiceError(f"no service installed for this server ({p.path})")
     _run(runner, [*p.systemctl, "disable", "--now", p.name], check=False)
@@ -132,8 +145,8 @@ def uninstall(root: Path, runner: Runner = subprocess.run, system: bool | None =
     return f"removed {p.name}"
 
 
-def status(root: Path, runner: Runner = subprocess.run, system: bool | None = None) -> str:
-    p = plan(root, system)
+def status(root: Path, runner: Runner = subprocess.run, system: bool | None = None, panel: bool = False) -> str:
+    p = plan(root, system, panel=panel)
     if not p.path.exists():
         return f"no service installed for this server (would be {p.name})"
     return _run(runner, [*p.systemctl, "status", "--no-pager", p.name], check=False).stdout

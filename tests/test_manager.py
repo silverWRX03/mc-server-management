@@ -153,3 +153,17 @@ def test_import_existing_mods(make_config, http, modrinth):
     assert unknown == ["mystery.jar"]
     assert m.lock.minecraft == "1.21.1"
     assert m.unmanaged_jars() == ["mystery.jar"]
+
+
+def test_aikars_flags(make_config, http, modrinth):
+    from mcsm import config as configmod
+    from mcsm.jvmflags import aikar
+    cfg = make_config()
+    configmod.set_value(cfg.path, "server", "memory", '"20G"')
+    configmod.set_value(cfg.path, "server", "aikar_flags", "true")
+    m = manager(configmod.load(cfg.root), http, ["1.21.1"])
+    assert update(m).ok
+    argv = m.launch_argv(java="java")
+    assert argv[1:3] == ["-Xms20G", "-Xmx20G"] and "-XX:G1HeapRegionSize=16M" in argv  # the big-heap variant
+    assert argv.index("-XX:+UseG1GC") < argv.index("fake_server.py")
+    assert "-XX:G1HeapRegionSize=8M" in aikar(8 * 1024 ** 3)

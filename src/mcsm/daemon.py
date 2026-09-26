@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -19,7 +20,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from . import notice, selfupdate, setup as setupmod
+from . import __version__, notice, selfupdate, setup as setupmod
+from .http import HttpError
 from .manager import Manager, ManualDownloadRequired
 from .process import JOINED, LEFT, READY, ServerProcess
 
@@ -234,8 +236,12 @@ class Daemon:
             try:
                 message = fn(*args) or "done"
             except Exception as e:
-                ok, message = False, str(e)
-                log.error("%s failed: %s", name, e)
+                ok, message = False, e.friendly if isinstance(e, HttpError) else str(e)
+                report = self.failure_report(name, e)
+                log.error("%s failed: %s", name, message)
+                if report:
+                    message += f"\nThe details are in {report}"
+                    log.error("the details are in %s", report)
             finally:
                 self.last_job = {"name": name, "ok": ok, "message": message, "finished": time.time()}
                 self.job = None
@@ -384,6 +390,38 @@ class Daemon:
             self.stop_requested.wait(self.tick)
         return self.exit_code
 
+    def failure_report(self, what: str, error: BaseException | str, console: list[str] | None = None) -> Path | None:
+        """Write what went wrong (the error, recent activity, the server's last output) to a file
+        people can read or send to someone helping them; returns its path."""
+        import traceback
+        folder = self.m.config.state_dir / "logs"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            path = folder / f"{stamp}-{re.sub(r'[^a-z0-9]+', '-', what.lower()).strip('-') or 'failure'}.txt"
+            events, _ = self.events.since(0, 200)
+            lines = self.proc.tail(200) if console is None and self.proc else (console or [])
+            parts = [f"mcsm {__version__}: {what} failed at {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                     f"Server folder: {self.m.server_dir}", "", "Error:", str(error)]
+            if isinstance(error, BaseException):
+                parts += ["", "Where it happened:", "".join(traceback.format_exception(error)).rstrip()]
+            parts += ["", "Recent mcsm activity:"] + [f"  {time.strftime('%H:%M:%S', time.localtime(e['time']))} "
+                                                     f"{e.get('level', '')}: {e.get('message', '')}" for e in events]
+            if lines:
+                parts += ["", "The server's last output:"] + [f"  {x}" for x in lines]
+            server_log = self.m.server_dir / "logs" / "latest.log"
+            crashes = self.m.server_dir / "crash-reports"
+            parts += ["", f"Minecraft's own log: {server_log}" + ("" if server_log.exists() else " (not written yet)")]
+            if crashes.is_dir():
+                parts.append(f"Minecraft's crash reports: {crashes}")
+            path.write_text("\n".join(parts) + "\n", encoding="utf-8")
+            for old in sorted(folder.glob("*.txt"))[:-20]:  # keep the last 20
+                old.unlink(missing_ok=True)
+            return path
+        except OSError as e:
+            log.warning("couldn't write a failure report: %s", e)
+            return None
+
     def _handle_crash(self) -> None:
         now = time.monotonic()
         self.crashes.append(now)
@@ -395,6 +433,11 @@ class Daemon:
         if blame:  # say which mod it was, where people look
             log.error("%s", blame)
             tail = f"{blame}\n{tail}"
+        report = self.failure_report("server crash", f"the server stopped unexpectedly (exit {self.proc.returncode})"
+                                     + (f"\n{blame}" if blame else ""))
+        where = f"The details are in {report} (and Minecraft's own log, {self.m.server_dir / 'logs' / 'latest.log'})"
+        log.error("%s", where)
+        tail = f"{tail}\n{where}"
         self.proc.stopping = True  # handled; don't count this exit twice
         if not self.m.config.restart_on_crash or len(self.crashes) > MAX_CRASHES:
             self.m.notifier.send(f"Server stopped unexpectedly (exit {self.proc.returncode}); not restarting.\n{tail}")

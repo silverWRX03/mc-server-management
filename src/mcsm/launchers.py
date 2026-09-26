@@ -113,10 +113,12 @@ def detect(mc_dir: Path, prism_dir: Path | None = None) -> list[Found]:
 def fetch_mods(joiner: "Joiner", pack: dict, dest: Path) -> list[tuple[dict, Path]]:
     """Download every mod the pack lists into ``dest``, checking hashes."""
     from .join import JoinError
+    from .join import folder_of
     dest.mkdir(parents=True, exist_ok=True)
     out = []
     for m in pack.get("mods", []):
-        target = dest / m["filename"]
+        target = dest / folder_of(m) / m["filename"]
+        target.parent.mkdir(parents=True, exist_ok=True)
         if not (target.exists() and m.get("sha1") and sha1_file(target) == m["sha1"]):
             joiner.say(f"  downloading {m['name']}")
             try:
@@ -215,6 +217,19 @@ def open_prism(slug: str, address: str) -> bool:
     return False
 
 
+def _pack_settings(z: zipfile.ZipFile, pack: dict) -> None:
+    """Switch the friend's resource packs and shaders on in a new instance."""
+    from .friendextras import enable_packs
+    extras = [m for m in pack.get("mods", []) if m.get("extra")]
+    if not any(m.get("folder") in ("resourcepacks", "shaderpacks") for m in extras):
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        enable_packs(Path(tmp), extras)
+        for p in Path(tmp).rglob("*"):
+            if p.is_file():
+                z.write(p, "overrides/" + p.relative_to(tmp).as_posix())
+
+
 # --------------------------------------------------------------- Modrinth
 MRPACK_LOADERS = {"fabric": "fabric-loader", "quilt": "quilt-loader", "neoforge": "neoforge", "forge": "forge"}
 
@@ -227,15 +242,17 @@ def build_mrpack(joiner: "Joiner", pack: dict, out_dir: Path) -> Path:
     files = []
     buf = io.BytesIO()
     with tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        from .join import folder_of
         for m, jar in fetch_mods(joiner, pack, Path(tmp)):
             data = jar.read_bytes()
             if m["url"].startswith(MRPACK_HOSTS):
-                files.append({"path": f"mods/{m['filename']}", "downloads": [m["url"]], "fileSize": len(data),
+                files.append({"path": f"{folder_of(m)}/{m['filename']}", "downloads": [m["url"]], "fileSize": len(data),
                               "hashes": {"sha1": hashlib.sha1(data).hexdigest(), "sha512": hashlib.sha512(data).hexdigest()},
                               "env": {"client": "required", "server": "required" if m.get("side") != "client" else "unsupported"}})
             else:
-                z.writestr(f"overrides/mods/{m['filename']}", data)
+                z.writestr(f"overrides/{folder_of(m)}/{m['filename']}", data)
         z.writestr("overrides/servers.dat", servers_dat(pack))
+        _pack_settings(z, pack)
         z.writestr("modrinth.index.json", json.dumps({
             "formatVersion": 1, "game": "minecraft", "versionId": str(pack.get("updated") or "1"),
             "name": pack["name"], "summary": f"Plays on {pack['address']} (made by mcsm)",
@@ -267,9 +284,11 @@ def build_curseforge(joiner: "Joiner", pack: dict, out_dir: Path) -> Path:
     """A CurseForge modpack zip, with the mods inside (for this person's own import only)."""
     buf = io.BytesIO()
     with tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        from .join import folder_of
         for m, jar in fetch_mods(joiner, pack, Path(tmp)):
-            z.write(jar, f"overrides/mods/{m['filename']}")
+            z.write(jar, f"overrides/{folder_of(m)}/{m['filename']}")
         z.writestr("overrides/servers.dat", servers_dat(pack))
+        _pack_settings(z, pack)
         z.writestr("manifest.json", json.dumps({
             "minecraft": {"version": pack["minecraft"], "modLoaders": cf_loader_id(pack)},
             "manifestType": "minecraftModpack", "manifestVersion": 1, "name": pack["name"],

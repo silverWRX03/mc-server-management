@@ -10,7 +10,7 @@ from pathlib import Path
 
 STATE_DIR = ".mcsm"
 CONFIG_NAME = "mcsm.toml"
-LOADERS = ("fabric", "quilt", "neoforge", "forge", "vanilla")
+LOADERS = ("fabric", "quilt", "neoforge", "forge", "paper", "vanilla")
 MOD_SOURCES = ("modrinth", "curseforge")
 STRATEGIES = ("latest-compatible", "latest", "mods-only")
 CHANNELS = ("release", "beta", "alpha")
@@ -27,6 +27,8 @@ class ModSpec:
     required: bool = True
     # Set on specs created automatically for a mod's dependencies.
     dependency_of: str | None = None
+    # This mod's own lowest release channel (a mod with only alpha/beta builds), else the server's.
+    channel: str | None = None
 
     @property
     def label(self) -> str:
@@ -40,6 +42,7 @@ class ServerConfig:
     minecraft: str
     memory: str = "4G"
     jvm_args: list[str] = field(default_factory=list)
+    aikar_flags: bool = False       # Aikar's garbage-collection flags (see jvmflags.py)
     startup_timeout: int = 600
     stop_timeout: int = 120
 
@@ -71,6 +74,8 @@ class WebConfig:
     port: int = 8765
     password: str = ""   # empty = chosen in the web UI (starts as PASSWORD); set here to lock it
     allowed_hosts: list[str] = field(default_factory=list)  # extra host names, e.g. behind a proxy
+    tls_cert: str = ""   # HTTPS: a certificate and its key (PEM files), e.g. from `tailscale cert`
+    tls_key: str = ""
 
 
 @dataclass
@@ -176,6 +181,7 @@ def parse(root: Path, data: dict) -> Config:
         minecraft=str(s.get("minecraft", "latest")),
         memory=_memory(s.get("memory", "4G")),
         jvm_args=list(s.get("jvm_args", [])),
+        aikar_flags=bool(s.get("aikar_flags", False)),
         startup_timeout=parse_duration(s.get("startup_timeout", 600)),
         stop_timeout=parse_duration(s.get("stop_timeout", 120)),
     )
@@ -208,6 +214,7 @@ def parse(root: Path, data: dict) -> Config:
             source=_choice(m.get("source", "modrinth"), MOD_SOURCES, f"mods[{i}].source"),
             id=str(m["id"]),
             required=bool(m.get("required", True)),
+            channel=_choice(m["channel"], CHANNELS, f"mods[{i}].channel") if "channel" in m else None,
         ))
     if mods and server.loader == "vanilla":
         raise ConfigError("the vanilla loader cannot run mods; set [server] loader or remove [[mods]]")
@@ -243,6 +250,8 @@ def parse(root: Path, data: dict) -> Config:
             port=int(data.get("web", {}).get("port", 8765)),
             password=str(data.get("web", {}).get("password", "")),
             allowed_hosts=[str(x).lower() for x in data.get("web", {}).get("allowed_hosts", [])],
+            tls_cert=str(data.get("web", {}).get("tls_cert", "")),
+            tls_key=str(data.get("web", {}).get("tls_key", "")),
         ),
         discord_webhook=data.get("notify", {}).get("discord_webhook", ""),
         curseforge_api_key=(data.get("curseforge", {}).get("api_key", "")
@@ -257,10 +266,11 @@ TEMPLATE = """\
 
 [server]
 dir = "server"                 # server directory (world, config/, mods/, server.properties)
-loader = "{loader}"            # fabric | quilt | neoforge | forge | vanilla
+loader = "{loader}"            # fabric | quilt | neoforge | forge | paper | vanilla
 minecraft = "{minecraft}"      # version to install on first `mcsm update` ("latest" = newest release)
 memory = "4G"
 jvm_args = []                  # extra JVM flags, e.g. ["-XX:+UseZGC"]
+aikar_flags = false            # Aikar's GC flags: fewer lag spikes with lots of memory (16 GB+)
 startup_timeout = "10m"        # how long a boot may take before it counts as failed
 stop_timeout = "2m"
 restart_on_crash = true
@@ -327,7 +337,8 @@ def render_template(loader: str, minecraft: str) -> str:
 
 def mod_block(spec: ModSpec) -> str:
     ident = spec.id if spec.id.isdigit() and spec.source == "curseforge" else f'"{spec.id}"'
-    return f'\n[[mods]]\nsource = "{spec.source}"\nid = {ident}\nrequired = {str(spec.required).lower()}\n'
+    channel = f'channel = "{spec.channel}"  # accepts early (unstable) builds\n' if spec.channel in CHANNELS else ""
+    return f'\n[[mods]]\nsource = "{spec.source}"\nid = {ident}\nrequired = {str(spec.required).lower()}\n{channel}'
 
 
 def append_mod(path: Path, spec: ModSpec) -> None:

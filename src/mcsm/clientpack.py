@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import secrets
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 from .config import ModSpec
+from .http import sha1_file
 from .mods.base import ModError, ModFile, Unavailable
 from .mods.modrinth import ModrinthProvider
 
@@ -31,6 +34,19 @@ FORMAT = 1
 # both ends, so a tampered pack can't point players at arbitrary files.
 DOWNLOAD_HOSTS = ("cdn.modrinth.com", "edge.forgecdn.net", "mediafilez.forgecdn.net")
 CACHE_SECONDS = 300
+CLIENT_DIR = "client-mods"  # next to mcsm.toml: your own .jar files for players
+LOCAL_URL = "local:"        # in a pack: served by the share server (share.py fills in the address)
+JAR_NAME = re.compile(r"[A-Za-z0-9 ()\[\]+_.,'-]{1,120}\.jar")
+
+
+def client_dir(config) -> Path:
+    return config.root / CLIENT_DIR
+
+
+def local_jars(config) -> list[Path]:
+    """Your own mod files for players, from the client-mods folder."""
+    folder = client_dir(config)
+    return sorted(p for p in folder.glob("*.jar") if JAR_NAME.fullmatch(p.name) and p.is_file()) if folder.is_dir() else []
 
 
 def new_token() -> str:
@@ -58,7 +74,7 @@ class PackBuilder:
         if not lk.installed:
             raise ModError("the server isn't installed yet")
         key = (lk.updated_at, lk.minecraft, tuple(cfg.client.mods), cfg.client.memory_gb, address,
-               cfg.server.dir)
+               cfg.server.dir, tuple((p.name, p.stat().st_mtime) for p in local_jars(cfg)))
         if self._cache and self._cache[0] == key and time.monotonic() - self._cache[1] < CACHE_SECONDS:
             return self._cache[2]
         pack = self._build(address)
@@ -69,7 +85,9 @@ class PackBuilder:
         m = self.m
         lk, cfg = m.lock, m.config
         modrinth = m.providers.get("modrinth") or ModrinthProvider(m.http)
-        loaders = m.loader.mod_loaders
+        # Paper's plugins only run on the server: players join with plain Minecraft.
+        plugins = m.loader.mods_folder != "mods"
+        loaders = () if plugins else m.loader.mod_loaders
         mods: list[dict] = []
         manual: list[dict] = []
         skipped: list[dict] = []
@@ -77,13 +95,13 @@ class PackBuilder:
 
         # The server's own mods, unless they only run on servers.
         sides = {}
-        ids = [x.project_id for x in lk.mods if x.source == "modrinth"]
+        ids = [x.project_id for x in lk.mods if x.source == "modrinth" and not plugins]
         if ids:
             try:
                 sides = {pid: p.get("client_side", "unknown") for pid, p in modrinth.projects(ids).items()}
             except Exception as e:  # can't tell: include them all (a spare server mod is harmless)
                 log.warning("couldn't look up which mods players need (%s); including all of them", e)
-        for x in lk.mods:
+        for x in ([] if plugins else lk.mods):
             if x.source == "modrinth" and sides.get(x.project_id) == "unsupported":
                 continue
             included.add(x.key)
@@ -92,8 +110,13 @@ class PackBuilder:
             else:
                 mods.append(_entry(x, "both"))
 
-        # Extras only players need, with their required dependencies.
-        todo = [ModSpec("modrinth", slug) for slug in cfg.client.mods]
+        # Mods the server's mods need on players' computers only (the server skips those),
+        # then the extras you picked for players; each with its required dependencies.
+        names = {x.key: x.name for x in lk.mods}
+        todo = [ModSpec("modrinth", dep, dependency_of=names.get(x.key, x.name))
+                for x in ([] if plugins else lk.mods) if x.source == "modrinth"
+                for dep in x.dependencies if f"modrinth:{dep}" not in included]
+        todo += [ModSpec("modrinth", slug) for slug in cfg.client.mods]
         while todo and loaders:
             spec = todo.pop(0)
             try:
@@ -105,9 +128,17 @@ class PackBuilder:
             if f.key in included:
                 continue
             included.add(f.key)
-            (mods if allowed_url(f.url) else manual).append(_entry(f, "client"))
+            entry = _entry(f, "client")
+            if spec.dependency_of:
+                entry["needed_by"] = spec.dependency_of  # a companion another mod needs
+            (mods if allowed_url(f.url) else manual).append(entry)
             todo += [ModSpec("modrinth", dep, dependency_of=f.name) for dep in f.dependencies
                      if f"modrinth:{dep}" not in included]
+
+        # Your own files for players (the share server hands them out).
+        for jar in ([] if plugins else local_jars(cfg)):
+            mods.append({"name": jar.stem, "filename": jar.name, "url": LOCAL_URL + jar.name, "sha1": sha1_file(jar),
+                         "sha512": None, "project": f"local:{jar.name}", "side": "client", "local": True})
 
         from .properties import read_properties
         props = read_properties(m.server_dir / "server.properties")
@@ -116,8 +147,8 @@ class PackBuilder:
             "format": FORMAT,
             "name": props.get("motd") or cfg.root.name,
             "minecraft": lk.minecraft,
-            "loader": lk.loader,
-            "loader_version": lk.loader_version,
+            "loader": "vanilla" if plugins else lk.loader,
+            "loader_version": None if plugins else lk.loader_version,
             "java_major": lk.java_major,
             "address": address,
             "memory_gb": cfg.client.memory_gb,

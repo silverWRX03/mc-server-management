@@ -336,7 +336,30 @@ body.browse-mode main { padding: 0; overflow: hidden; }
 .rich img { max-width: 100%; height: auto; }
 .rich pre { overflow: auto; background: var(--panel-2); padding: 10px; border-radius: 6px; }
 .rich table { display: block; overflow-x: auto; }
+/* in the page: what was there slides left into a rail, the browser fills the rest */
+.stage { display: flex; flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.stage > main { flex: 1 1 auto; min-width: 0; transition: flex-basis .25s ease, opacity .25s ease, transform .25s ease; }
+.stage.browsing > main { flex: 0 0 0; padding: 0; opacity: 0; transform: translateX(-40px); overflow: hidden; pointer-events: none; }
+.browse-rail { flex: 0 0 52px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 0;
+  border: 0; border-right: 1px solid var(--border); background: var(--panel-2); color: var(--muted); cursor: pointer;
+  font: inherit; animation: rail-in .25s ease-out; }
+.browse-rail:hover, .browse-rail:focus-visible { color: var(--text); background: var(--panel); }
+.rail-arrow { font-size: 26px; line-height: 1; }
+.rail-label { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 13px; font-weight: 600; letter-spacing: .3px; }
+.inpage-browser { flex: 1 1 auto; min-width: 0; display: flex; animation: browser-in .3s ease-out; }
+.inpage-browser.leaving { animation: browser-out .25s ease-in forwards; position: absolute; inset: 0; }
+.inpage-browser > .browse { flex: 1; height: 100%; min-height: 0; }
+@keyframes rail-in { from { transform: translateX(-52px); } to { transform: none; } }
+@keyframes browser-in { from { opacity: 0; transform: translateX(60px); } to { opacity: 1; transform: none; } }
+@keyframes browser-out { from { opacity: 1; } to { opacity: 0; transform: translateX(60px); } }
+@media (prefers-reduced-motion: reduce) {
+  .stage > main, .browse-rail, .inpage-browser { transition: none; animation: none; }
+}
 @media (max-width: 760px) {
+  .stage.browsing { flex-direction: column; overflow: auto; }
+  .browse-rail { flex: 0 0 auto; flex-direction: row; justify-content: center; padding: 10px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .rail-label { writing-mode: horizontal-tb; transform: none; }
+  .inpage-browser > .browse { height: auto; }
   .browse { grid-template-columns: 1fr; grid-template-rows: 60vh auto; height: auto; }
   body.browse-mode main { overflow: auto; }
   .browse-right { padding: 16px; }
@@ -508,3 +531,53 @@ main > * { animation: rise .25s ease-out; }
 .modal.tester { max-width: 720px; }
 .modal.tester .log { max-height: 240px; }
 .tester-time { font-variant-numeric: tabular-nums; }
+.key-panel ol { padding-left: 18px; margin: 6px 0 10px; }
+.key-panel .row input { flex: 1; min-width: 0; }
+.row.center { justify-content: center; }
+
+/* the mod tester's progress: in its dialog and in a toast */
+.tester-step { display: grid; gap: 8px; margin: 10px 0 14px; }
+.bar.indeterminate .bar-fill { width: 30%; animation: bar-slide 1.4s ease-in-out infinite; }
+@keyframes bar-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+#tester-toast { display: grid; gap: 6px; max-width: 380px; }
+@media (prefers-reduced-motion: reduce) { .bar.indeterminate .bar-fill { animation: none; width: 100%; opacity: .5; } }
+#tester-toast .bar, .tester-step .bar { background: var(--border); }
+.early-opt { margin: 6px 0 2px; color: var(--muted); }
+.hidden-note { margin: 4px 8px 8px; }
+
+/* Discord dialog */
+.modal.discord { max-width: 620px; }
+.modal.discord textarea { width: 100%; resize: vertical; font: inherit; }
+ol.steps { padding-left: 20px; line-height: 1.6; }
+
+/* update readiness: green ready, yellow early builds only, red nothing yet */
+.readiness { padding: 24px 32px; overflow: auto; width: 100%; }
+.readiness h2 { margin: 0; }
+.readiness .legend { gap: 6px 10px; flex-wrap: wrap; margin: 8px 0 12px; color: var(--muted); }
+.dotc { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 12px; display: inline-block; background: var(--border); }
+.dotc.green { background: var(--accent); }
+.dotc.yellow { background: var(--warn, #e0b400); }
+.dotc.red { background: var(--danger, #d9534f); }
+.ready-row { align-items: center; }
+.ready-row.red { box-shadow: inset 3px 0 0 var(--danger, #d9534f); }
+.ready-row.yellow { box-shadow: inset 3px 0 0 var(--warn, #e0b400); }
+@media (max-width: 760px) { .readiness { padding: 16px; } }
+
+/* help */
+.help-img { display: block; width: 100%; max-width: 760px; height: auto; margin: 12px 0; border-radius: 12px; }
+.help-toc ul { columns: 2; margin: 8px 0 0; padding-left: 18px; }
+.help-section h3 { margin-top: 0; }
+.router-help summary { cursor: pointer; }
+@media (max-width: 760px) { .help-toc ul { columns: 1; } }
+
+/* the friend's page: picking extras in a panel that slides in */
+.row.wrap { flex-wrap: wrap; }
+body.picking { overflow: hidden; }
+body.picking main.join { opacity: .35; transform: translateX(-30px); transition: opacity .25s ease, transform .25s ease; pointer-events: none; }
+.jrail { position: fixed; left: 0; top: 0; bottom: 0; width: 56px; z-index: 15; border: 0; border-right: 1px solid var(--border);
+  background: var(--panel-2); color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; writing-mode: vertical-rl; transform: rotate(180deg); }
+.jpanel { position: fixed; top: 0; right: 0; bottom: 0; left: 56px; z-index: 16; background: var(--panel); overflow: auto;
+  padding: 20px 24px; display: grid; gap: 10px; align-content: start; animation: browser-in .3s ease-out; }
+.jpanel h2 { margin: 0; font-size: 19px; }
+.jresults { display: grid; gap: 6px; }
+@media (prefers-reduced-motion: reduce) { .jpanel { animation: none; } body.picking main.join { transition: none; } }

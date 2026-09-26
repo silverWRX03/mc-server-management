@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from ..config import ModSpec
 from ..http import HttpClient, HttpError
 from .base import CHANNEL_RANK, ClientOnly, ModError, ModFile, ModProvider, Project, Unavailable
 
 API = "https://api.modrinth.com/v2"
+PLUGIN_LOADERS = ("paper", "spigot", "bukkit", "purpur", "folia")
 
 
 class ModrinthProvider(ModProvider):
@@ -34,11 +36,34 @@ class ModrinthProvider(ModProvider):
         data = self.http.get_json(f"{API}/projects", params={"ids": json.dumps(sorted(set(ids)))})
         return {p["id"]: p for p in data}
 
-    def _versions(self, project_id: str, loaders: tuple[str, ...]) -> list[dict]:
+    def _versions(self, project_id: str, loaders: tuple[str, ...], minecraft: str | None = None) -> list[dict]:
         # One request per project; filtering by game version happens locally so that
-        # checking many candidate Minecraft versions stays cheap.
-        return self.http.get_json(f"{API}/project/{project_id}/version",
-                                  params={"loaders": json.dumps(list(loaders))})
+        # checking many candidate Minecraft versions stays cheap. With ``minecraft``, only
+        # that version's builds are fetched: much smaller for mods with long histories.
+        params = {"loaders": json.dumps(list(loaders))}
+        if minecraft:
+            params["game_versions"] = json.dumps([minecraft])
+        return self.http.get_json(f"{API}/project/{project_id}/version", params=params)
+
+    def best_channels(self, project_ids: list[str], loaders: tuple[str, ...], minecraft: str,
+                      workers: int = 6) -> dict[str, str | None]:
+        """For each project, the most stable kind of build it has for these loaders and this
+        Minecraft: "release", "beta" or "alpha", or None when it has none. Search results can't
+        say (their version and loader lists cover all of a mod's builds together), so this looks
+        at each mod's builds, several at a time. A mod that can't be looked up counts as "release"
+        rather than being hidden."""
+        def one(pid: str) -> str | None:
+            try:
+                versions = self._versions(pid, loaders, minecraft)
+            except HttpError:
+                return "release"
+            kinds = {v.get("version_type", "release") for v in versions if minecraft in v.get("game_versions", [])}
+            return min(kinds, key=lambda k: CHANNEL_RANK.get(k, 9)) if kinds else None
+        ids = list(dict.fromkeys(project_ids))
+        if not ids:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(workers, len(ids))) as pool:
+            return dict(zip(ids, pool.map(one, ids)))
 
     @staticmethod
     def _acceptable(version: dict, channel: str) -> bool:
@@ -59,7 +84,15 @@ class ModrinthProvider(ModProvider):
             raise ClientOnly(f"{project.name} is client-side only")
         if side == "client" and project.client_side == "unsupported":
             raise Unavailable(f"{project.name} only runs on servers")
-        candidates = [v for v in self._versions(project.id, loaders)
+        try:
+            versions = self._versions(project.id, loaders)  # all of them: reused for other Minecraft versions
+        except HttpError as e:
+            if e.status == 404:
+                raise
+            # Mods with long histories (Fabric API has thousands of builds) can time out;
+            # ask for just this Minecraft version's builds instead.
+            versions = self._versions(project.id, loaders, minecraft)
+        candidates = [v for v in versions
                       if minecraft in v.get("game_versions", []) and self._acceptable(v, channel)]
         if not candidates:
             raise Unavailable(f"{project.name} has no {'/'.join(loaders)} build for {minecraft}")
@@ -96,6 +129,8 @@ class ModrinthProvider(ModProvider):
         that have a build for that version."""
         facets = [[f"categories:{l}" for l in loaders], [f"{side}_side:required", f"{side}_side:optional"],
                   ["project_type:mod"]]
+        if any(l in PLUGIN_LOADERS for l in loaders):
+            facets = [[f"categories:{l}" for l in loaders]]  # server plugins: their loaders say it all
         if minecraft:
             facets.append([f"versions:{minecraft}"])
         data = self.http.get_json(f"{API}/search", params={
@@ -107,3 +142,19 @@ class ModrinthProvider(ModProvider):
             "client_side": h.get("client_side", "unknown"),
             "latest_version": h.get("latest_version", ""),
         } for h in data.get("hits", [])]
+
+
+def keep_buildable(channels: dict[str, str | None], hits: list[dict], early: bool, key: str = "id") -> dict:
+    """Search results that really have a build for the chosen Minecraft and loader, each
+    marked with its most stable ``channel``; ones with only alpha/beta builds only when
+    ``early``. Also says how many were left out, and why."""
+    out, hidden, early_hidden = [], 0, 0
+    for hit in hits:
+        channel = channels.get(hit[key], "release")
+        if channel is None:
+            hidden += 1
+        elif channel != "release" and not early:
+            early_hidden += 1
+        else:
+            out.append({**hit, "channel": channel})
+    return {"results": out, "hidden": hidden, "early_hidden": early_hidden}

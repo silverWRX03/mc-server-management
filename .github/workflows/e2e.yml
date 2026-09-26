@@ -35,6 +35,11 @@ jobs:
             loader: forge
             minecraft: "1.20.1"        # needs Java 17
             args: --mod ferrite-core
+          # Paper with a real plugin from Modrinth (into plugins/; players join unmodded).
+          - os: ubuntu-latest
+            loader: paper
+            minecraft: "1.21.1"
+            args: --mod chunky
           - os: ubuntu-latest
             loader: vanilla
             minecraft: latest

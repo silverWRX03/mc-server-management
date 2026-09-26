@@ -106,9 +106,10 @@ def main() -> int:
               f"Java {lock['java_major']}, {len(lock['mods'])} mod file(s)")
         if len(lock["mods"]) < len(args.mod):
             raise Failed(f"expected at least {len(args.mod)} mods, got {[m['name'] for m in lock['mods']]}")
+        folder = "plugins" if args.loader == "paper" else "mods"  # Paper runs plugins
         for m in lock["mods"]:
-            if not (root / "server" / "mods" / m["filename"]).is_file():
-                raise Failed(f"{m['filename']} is missing from mods/")
+            if not (root / "server" / folder / m["filename"]).is_file():
+                raise Failed(f"{m['filename']} is missing from {folder}/")
         run(exe, "-C", str(root), "java", "list", env=env)
 
         step("check for updates")
@@ -140,7 +141,7 @@ def main() -> int:
             raise Failed(f"the {final['loader']} version {parent} wasn't installed for the launcher")
         game = Path(profile["gameDir"])
         jars = sorted(p.name for p in (game / "mods").glob("*.jar"))
-        if final["mods"] and not jars:
+        if final["mods"] and not jars and args.loader != "paper":  # plugins stay on the server
             raise Failed("no mods were downloaded for the player")
         if not (game / "servers.dat").is_file():
             raise Failed("the server wasn't added to the multiplayer list")

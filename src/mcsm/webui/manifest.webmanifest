@@ -1,0 +1,9 @@
+{
+  "name": "mcsm: Minecraft server manager",
+  "short_name": "mcsm",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1b1f24",
+  "theme_color": "#3f9d3f",
+  "icons": [{"src": "/icon.png", "sizes": "256x256", "type": "image/png"}]
+}

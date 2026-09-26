@@ -293,7 +293,7 @@ def _ask(question: str, default: str, choices: tuple[str, ...] | None = None) ->
 def _wizard(root: Path) -> bool:
     print(f"\nWelcome to mcsm! Let's set up your Minecraft server in {root}\n"
           "(Press Enter to take the suggestion in [brackets].)\n")
-    loader = _ask("Mod loader: fabric, neoforge, forge, quilt or vanilla", "fabric", configmod.LOADERS)
+    loader = _ask("Mod loader: fabric, neoforge, forge, quilt, paper or vanilla", "fabric", configmod.LOADERS)
     minecraft = _ask("Minecraft version ('latest' = the newest one your mods support)", "latest")
     memory = _ask("Memory for the server, e.g. 4G or 8G", "4G")
     mods = []
@@ -331,7 +331,10 @@ def has_display() -> bool:
 
 
 def lan_ip() -> str | None:
-    """This machine's address on the local network (no traffic is sent)."""
+    """This machine's address on the local network (no traffic is sent). In a container, set
+    MCSM_LAN_IP to the host computer's address so links and QR codes point there."""
+    if os.environ.get("MCSM_LAN_IP"):
+        return os.environ["MCSM_LAN_IP"].strip()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("192.0.2.1", 9))  # a documentation-only address; nothing is sent
@@ -374,6 +377,10 @@ def cmd_start(args) -> int:
     if not has_display() and "web" not in hub._hub_file() and not (home / configmod.CONFIG_NAME).exists():
         hub.save_web(host="0.0.0.0")  # headless: the panel must be reachable from another device
         hub._web = hub._load_web()
+    first_password = None
+    if not has_display() and hub.web.host not in ("127.0.0.1", "localhost", "::1"):
+        from .webauth import AuthStore
+        first_password = AuthStore(hub).first_run_password()
     if args.web_host:
         hub.web.host = args.web_host
     if args.web_port:
@@ -400,7 +407,8 @@ def cmd_start(args) -> int:
     elif not has_display():
         lines.append(f"  From your own PC, tunnel over SSH:  ssh -L {port}:localhost:{port} "
                      f"{getpass.getuser()}@<this server>  then open http://localhost:{port}/")
-    lines += [f"  Password:       {webauth.describe(webauth.AuthStore(hub).get())}", "",
+    lines += [f"  Password:       {first_password or webauth.describe(webauth.AuthStore(hub).get())}"
+              + ("   <- one-time; you'll choose your own at the first sign-in" if first_password else ""), "",
               "  Servers only start when you press Start in the control panel.",
               "  Keep this window open while they run, and press Ctrl+C to stop everything."]
     print("\n" + "\n".join(lines) + "\n", flush=True)
@@ -719,9 +727,44 @@ def cmd_self_update(args) -> int:
     return 0
 
 
+def _panel_service(args) -> int:
+    """`mcsm service install --panel`: the control panel at boot, for a computer without a screen
+    that you manage from another one (see docs/headless.md)."""
+    from . import service, webauth
+    from .hub import Hub, running_hub
+    home = default_home()
+    try:
+        if args.action == "install":
+            if running_hub(home):
+                print("mcsm is already running; stop it first (Quit in the control panel, or Ctrl+C), then install the service")
+                return 1
+            home.mkdir(parents=True, exist_ok=True)
+            hub = Hub(home)
+            if hub.web.host in ("127.0.0.1", "localhost", "::1"):
+                hub.save_web(host="0.0.0.0")  # managed from other computers
+            first = webauth.AuthStore(hub).first_run_password()
+            for line in service.install(home, panel=True):
+                print(line)
+            ip = lan_ip()
+            print(f"\ncontrol panel: http://{ip or '<this computer>'}:{hub.web.port}/  (open it on your own computer)")
+            if first:
+                print(f"first sign-in password: {first}   (one-time: you'll choose your own; also in {home / '.mcsm' / 'first-password.txt'})")
+            print(f"allow it through the firewall if you use one, e.g.: sudo ufw allow {hub.web.port}/tcp && sudo ufw allow 25565/tcp")
+        elif args.action == "uninstall":
+            print(service.uninstall(home, panel=True))
+        else:
+            print(service.status(home, panel=True))
+    except service.ServiceError as e:
+        print(f"error: {e}")
+        return 1
+    return 0
+
+
 def cmd_service(args) -> int:
     from . import service
 
+    if args.panel:
+        return _panel_service(args)
     cfg = configmod.load(args.root)
     try:
         if args.action == "install":
@@ -808,7 +851,7 @@ def _notice_ok(args) -> bool:
     root = root.resolve() if (root / configmod.CONFIG_NAME).exists() else None
     if args.command in NOTICE_EXEMPT or notice.accepted(root):
         return True
-    if args.command == "start":
+    if args.command == "start" or (args.command == "service" and getattr(args, "panel", False)):
         return True  # the web UI shows the notice before anything is set up or downloaded
     if args.accept_notice:
         notice.accept(root, by="cli")
@@ -982,6 +1025,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("service", help="Linux: run mcsm in the background at boot with systemd")
     s.add_argument("action", choices=["install", "uninstall", "status"])
+    s.add_argument("--panel", action="store_true",
+                   help="the whole control panel with all your servers (mcsm start), reachable from other "
+                        "computers on your network; without it, just the server in this folder")
     s.set_defaults(fn=cmd_service)
 
     s = sub.add_parser("cmd", help="send a console command over RCON")
@@ -1004,6 +1050,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     from . import desktop
     desktop.setup()  # the Windows executable has no command window of its own
+    from .mods.curseforge import use_bundled_key
+    use_bundled_key()  # release builds may carry mcsm's own CurseForge key
     try:
         return _entry(argv)
     except Exception as e:  # pragma: no cover - last resort, so a windowless failure isn't silent

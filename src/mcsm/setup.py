@@ -27,6 +27,7 @@ LOADER_INFO = [
     ("neoforge", "NeoForge", "The modern Forge. Big content mods and modpacks for recent versions.", True),
     ("forge", "Forge", "The classic loader. Best for older modpacks (Minecraft 1.20.1 and earlier).", True),
     ("quilt", "Quilt", "A Fabric fork that also runs most Fabric mods.", True),
+    ("paper", "Paper", "Fast plain Minecraft that runs server plugins (from Modrinth). Players join with no mods.", True),
     ("vanilla", "Vanilla", "Plain Minecraft with no mods.", False),
 ]
 DIFFICULTIES = ("peaceful", "easy", "normal", "hard")
@@ -91,6 +92,7 @@ class SetupSpec:
     mods: list[str] = field(default_factory=list)            # Modrinth slugs, required
     optional_mods: list[str] = field(default_factory=list)   # Modrinth slugs, optional
     memory_gb: int = 4
+    aikar_flags: bool = False
     motd: str = "A Minecraft server"
     max_players: int = 20
     difficulty: str = "normal"
@@ -103,6 +105,7 @@ class SetupSpec:
     port_chosen: bool = False      # the port was picked by the person (not just the default)
     modpack_version: str = ""      # a Modrinth modpack version to build the server from
     local_mods: list[str] = field(default_factory=list)  # uploaded jars waiting in the hub's staging area
+    mod_channels: dict = field(default_factory=dict)  # slug -> "beta"/"alpha": mods picked with only early builds
     world: str = ""                # an existing world: an upload's staging id, or "save:<id>" (singleplayer)
     world_source: Path | None = None  # where that world is, found by the hub (never from the form)
 
@@ -137,6 +140,7 @@ class SetupSpec:
             mods=slugs("mods"),
             optional_mods=slugs("optional_mods"),
             memory_gb=number("memory_gb", 1, 64, 4),
+            aikar_flags=d.get("aikar_flags") is True,
             motd=" ".join(str(d.get("motd", "A Minecraft server")).split())[:NAME_LIMIT] or "A Minecraft server",
             max_players=number("max_players", 1, 1000, 20),
             difficulty=str(d.get("difficulty", "normal")),
@@ -150,6 +154,8 @@ class SetupSpec:
             modpack_version=str(d.get("modpack_version") or ""),
             local_mods=[str(x) for x in (d.get("local_mods") or []) if isinstance(x, str)],
             world=str(d.get("world") or ""),
+            mod_channels={str(k): v for k, v in (d.get("mod_channels") or {}).items()
+                          if v in ("beta", "alpha")} if isinstance(d.get("mod_channels"), dict) else {},
         )
         if spec.loader not in configmod.LOADERS:
             raise ConfigError(f"unknown server type {spec.loader!r}")
@@ -174,11 +180,11 @@ class SetupSpec:
         return spec
 
 
-def _mod_spec(item: str, required: bool) -> ModSpec:
+def _mod_spec(item: str, required: bool, channel: str | None = None) -> ModSpec:
     """A mod from the setup form: a Modrinth slug, or ``curseforge:<project id>``."""
     if item.startswith("curseforge:"):
-        return ModSpec("curseforge", item.split(":", 1)[1], required=required)
-    return ModSpec("modrinth", item, required=required)
+        return ModSpec("curseforge", item.split(":", 1)[1], required=required, channel=channel)
+    return ModSpec("modrinth", item, required=required, channel=channel)
 
 
 def configure(root: Path, spec: SetupSpec) -> configmod.Config:
@@ -188,6 +194,8 @@ def configure(root: Path, spec: SetupSpec) -> configmod.Config:
     root.mkdir(parents=True, exist_ok=True)
     path.write_text(configmod.render_template(spec.loader, spec.minecraft))
     configmod.set_value(path, "server", "memory", json.dumps(f"{spec.memory_gb}G"))
+    if spec.aikar_flags:
+        configmod.set_value(path, "server", "aikar_flags", "true")
     if spec.minecraft != "latest":
         # Choosing a specific version (e.g. for a modpack) means staying on it; mods still update.
         configmod.set_value(path, "updates", "strategy", '"mods-only"')
@@ -200,9 +208,9 @@ def configure(root: Path, spec: SetupSpec) -> configmod.Config:
         configmod.set_value(path, "client", "enabled", "true")
         configmod.set_value(path, "client", "token", json.dumps(new_token()))
     for slug in spec.mods:
-        configmod.append_mod(path, _mod_spec(slug, required=True))
+        configmod.append_mod(path, _mod_spec(slug, required=True, channel=spec.mod_channels.get(slug)))
     for slug in spec.optional_mods:
-        configmod.append_mod(path, _mod_spec(slug, required=False))
+        configmod.append_mod(path, _mod_spec(slug, required=False, channel=spec.mod_channels.get(slug)))
     cfg = configmod.load(root)
     cfg.server.dir.mkdir(parents=True, exist_ok=True)
     write_properties(cfg.server.dir / "server.properties", {

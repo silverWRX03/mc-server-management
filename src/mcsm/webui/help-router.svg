@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 330" font-family="system-ui, -apple-system, Segoe UI, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">A typical router's port forwarding page</title>
+  <desc id="d">An example port forwarding rule: name Minecraft, protocol TCP, external port 25565, internal address 192.168.1.20, internal port 25565, enabled. Every router's page looks different.</desc>
+  <rect width="760" height="330" rx="14" fill="#f4f7fb"/>
+  <!-- browser window -->
+  <rect x="20" y="18" width="720" height="294" rx="10" fill="#fff" stroke="#c9d3df"/>
+  <rect x="20" y="18" width="720" height="34" rx="10" fill="#e8edf3"/>
+  <rect x="20" y="40" width="720" height="12" fill="#e8edf3"/>
+  <circle cx="40" cy="35" r="5" fill="#e5534b"/><circle cx="56" cy="35" r="5" fill="#d29922"/><circle cx="72" cy="35" r="5" fill="#3f9d3f"/>
+  <rect x="96" y="25" width="300" height="20" rx="10" fill="#fff" stroke="#c9d3df"/>
+  <text x="110" y="39" font-size="12" fill="#5a6776">http://192.168.1.1  (your router's page)</text>
+  <!-- sidebar -->
+  <rect x="20" y="52" width="150" height="260" fill="#f7f9fc"/>
+  <text x="36" y="80" font-size="13" fill="#5a6776">Status</text>
+  <text x="36" y="104" font-size="13" fill="#5a6776">Wireless</text>
+  <text x="36" y="128" font-size="13" fill="#5a6776">LAN / DHCP</text>
+  <rect x="28" y="140" width="136" height="26" rx="6" fill="#e7f4e7"/>
+  <text x="36" y="158" font-size="13" font-weight="700" fill="#2f7d2f">Port Forwarding</text>
+  <text x="36" y="186" font-size="13" fill="#5a6776">Security</text>
+  <text x="36" y="210" font-size="13" fill="#5a6776">Administration</text>
+  <text x="32" y="250" font-size="10.5" fill="#8a96a3">also called:</text>
+  <text x="32" y="264" font-size="10.5" fill="#8a96a3">Virtual Server, NAT,</text>
+  <text x="32" y="278" font-size="10.5" fill="#8a96a3">Port Mapping,</text>
+  <text x="32" y="292" font-size="10.5" fill="#8a96a3">Applications &amp; Gaming</text>
+  <!-- table -->
+  <text x="192" y="84" font-size="16" font-weight="700" fill="#1f2a37">Port Forwarding</text>
+  <g font-size="12" fill="#5a6776">
+    <text x="192" y="116">Name</text><text x="300" y="116">Protocol</text><text x="372" y="116">External port</text>
+    <text x="470" y="116">Internal IP address</text><text x="610" y="116">Int. port</text><text x="690" y="116">On</text>
+  </g>
+  <line x1="192" y1="124" x2="722" y2="124" stroke="#c9d3df"/>
+  <g font-size="13" fill="#1f2a37">
+    <rect x="188" y="132" width="538" height="30" rx="6" fill="#fffbe6" stroke="#d29922"/>
+    <text x="196" y="152" font-weight="700">Minecraft</text><text x="304" y="152">TCP</text><text x="380" y="152">25565</text>
+    <text x="474" y="152">192.168.1.20</text><text x="614" y="152">25565</text><text x="690" y="152" fill="#2f7d2f" font-weight="700">✓</text>
+    <text x="196" y="186">mcsm friends</text><text x="304" y="186">TCP</text><text x="380" y="186">8798</text>
+    <text x="474" y="186">192.168.1.20</text><text x="614" y="186">8798</text><text x="690" y="186" fill="#2f7d2f" font-weight="700">✓</text>
+  </g>
+  <line x1="192" y1="198" x2="722" y2="198" stroke="#e8edf3"/>
+  <rect x="192" y="212" width="90" height="28" rx="6" fill="#3f9d3f"/>
+  <text x="237" y="231" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Save</text>
+  <text x="192" y="264" font-size="12" fill="#5a6776">Use this computer's own address and the ports mcsm shows you.</text>
+  <text x="192" y="281" font-size="12" fill="#5a6776">The second rule is only for friends' downloads over the internet.</text>
+  <text x="192" y="298" font-size="12" fill="#5a6776">Never forward the control panel's port (8765).</text>
+</svg>

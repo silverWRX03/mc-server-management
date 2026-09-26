@@ -27,6 +27,23 @@ class HttpError(Exception):
         super().__init__(f"{message} ({url})")
         self.url = url
         self.status = status
+        self.reason = message
+
+    @property
+    def friendly(self) -> str:
+        """For people: which site, and what went wrong, without the full URL."""
+        host = urllib.parse.urlsplit(self.url).hostname or "the internet"
+        if self.status == 404:
+            return f"{host} doesn't have that (not found)"
+        if self.status == 429:
+            return f"{host} is busy (too many requests); try again in a minute"
+        if self.status is not None and self.status >= 500:
+            return f"{host} is having trouble (HTTP {self.status}); try again in a few minutes"
+        if "timed out" in self.reason.lower():
+            return f"{host} took too long to answer; check your internet connection and try again"
+        if self.status is None:
+            return f"couldn't reach {host}; check your internet connection and try again"
+        return f"{host} refused the request (HTTP {self.status})"
 
 
 class HashMismatch(Exception):
@@ -77,8 +94,8 @@ class HttpClient:
             try:
                 return urllib.request.urlopen(req, timeout=self.timeout)
             except urllib.error.HTTPError as e:
-                # 4xx (other than rate limiting) will not succeed on retry.
-                if e.code != 429 and e.code < 500:
+                # 4xx (other than rate limiting and timeouts) will not succeed on retry.
+                if e.code not in (408, 429) and e.code < 500:
                     raise HttpError(req.full_url, e.code, f"HTTP {e.code}") from e
                 last = e
                 if e.code == 429 and limited < self.rate_limit_retries:
@@ -100,16 +117,26 @@ class HttpClient:
         raise HttpError(req.full_url, status, f"request failed: {last}")
 
     def get_json(self, url: str, params: dict[str, Any] | None = None,
-                 headers: dict[str, str] | None = None) -> Any:
+                 headers: dict[str, str] | None = None, cache: bool = True) -> Any:
+        """GET JSON. Answers are reused for a few minutes unless ``cache`` is False (use that
+        when the answer depends on who asks, e.g. a token in ``headers``)."""
         full = with_query(url, params)
-        hit = self._cache.get(full)
+        hit = self._cache.get(full) if cache else None
         if hit and time.monotonic() - hit[0] < self.cache_ttl:
             return hit[1]
         req = urllib.request.Request(full, headers={"User-Agent": USER_AGENT, "Accept": "application/json",
                                                     **(headers or {})})
-        with self._open(req) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        self._cache[full] = (time.monotonic(), data)
+        for attempt in range(self.retries):
+            try:
+                with self._open(req) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                break
+            except (TimeoutError, ConnectionError) as e:  # the answer stopped part way
+                if attempt + 1 >= self.retries:
+                    raise HttpError(full, None, f"request failed: {e}") from e
+                time.sleep(2**attempt)
+        if cache:
+            self._cache[full] = (time.monotonic(), data)
         return data
 
     def post_json(self, url: str, body: Any, headers: dict[str, str] | None = None) -> Any:
