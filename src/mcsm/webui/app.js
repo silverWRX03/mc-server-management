@@ -2408,6 +2408,15 @@ function setupRecheckMods() {
   for (const k of st.mods.keys()) setupCheckMod(k, true);
 }
 
+// A failed job's message, with where its details were written (and a button to open that folder).
+function failureText(message, sid) {
+  const [what, where] = String(message || "").split("\nThe details are in ");
+  if (!where) return what;
+  return h("span", {}, what, h("div", { class: "small mt-s" }, "The details are in ", h("code", { class: "path" }, where),
+    hubInfo && hubInfo.local && sid ? [" ", h("button", { type: "button", class: "link-btn", onclick: () =>
+      api(`/api/servers/${sid}/open`, { method: "POST", body: { what: "reports" } }).catch((e) => toast(e.message, true)) }, "Open the folder")] : null));
+}
+
 // ------------------------------------------------------ setup progress dock
 // While a new server installs you can go elsewhere (e.g. set up its friend download): its
 // progress keeps going in a bar docked at the bottom of the window.
@@ -2433,7 +2442,7 @@ function dockSetup(sid, name) {
     if (currentName === "friends" && server === sid) route();  // drop the "still installing" note
     el.classList.add(st.last_job.ok ? "done" : "failed");
     fill(el, h("strong", {}, st.last_job.ok ? `✓ ${name} is ready` : `${name}: setup didn't finish`),
-      h("span", { class: "grow dock-msg" }, st.last_job.ok ? "Press Start when you want to play." : st.last_job.message),
+      h("span", { class: "grow dock-msg" }, st.last_job.ok ? "Press Start when you want to play." : failureText(st.last_job.message, sid)),
       h("a", { class: "btn small primary", href: `#s/${sid}/${st.last_job.ok ? "dashboard" : "setup"}`, onclick: undock }, st.last_job.ok ? "Open" : "See why"),
       h("button", { class: "btn small ghost", "aria-label": "Close", onclick: undock }, "✕"));
   };
@@ -2467,7 +2476,8 @@ views.setup = () => {
       h("h2", { class: "view-title" }, isNew ? "Create a new server" : "Set up your server"),
       h("p", { class: "muted" }, "Choose what kind of server you want. mcsm downloads everything it needs (Minecraft, the mod loader, mods and Java) and keeps it up to date from then on. " +
         (opts.network_option ? "" : "It won't start until you press Start.")),
-      error ? h("div", { class: "notice bad" }, h("strong", {}, "Setup didn't finish: "), error, h("div", { class: "small mt-s" }, "Change your choices below and try again.")) : null,
+      error ? h("div", { class: "notice bad" }, h("strong", {}, "Setup didn't finish: "), failureText(error, server),
+        h("div", { class: "small mt-s" }, "Change your choices below and try again.")) : null,
     ];
     if (!st.loader) {  // one step at a time: the rest depends on the server type
       fill(main, intro, card("1. Server type", loaderCards,
@@ -2766,12 +2776,20 @@ views.setup = () => {
         }, 650);
       }, 1800);
     }
+    let startedAt = null;  // only this setup's events, not an earlier attempt's
     every(1500, async () => {
       if (!events.isConnected && seq) return;  // slid away (or shown again in a newer panel)
+      if (startedAt === null) {
+        const s = await api("/api/status").catch(() => null);
+        if (!s) return;
+        startedAt = s.job && s.job.started ? s.job.started - 1 : Date.now() / 1000 - 5;
+      }
       const r = await api(`/api/events?since=${seq}`).catch(() => null);
       if (!r) return;
       seq = r.last;
-      for (const e of r.events) events.prepend(h("div", { class: "ev " + e.level }, h("time", {}, fmtClock(e.time)), h("span", {}, e.message)));
+      for (const e of r.events.filter((x) => x.time >= startedAt)) {
+        events.prepend(h("div", { class: "ev " + e.level }, h("time", {}, fmtClock(e.time)), h("span", {}, e.message)));
+      }
     });
   };
 

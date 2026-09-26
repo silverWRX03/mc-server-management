@@ -94,8 +94,8 @@ class HttpClient:
             try:
                 return urllib.request.urlopen(req, timeout=self.timeout)
             except urllib.error.HTTPError as e:
-                # 4xx (other than rate limiting) will not succeed on retry.
-                if e.code != 429 and e.code < 500:
+                # 4xx (other than rate limiting and timeouts) will not succeed on retry.
+                if e.code not in (408, 429) and e.code < 500:
                     raise HttpError(req.full_url, e.code, f"HTTP {e.code}") from e
                 last = e
                 if e.code == 429 and limited < self.rate_limit_retries:

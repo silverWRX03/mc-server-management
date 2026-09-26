@@ -1397,7 +1397,7 @@ class Api:
             return sd / (read_properties(sd / "server.properties").get("level-name") or "world")
         paths = {"server": cfg.root, "files": sd, "mods": sd / "mods", "config": sd / "config", "logs": sd / "logs",
                  "crash": sd / "crash-reports", "backups": cfg.backups.dir, "exports": self.exports_dir,
-                 "manual": cfg.manual_dir, "java": cfg.state_dir / "java"}
+                 "manual": cfg.manual_dir, "java": cfg.state_dir / "java", "reports": cfg.state_dir / "logs"}
         if what not in paths:
             raise ApiError(400, "unknown folder")
         return paths[what]

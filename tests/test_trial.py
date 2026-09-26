@@ -129,3 +129,20 @@ def test_a_failed_download_is_explained_not_an_internal_error(hub_env):
     hub.http.json[url] = HttpError(url, None, "request failed: The read operation timed out")
     status, body, _ = c.get("/api/hub/mods/requires?id=x1&loader=fabric&version=1.21.1")
     assert status == 502 and body["error"].startswith("api.modrinth.com took too long")
+
+
+def test_a_mod_with_a_huge_history_falls_back_to_one_versions_builds(http, modrinth):
+    """Modrinth can time out (HTTP 408) sending all of Fabric API's builds; ask for fewer."""
+    import json
+    import urllib.parse
+    from mcsm.config import ModSpec
+    from mcsm.http import HttpError
+    modrinth.project("P7dR8mSH", "fabric-api", "Fabric API")
+    modrinth.version("P7dR8mSH", "0.100", ["1.21.1"])
+    full = f"{API_URL}/project/P7dR8mSH/version?" + urllib.parse.urlencode({"loaders": json.dumps(["fabric"])})
+    http.json[full] = HttpError(full, 408, "HTTP 408")
+    f = ModrinthProvider(http).resolve(ModSpec("modrinth", "fabric-api"), "1.21.1", ("fabric",), "release")
+    assert f.version_number == "0.100"
+
+
+API_URL = "https://api.modrinth.com/v2"

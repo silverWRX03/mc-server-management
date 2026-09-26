@@ -84,7 +84,15 @@ class ModrinthProvider(ModProvider):
             raise ClientOnly(f"{project.name} is client-side only")
         if side == "client" and project.client_side == "unsupported":
             raise Unavailable(f"{project.name} only runs on servers")
-        candidates = [v for v in self._versions(project.id, loaders)
+        try:
+            versions = self._versions(project.id, loaders)  # all of them: reused for other Minecraft versions
+        except HttpError as e:
+            if e.status == 404:
+                raise
+            # Mods with long histories (Fabric API has thousands of builds) can time out;
+            # ask for just this Minecraft version's builds instead.
+            versions = self._versions(project.id, loaders, minecraft)
+        candidates = [v for v in versions
                       if minecraft in v.get("game_versions", []) and self._acceptable(v, channel)]
         if not candidates:
             raise Unavailable(f"{project.name} has no {'/'.join(loaders)} build for {minecraft}")
