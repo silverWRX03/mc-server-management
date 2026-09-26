@@ -8,6 +8,7 @@ patterns and maps what it finds (mod ids, jar names) to the installed mods:
 * NeoForge/Forge: "Missing or unsupported mandatory dependencies", "Mod ID: 'x'",
   "Failed to create mod instance. ModID: x", "... has failed to load correctly"
 * Mixins: "Mixin [x.mixins.json:...] from mod x" / "Mixin apply for mod x failed"
+* Paper plugins: "Could not load 'plugins/x.jar'", "Error occurred while enabling X"
 * crash reports: "Suspected Mod(s):", "Mod File: .../x.jar"
 * stack traces naming a jar: "[x.jar:?]" or "(x.jar)"
 """
@@ -31,6 +32,8 @@ RULES: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"(?:mod|Mod) ([\w.-]+) (?:\([^)]*\) )?has failed to load correctly"), "id", "it failed to load"),
     (re.compile(r"Mixin \[[^\]]*\] from mod ([\w.-]+)"), "id", "one of its mixins (code changes) failed"),
     (re.compile(r"Mixin apply for mod ([\w.-]+) failed"), "id", "one of its mixins (code changes) failed"),
+    (re.compile(r"Could not load '(?:plugins[/\\])?([^'/\\]+\.jar)'"), "jar", "Paper couldn't load the plugin"),
+    (re.compile(r"Error occurred while enabling ([\w.-]+)"), "id", "the plugin failed to start"),
     (re.compile(r"Suspected Mods?: ([^\n]+)"), "list", "the crash report suspects it"),
     (re.compile(r"Mod File: [^\n]*?([^/\\\n]+\.jar)"), "jar", "the crash report points at its file"),
     (re.compile(r"[\[(]([\w.+-]+\.jar)[:\])]"), "jar", "it appears in the error's stack trace"),
@@ -78,17 +81,20 @@ def _crash_report(server_dir: Path, since: float) -> str:
         return ""
 
 
+def _installed(server_dir: Path, jar: str) -> bool:
+    return (server_dir / "mods" / jar).is_file() or (server_dir / "plugins" / jar).is_file()
+
+
 def diagnose(lines: list[str], server_dir: Path | None = None, mods=(), since: float | None = None) -> Diagnosis:
     """Find the mods to blame. ``mods`` are the installed ModFiles (for names and file names)."""
-    from .configs import jar_mods
+    from .configs import jar_mods, jars
     by_file = {m.filename: m for m in mods}
     ids: dict[str, str] = {}   # mod id -> jar file name
     names: dict[str, str] = {}  # lower-case name -> jar file name
-    if server_dir is not None and (server_dir / "mods").is_dir():
-        for jar in (server_dir / "mods").glob("*.jar"):
-            for mod_id, display in jar_mods(jar):
-                ids.setdefault(mod_id.lower(), jar.name)
-                names.setdefault(display.lower(), jar.name)
+    for jar in jars(server_dir) if server_dir is not None else []:
+        for mod_id, display in jar_mods(jar):
+            ids.setdefault(mod_id.lower(), jar.name)
+            names.setdefault(display.lower(), jar.name)
     for m in mods:
         names.setdefault(m.name.lower(), m.filename)
 
@@ -107,7 +113,7 @@ def diagnose(lines: list[str], server_dir: Path | None = None, mods=(), since: f
             jar = key
         mod = by_file.get(jar)
         name = mod.name if mod else (key if not key_l.endswith(".jar") else key.rsplit(".", 1)[0])
-        in_mods = bool(jar) and server_dir is not None and (server_dir / "mods" / jar).is_file()
+        in_mods = bool(jar) and server_dir is not None and _installed(server_dir, jar)
         if not (mod or in_mods or key_l in ids or key_l in names):
             return  # not one of this server's mods (a library, or Minecraft itself)
         ident = jar or key_l
@@ -128,7 +134,7 @@ def diagnose(lines: list[str], server_dir: Path | None = None, mods=(), since: f
                 add(m.group(1), reason, evidence)
             elif kind == "jar":
                 add(m.group(1), reason, evidence, jar=m.group(1) if m.group(1) in by_file or (
-                    server_dir is not None and (server_dir / "mods" / m.group(1)).exists()) else "")
+                    server_dir is not None and _installed(server_dir, m.group(1))) else "")
             elif kind == "list":
                 for part in re.split(r",\s*", m.group(1)):
                     token = re.match(r"\s*([^(]+?)\s*(?:\(([\w.-]+)\))?\s*$", part)

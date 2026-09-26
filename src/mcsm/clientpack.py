@@ -69,7 +69,9 @@ class PackBuilder:
         m = self.m
         lk, cfg = m.lock, m.config
         modrinth = m.providers.get("modrinth") or ModrinthProvider(m.http)
-        loaders = m.loader.mod_loaders
+        # Paper's plugins only run on the server: players join with plain Minecraft.
+        plugins = m.loader.mods_folder != "mods"
+        loaders = () if plugins else m.loader.mod_loaders
         mods: list[dict] = []
         manual: list[dict] = []
         skipped: list[dict] = []
@@ -77,13 +79,13 @@ class PackBuilder:
 
         # The server's own mods, unless they only run on servers.
         sides = {}
-        ids = [x.project_id for x in lk.mods if x.source == "modrinth"]
+        ids = [x.project_id for x in lk.mods if x.source == "modrinth" and not plugins]
         if ids:
             try:
                 sides = {pid: p.get("client_side", "unknown") for pid, p in modrinth.projects(ids).items()}
             except Exception as e:  # can't tell: include them all (a spare server mod is harmless)
                 log.warning("couldn't look up which mods players need (%s); including all of them", e)
-        for x in lk.mods:
+        for x in ([] if plugins else lk.mods):
             if x.source == "modrinth" and sides.get(x.project_id) == "unsupported":
                 continue
             included.add(x.key)
@@ -116,8 +118,8 @@ class PackBuilder:
             "format": FORMAT,
             "name": props.get("motd") or cfg.root.name,
             "minecraft": lk.minecraft,
-            "loader": lk.loader,
-            "loader_version": lk.loader_version,
+            "loader": "vanilla" if plugins else lk.loader,
+            "loader_version": None if plugins else lk.loader_version,
             "java_major": lk.java_major,
             "address": address,
             "memory_gb": cfg.client.memory_gb,

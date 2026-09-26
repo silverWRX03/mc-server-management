@@ -25,6 +25,7 @@ from . import config as configmod, selfupdate, setup as setupmod
 from .config import ConfigError, WebConfig
 from .daemon import Daemon, SELF_CHECK_INTERVAL, pid_alive, running_pid, set_current_server
 from .http import HttpClient
+from .loaders import mods_folder
 from .manager import Manager
 
 log = logging.getLogger(__name__)
@@ -477,7 +478,7 @@ class Hub:
             spec.world_source = self.world_source(spec.world)  # before any files are written
             setupmod.configure(root, spec)
             setupmod.mark_pending(root)
-            self.take_staged(spec.local_mods, configmod.load(root).server.dir / "mods")
+            self.take_staged(spec.local_mods, configmod.load(root).server.dir / mods_folder(spec.loader))
             self._attach(sid, root)
             d = self.daemons.get(sid)
             if d is None:

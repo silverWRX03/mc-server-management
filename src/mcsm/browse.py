@@ -44,14 +44,19 @@ class Browser:
         if sort not in SORTS:
             raise BrowseError("unknown sort order")
         offset = max(0, min(int(offset), 10_000))
+        plugins = loader == "paper"
         if source == "curseforge":
+            if plugins:
+                raise BrowseError("Paper plugins come from Modrinth; switch the source to Modrinth")
             if kind == "modpack":
                 raise BrowseError("CurseForge modpacks aren't supported yet; search Modrinth")
             return self._cf_search(query, loader, version, category, sort, offset)
         if source != "modrinth":
             raise BrowseError("unknown source")
         facets = [[f"project_type:{kind}"], ["server_side:required", "server_side:optional"]]
-        if loader and kind == "mod":
+        if plugins and kind == "mod":
+            facets = [["categories:paper", "categories:spigot", "categories:bukkit"]]
+        elif loader and kind == "mod":
             facets.append([f"categories:{loader}"] + (["categories:fabric"] if loader == "quilt" else []))
         if loader and kind == "modpack":
             facets.append([f"categories:{loader}"])
@@ -68,7 +73,7 @@ class Browser:
             "updated": h.get("date_modified", ""), "created": h.get("date_created", ""),
             "categories": h.get("display_categories") or h.get("categories", []),
             "versions": h.get("versions", [])[-6:], "kind": kind,
-            "url": f"https://modrinth.com/{kind}/{h.get('slug') or h['project_id']}",
+            "url": f"https://modrinth.com/{'plugin' if plugins else kind}/{h.get('slug') or h['project_id']}",
         } for h in data.get("hits", [])]
         return {"results": hits, "total": data.get("total_hits", len(hits)), "offset": offset, "page": PAGE}
 

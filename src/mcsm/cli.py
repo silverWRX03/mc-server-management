@@ -293,7 +293,7 @@ def _ask(question: str, default: str, choices: tuple[str, ...] | None = None) ->
 def _wizard(root: Path) -> bool:
     print(f"\nWelcome to mcsm! Let's set up your Minecraft server in {root}\n"
           "(Press Enter to take the suggestion in [brackets].)\n")
-    loader = _ask("Mod loader: fabric, neoforge, forge, quilt or vanilla", "fabric", configmod.LOADERS)
+    loader = _ask("Mod loader: fabric, neoforge, forge, quilt, paper or vanilla", "fabric", configmod.LOADERS)
     minecraft = _ask("Minecraft version ('latest' = the newest one your mods support)", "latest")
     memory = _ask("Memory for the server, e.g. 4G or 8G", "4G")
     mods = []

@@ -9,6 +9,7 @@ from ..http import HttpClient, HttpError
 from .base import CHANNEL_RANK, ClientOnly, ModError, ModFile, ModProvider, Project, Unavailable
 
 API = "https://api.modrinth.com/v2"
+PLUGIN_LOADERS = ("paper", "spigot", "bukkit", "purpur", "folia")
 
 
 class ModrinthProvider(ModProvider):
@@ -96,6 +97,8 @@ class ModrinthProvider(ModProvider):
         that have a build for that version."""
         facets = [[f"categories:{l}" for l in loaders], [f"{side}_side:required", f"{side}_side:optional"],
                   ["project_type:mod"]]
+        if any(l in PLUGIN_LOADERS for l in loaders):
+            facets = [[f"categories:{l}" for l in loaders]]  # server plugins: their loaders say it all
         if minecraft:
             facets.append([f"versions:{minecraft}"])
         data = self.http.get_json(f"{API}/search", params={

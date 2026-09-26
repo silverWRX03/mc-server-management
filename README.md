@@ -47,7 +47,7 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Keeps mods updated** within your current Minecraft version too.
 - **Dependency resolution**: required dependencies are pulled in automatically, and
   client-only mods are skipped.
-- **Loaders:** Fabric, Quilt, NeoForge, Forge (1.17+), and vanilla.
+- **Loaders:** Fabric, Quilt, NeoForge, Forge (1.17+), Paper (with plugins from Modrinth), and vanilla.
 - **Mod sources:** Modrinth, and CurseForge (needs an API key).
 - **Server supervisor** (`mcsm run`): restarts after crashes, gives in-game restart
   countdowns, can wait until nobody is online, passes console input through, and
@@ -100,7 +100,7 @@ the terminal or in the web UI. Nothing runs until you do.
 
 - mcsm runs your Minecraft server on this computer and keeps it and its mods up to date.
 - It connects to the internet to download Minecraft, mod loaders, mods, Java and its
-  own updates (from Mojang, Modrinth, CurseForge, Fabric, Quilt, NeoForge, Forge, Adoptium and GitHub).
+  own updates (from Mojang, Modrinth, CurseForge, Fabric, Quilt, NeoForge, Forge, PaperMC, Adoptium and GitHub).
 - It does not collect usage data. There is no analytics, tracking, advertising or account.
 - Your worlds, settings and backups stay on this computer. Nothing is uploaded, except
   messages to Discord if you set up a webhook.
@@ -174,7 +174,7 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
    **Start** on the one you want to play, and **Stop** when you're done (closing mcsm
    stops them too). Several can run at once, each on its own port.
 4. **New server** asks, one step at a time, for:
-   - the server type: Fabric, NeoForge, Forge, Quilt or vanilla;
+   - the server type: Fabric, NeoForge, Forge, Quilt, Paper or vanilla;
    - the Minecraft version: "newest" for a server that keeps upgrading itself, or a
      specific version to stay on;
    - mods (only for server types that run them): **Local files** (`.jar`s on your
@@ -591,7 +591,7 @@ required = true
   executable; you need to be signed in to GitHub.
 - **Real end-to-end test:** the **e2e** workflow ([`packaging/e2e_test.py`](packaging/e2e_test.py))
   uses a built executable against the real services:
-  - it creates real Fabric, NeoForge, Forge and vanilla servers with real Modrinth
+  - it creates real Fabric, NeoForge, Forge, Paper and vanilla servers with real Modrinth
     mods, downloads Java, and boots Minecraft;
   - it upgrades the Fabric server to the newest version its mods support;
   - it drives the web UI, RCON and player commands, then stops cleanly.

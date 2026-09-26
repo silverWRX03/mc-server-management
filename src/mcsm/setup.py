@@ -27,6 +27,7 @@ LOADER_INFO = [
     ("neoforge", "NeoForge", "The modern Forge. Big content mods and modpacks for recent versions.", True),
     ("forge", "Forge", "The classic loader. Best for older modpacks (Minecraft 1.20.1 and earlier).", True),
     ("quilt", "Quilt", "A Fabric fork that also runs most Fabric mods.", True),
+    ("paper", "Paper", "Fast plain Minecraft that runs server plugins (from Modrinth). Players join with no mods.", True),
     ("vanilla", "Vanilla", "Plain Minecraft with no mods.", False),
 ]
 DIFFICULTIES = ("peaceful", "easy", "normal", "hard")

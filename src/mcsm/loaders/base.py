@@ -31,6 +31,8 @@ class Loader(ABC):
     name: str = ""
     #: loader names that mod platforms use for mods that run on this loader
     mod_loaders: tuple[str, ...] = ()
+    #: where the server loads mods (plugins, for Paper) from
+    mods_folder: str = "mods"
 
     def __init__(self, http: HttpClient, mojang: Mojang):
         self.http = http

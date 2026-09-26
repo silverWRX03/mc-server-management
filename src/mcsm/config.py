@@ -10,7 +10,7 @@ from pathlib import Path
 
 STATE_DIR = ".mcsm"
 CONFIG_NAME = "mcsm.toml"
-LOADERS = ("fabric", "quilt", "neoforge", "forge", "vanilla")
+LOADERS = ("fabric", "quilt", "neoforge", "forge", "paper", "vanilla")
 MOD_SOURCES = ("modrinth", "curseforge")
 STRATEGIES = ("latest-compatible", "latest", "mods-only")
 CHANNELS = ("release", "beta", "alpha")
@@ -257,7 +257,7 @@ TEMPLATE = """\
 
 [server]
 dir = "server"                 # server directory (world, config/, mods/, server.properties)
-loader = "{loader}"            # fabric | quilt | neoforge | forge | vanilla
+loader = "{loader}"            # fabric | quilt | neoforge | forge | paper | vanilla
 minecraft = "{minecraft}"      # version to install on first `mcsm update` ("latest" = newest release)
 memory = "4G"
 jvm_args = []                  # extra JVM flags, e.g. ["-XX:+UseZGC"]

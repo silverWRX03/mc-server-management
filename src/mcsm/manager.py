@@ -122,8 +122,13 @@ class Manager:
         changes = decision.plan.changes(self.lock) if decision.plan else None
         return decision, changes
 
+    @property
+    def mods_dir(self) -> Path:
+        """Where the server loads mods from (plugins/ for Paper)."""
+        return self.server_dir / self.loader.mods_folder
+
     def unmanaged_jars(self) -> list[str]:
-        mods_dir = self.server_dir / "mods"
+        mods_dir = self.mods_dir
         if not mods_dir.is_dir():
             return []
         managed = {m.filename for m in self.lock.mods}
@@ -183,7 +188,7 @@ class Manager:
     # --------------------------------------------------------------- staging
     def _local_copy(self, mod: ModFile) -> Path | None:
         """A verified copy of ``mod`` already on disk (installed, or dropped in by hand)."""
-        places = [self.server_dir / "mods" / mod.filename]
+        places = [self.mods_dir / mod.filename]
         if mod.manual and self.config.manual_dir:
             places.append(self.config.manual_dir / mod.filename)
         installed = next((m for m in self.lock.mods if m.key == mod.key), None)
@@ -232,7 +237,7 @@ class Manager:
 
     def _swap(self, staged: Staged, plan: Plan) -> Lock:
         server = self.server_dir
-        mods_dir = server / "mods"
+        mods_dir = self.mods_dir
         mods_dir.mkdir(parents=True, exist_ok=True)
         for old in self.lock.mods:
             (mods_dir / old.filename).unlink(missing_ok=True)
@@ -345,7 +350,7 @@ class Manager:
         from .mods.modrinth import ModrinthProvider
 
         modrinth = self.providers.get("modrinth") or ModrinthProvider(self.http)
-        mods_dir = self.server_dir / "mods"
+        mods_dir = self.mods_dir
         jars = {sha1_file(p): p for p in sorted(mods_dir.glob("*.jar"))} if mods_dir.is_dir() else {}
         found = modrinth.identify(list(jars))
         identified, unknown = [], []

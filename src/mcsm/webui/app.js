@@ -844,10 +844,12 @@ views.players = () => {
 };
 
 views.mods = () => {
+  const me = hubInfo && hubInfo.servers ? hubInfo.servers.find((x) => x.id === server) : null;
+  const plugins = !!me && me.loader === "paper";  // Paper runs plugins
   const results = h("div");
   const configured = h("div");
   const installed = h("div");
-  const q = h("input", { placeholder: "Search Modrinth for server mods…", type: "search" });
+  const q = h("input", { placeholder: plugins ? "Search Modrinth for plugins…" : "Search Modrinth for server mods…", type: "search" });
   let searchTimer;
 
   const search = async () => {
@@ -954,16 +956,17 @@ views.mods = () => {
     h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
       h("span", { class: "small muted" }, ".jar files on this computer")),
     h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: server, loader: info.loader || "", version: info.minecraft || "" }) },
-      "🔎 Download mods", h("span", { class: "small muted" }, "Browse Modrinth and CurseForge")),
+      plugins ? "🔎 Download plugins" : "🔎 Download mods", h("span", { class: "small muted" }, plugins ? "Browse Modrinth" : "Browse Modrinth and CurseForge")),
     hubInfo && hubInfo.single ? null : h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup" }) },
       "📦 Modpacks", h("span", { class: "small muted" }, "Start a new server from a pack")),
     picker);
 
   fill($("#main"), 
-    h("h2", { class: "view-title" }, "Mods"),
-    card("Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, results,
-      h("div", { class: "row mt-s" }, cfId,
-        h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
+    h("h2", { class: "view-title" }, plugins ? "Plugins" : "Mods"),
+    card(plugins ? "Add plugins" : "Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, results,
+      plugins ? h("p", { class: "muted small mt-s" }, "Paper runs Paper, Spigot and Bukkit plugins from its plugins folder. Players don't need them.")
+        : h("div", { class: "row mt-s" }, cfId,
+          h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
     h("div", { class: "mt" }, configsCard),
     h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured,
       h("div", { class: "row mt-s" }, testButton({
@@ -1236,7 +1239,7 @@ views.friends = () => {
         h("label", { class: "mt" }, "Memory for friends' Minecraft",
           (() => { const sel = h("select", { onchange: (e) => save({ memory_gb: Number(e.target.value) }, "Saved") },
             [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32].map((g) => h("option", { value: String(g) }, `${g} GB`))); sel.value = String(d.memory_gb); return sel; })()))),
-      d.loader === "vanilla" ? null : h("div", { class: "mt" }, card("Add mods just for players",
+      d.loader === "vanilla" || d.loader === "paper" ? null : h("div", { class: "mt" }, card("Add mods just for players",
         h("p", { class: "muted small" }, "Client-side mods like minimaps, recipe viewers or performance mods. The server's own mods that players need are included automatically."),
         h("h3", { class: "mt-s" }, "Your players' mods"),
         d.mods.length ? h("ul", { class: "list" }, d.mods.map((x) => h("li", {}, h("strong", { class: "grow" }, x),
@@ -1409,18 +1412,19 @@ function browserPanel(params, host) {
   const kind = params.get("type") === "modpack" ? "modpack" : "mod";
   const target = params.get("target") || "setup";
   const loader = params.get("loader") || "";
+  const noun = loader === "paper" ? "plugin" : kind;  // Paper runs plugins (from Modrinth)
   const base = target === "setup" ? "/api/hub/browse" : `/api/servers/${encodeURIComponent(target)}/browse`;
   const st = { q: "", source: "modrinth", sort: "relevance", category: "", version: params.get("version") || "",
     offset: 0, total: 0, results: [], selected: new Map(), active: null };
   const list = h("div", { class: "browse-results" });
-  const details = h("div", { class: "browse-right" }, h("p", { class: "empty" }, `Pick a ${kind} on the left to read about it here.`));
+  const details = h("div", { class: "browse-right" }, h("p", { class: "empty" }, `Pick a ${noun} on the left to read about it here.`));
   const count = h("span", { class: "grow muted small" });
-  const addBtn = h("button", { class: "btn primary" + (kind === "modpack" ? " hidden" : ""), disabled: true }, "Add selected mods");
-  const q = h("input", { type: "search", placeholder: kind === "modpack" ? "Search modpacks…" : "Search mods…", "aria-label": "Search" });
+  const addBtn = h("button", { class: "btn primary" + (kind === "modpack" ? " hidden" : ""), disabled: true }, `Add selected ${noun}s`);
+  const q = h("input", { type: "search", placeholder: `Search ${noun}s…`, "aria-label": "Search" });
   const sort = h("select", { "aria-label": "Sort by" }, [["relevance", "Best match"], ["downloads", "Most downloaded"],
     ["follows", "Most followed"], ["newest", "Newest"], ["updated", "Recently updated"]].map(([v, l]) => h("option", { value: v }, l)));
   const source = h("select", { "aria-label": "Source" }, h("option", { value: "modrinth" }, "Modrinth"),
-    kind === "mod" ? h("option", { value: "curseforge" }, "CurseForge") : null);
+    kind === "mod" && noun !== "plugin" ? h("option", { value: "curseforge" }, "CurseForge") : null);
   let cfKey = null;  // whether a CurseForge API key is set (asked once)
   const category = h("select", { "aria-label": "Category" }, h("option", { value: "" }, "All categories"));
   const version = h("input", { value: st.version, placeholder: "Any version", "aria-label": "Minecraft version", class: "narrow" });
@@ -1447,7 +1451,7 @@ function browserPanel(params, host) {
     count.textContent = kind === "modpack" ? (st.active ? "" : "Pick a modpack to see its versions.")
       : n ? `${n} selected: ${[...st.selected.values()].map((m) => m.name).slice(0, 3).join(", ")}${n > 3 ? "…" : ""}` +
         (extra.length ? ` · also adds ${extra.join(", ")} (needed)` : "") + (bad.length ? ` · ⚠ ${bad.map((m) => m.bad).join("; ")}` : "")
-        : "Tick the mods you want.";
+        : `Tick the ${noun}s you want.`;
     addBtn.disabled = kind === "modpack" ? true : n === 0;
   };
   // CurseForge only answers apps with an API key (free); explain and take one here.
@@ -1576,7 +1580,7 @@ function browserPanel(params, host) {
   const el = h("div", { class: "browse" },
     h("div", { class: "browse-left" },
       h("div", { class: "browse-filters" },
-        h("div", { class: "row" }, h("strong", { class: "grow" }, kind === "modpack" ? "Modpacks" : "Mods"),
+        h("div", { class: "row" }, h("strong", { class: "grow" }, { modpack: "Modpacks", plugin: "Plugins", mod: "Mods" }[noun]),
           loader ? h("span", { class: "tag" }, loader) : null,
           host ? h("button", { class: "btn ghost small", onclick: () => host.close() }, "Close") : h("a", { class: "btn ghost small", href: target === "setup" ? "#new" : `#s/${target}/mods` }, "Back")),
         q,
@@ -2323,6 +2327,9 @@ views.setup = () => {
     const q = h("input", { type: "search", placeholder: "Search Modrinth, e.g. lithium, create, farmer's delight" });
     let timer;
     const loaderLabel = (opts.loaders.find((l) => l.name === st.loader) || {}).label || st.loader;
+    const plugins = st.loader === "paper";  // Paper: server plugins rather than mods
+    const noun = plugins ? "plugins" : "mods";
+    if (plugins) q.placeholder = "Search Modrinth plugins, e.g. luckperms, chunky, coreprotect";
     const search = async () => {
       const term = q.value.trim();
       const mcv = setupModVersion();  // only mods with a build for the chosen Minecraft
@@ -2333,15 +2340,15 @@ views.setup = () => {
         ? await api(url).catch((e) => { toast(e.message, true); return null; }) : topMods.get(key);
       if (!r || q.value.trim() !== term) return;  // a newer search is on its way
       if (!term) topMods.set(key, r);
-      fill(results, term ? null : h("h3", { class: "mt-s" }, `Most popular ${loaderLabel} mods` + (mcv ? ` for Minecraft ${mcv}` : "")),
-        mcv ? h("p", { class: "muted small" }, `Only mods that work on Minecraft ${mcv} are shown` +
+      fill(results, term ? null : h("h3", { class: "mt-s" }, `Most popular ${loaderLabel} ${noun}` + (mcv ? ` for Minecraft ${mcv}` : "")),
+        mcv ? h("p", { class: "muted small" }, `Only ${noun} that work on Minecraft ${mcv} are shown` +
           (st.minecraft === "latest" ? " (the newest release; pick a version above to see mods for another)." : ".")) : null,
         r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
         m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
         h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
         st.mods.has(m.slug) ? h("span", { class: "tag ok" }, "added")
           : h("button", { type: "button", class: "btn small primary", onclick: () => { setupAddMod(m.slug, m.name); search(); } }, "Add"),
-      )) : [h("p", { class: "empty" }, `No ${loaderLabel} server mods found` + (mcv ? ` for Minecraft ${mcv}.` : "."))]);
+      )) : [h("p", { class: "empty" }, `No ${loaderLabel} server ${noun} found` + (mcv ? ` for Minecraft ${mcv}.` : "."))]);
     };
     q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
     renderSelected();
@@ -2361,8 +2368,8 @@ views.setup = () => {
       h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
         h("span", { class: "small muted" }, ".jar files on this computer")),
       h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: "setup", loader: st.loader, version: setupModVersion() }) },
-        "🔎 Download mods", h("span", { class: "small muted" }, "Browse Modrinth and CurseForge")),
-      h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup", loader: st.modpack ? "" : st.loader }) },
+        plugins ? "🔎 Download plugins" : "🔎 Download mods", h("span", { class: "small muted" }, plugins ? "Browse Modrinth" : "Browse Modrinth and CurseForge")),
+      plugins ? null : h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup", loader: st.modpack ? "" : st.loader }) },
         "📦 Modpacks", h("span", { class: "small muted" }, "A ready-made pack of mods")),
       picker);
     const packCard = st.modpack ? h("div", { class: "notice mt-s pack" },
@@ -2370,7 +2377,7 @@ views.setup = () => {
       h("div", { class: "grow" }, h("strong", {}, st.modpack.name), " ", h("span", { class: "tag" }, st.modpack.version || ""),
         h("div", { class: "small muted" }, `Minecraft ${st.minecraft}, ${loaderLabel}. The pack decides the version and server type; its mods are installed and kept up to date.`)),
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.modpack = null; st.minecraft = "latest"; renderForm(); } }, "Remove modpack")) : null;
-    const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card("3. Mods",
+    const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card(plugins ? "3. Plugins" : "3. Mods",
       sources, packCard, h("h3", { class: "mt" }, "Quick add"), q, results, h("h3", { class: "mt" }, "Your mods"), selected,
       h("div", { class: "row mt-s" }, testButton({
         quick: () => api("/api/hub/mods/check", { method: "POST", body: { loader: st.loader, minecraft: setupModVersion(),
@@ -2378,7 +2385,8 @@ views.setup = () => {
         trial: { loader: st.loader, minecraft: st.minecraft, mods: [...st.mods].filter(([, m]) => m.explicit).map(([k]) => k) },
         keepWorking: (res) => { for (const o of res.outliers) setupRemoveMod(o.source === "curseforge" ? `curseforge:${o.id}` : o.id); },
       }), h("span", { class: "muted small" }, "Check that these mods work together before creating the server.")),
-      st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null) : null;
+      st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null,
+      plugins ? h("p", { class: "muted small" }, "Paper runs server plugins (Paper, Spigot and Bukkit ones) from its plugins folder. Players join with plain Minecraft: plugins don't need anything on their side.") : null) : null;
 
     // Settings
     const inp = (key, attrs = {}) => h("input", { value: st[key], ...attrs, oninput: (e) => { st[key] = attrs.type === "number" ? Number(e.target.value) : e.target.value; } });

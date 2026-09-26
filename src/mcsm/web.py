@@ -941,7 +941,7 @@ class Api:
         spec = setupmod.SetupSpec.from_dict(b)
         spec.world_source = self.web.hub.world_source(spec.world)
         if spec.local_mods:
-            self.web.hub.take_staged(spec.local_mods, self.m.server_dir / "mods")
+            self.web.hub.take_staged(spec.local_mods, self.m.mods_dir)
         return self._job("set up server", self.d.run_setup, spec)
 
     # ---------------------------------------------------------------- mods
@@ -1013,6 +1013,8 @@ class Api:
         mod_id = str(b.get("id", "")).strip()
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", mod_id):
             raise ApiError(400, "invalid mod id")
+        if source != "modrinth" and self.m.loader.mods_folder != "mods":
+            raise ApiError(400, "Paper plugins come from Modrinth")
         project = self.m.providers[source].project(mod_id)
         if project.server_side == "unsupported":
             raise ApiError(400, f"{project.name} is client-side only")
@@ -1065,7 +1067,7 @@ class Api:
         name = q.get("filename", "")
         if not re.fullmatch(r"[A-Za-z0-9 ()\[\]+_.,'-]{1,120}\.jar", name):
             raise ApiError(400, "only .jar files can be added as mods")
-        mods_dir = self.m.server_dir / "mods"
+        mods_dir = self.m.mods_dir
         dest = receive(handler, mods_dir / name, MAX_UPLOAD)
         try:
             found = self._modrinth().identify([sha1_file(dest)])
@@ -1240,8 +1242,8 @@ class Api:
     def client_search(self, q, b) -> dict:
         from .loaders import LOADERS
         loaders = LOADERS[self.m.config.server.loader].mod_loaders
-        if not loaders:
-            return {"results": []}
+        if not loaders or LOADERS[self.m.config.server.loader].mods_folder != "mods":
+            return {"results": []}  # vanilla, or Paper: players join with plain Minecraft
         query = q.get("q", "").strip()
         if not query and q.get("top") != "1":
             return {"results": []}
