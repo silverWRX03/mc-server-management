@@ -857,7 +857,12 @@ views.settings = () => {
     const sel = (k, opts) => (f[k] = h("select", {}, opts.map((o) => h("option", { value: o }, o))), f[k].value = s[k], f[k]);
     const txt = (k, extra = {}) => (f[k] = h("input", { value: s[k], ...extra }));
     const chk = (k, text) => h("label", { class: "row" }, (f[k] = h("input", { type: "checkbox", checked: s[k] })), h("span", {}, text));
-    fill(form, 
+    const advanced = { ...s.properties };
+    const advancedEl = h("details", { class: "advanced mt-l" },
+      h("summary", {}, "Advanced server settings"),
+      h("p", { class: "muted small" }, "The rest of Minecraft's server.properties. These apply at the next restart."),
+      propsEditor(s.properties_schema, advanced));
+    fill(form,
       h("h3", {}, "Updates"),
       h("div", { class: "grid" },
         h("label", {}, "Strategy", sel("strategy", s.choices.strategy)),
@@ -875,8 +880,9 @@ views.settings = () => {
         h("label", {}, "Backups to keep", txt("backups_keep", { type: "number", min: 1 })),
         h("label", {}, "Discord webhook URL", txt("discord_webhook", { type: "url", placeholder: "https://discord.com/api/webhooks/…" }))),
       h("div", { class: "grid mt-s" }, chk("restart_on_crash", "Restart after crashes")),
+      advancedEl,
       h("div", { class: "row mt" }, h("button", { class: "btn primary", type: "submit" }, "Save settings"),
-        h("span", { class: "muted small" }, "Memory and port changes apply at the next restart.")),
+        h("span", { class: "muted small" }, "Memory, port and advanced changes apply at the next restart.")),
     );
     form.onsubmit = (e) => {
       e.preventDefault();
@@ -887,14 +893,94 @@ views.settings = () => {
         memory: f.memory.value.trim(), backups_keep: Number(f.backups_keep.value), discord_webhook: f.discord_webhook.value.trim(),
         port: Number(f.port.value),
         restart_on_crash: f.restart_on_crash.checked,
+        properties: changedProps(advanced, s.properties),
       };
       act(() => api("/api/settings", { method: "POST", body }), "Settings saved").then(load);
     };
   };
-  fill($("#main"), h("h2", { class: "view-title" }, "Server settings"), form);
+  const danger = h("div", { class: "card danger-zone mt" });
+  const renderDanger = () => {
+    const me = hubInfo && hubInfo.servers ? hubInfo.servers.find((x) => x.id === server) : null;
+    if (!me || hubInfo.single) { fill(danger); danger.classList.add("hidden"); return; }
+    danger.classList.remove("hidden");
+    fill(danger, h("h3", {}, "Delete this server"),
+      h("div", { class: "row" },
+        h("span", { class: "grow muted" }, "Take it off your list, and choose whether to also erase its world, mods and backups."),
+        h("button", { class: "btn danger", onclick: () => deleteServer(me, () => { location.hash = "#servers"; }) }, "Delete server…")));
+  };
+  fill($("#main"), h("h2", { class: "view-title" }, "Server settings"), form, danger);
   load();
-  return {};
+  renderDanger();
+  return { onStatus: renderDanger };
 };
+
+// ------------------------------------------------------------ advanced settings
+// Every other server.properties setting, grouped; edits `values` (key -> string) in place.
+function propsEditor(schema, values) {
+  const pretty = (c) => c.replace(/^minecraft:/, "").replace(/_/g, " ").replace(/^./, (x) => x.toUpperCase());
+  const field = (p) => {
+    const set = (v) => { values[p.key] = String(v); };
+    const hint = p.help ? h("span", { class: "muted small" }, p.help) : null;
+    if (p.kind === "bool") {
+      return h("label", { class: "row prop-bool" },
+        h("input", { type: "checkbox", checked: values[p.key] === "true", onchange: (e) => set(e.target.checked) }),
+        h("span", {}, p.label, hint ? h("br") : null, hint));
+    }
+    let input;
+    if (p.kind === "int") input = h("input", { type: "number", min: p.min, max: p.max, value: values[p.key], oninput: (e) => set(e.target.value) });
+    else if (p.kind === "choice") {
+      input = h("select", { onchange: (e) => set(e.target.value) }, p.choices.map((c) => h("option", { value: c }, pretty(c))));
+      input.value = values[p.key];
+    } else input = h("input", { value: values[p.key], maxlength: p.max_len || null, oninput: (e) => set(e.target.value) });
+    return h("label", {}, p.label, input, hint);
+  };
+  const groups = [...new Set(schema.map((p) => p.group))];
+  return h("div", { class: "props" }, groups.map((g) => h("fieldset", {},
+    h("legend", {}, g), h("div", { class: "grid" }, schema.filter((p) => p.group === g).map(field)))));
+}
+// Only the settings that differ from `base`, so untouched ones keep Minecraft's own defaults.
+function changedProps(values, base) {
+  return Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== base[k]));
+}
+
+// ------------------------------------------------------------ delete a server
+function deleteServer(s, after) {
+  if ($("#delete-server")) return;
+  let everything = false;
+  const box = h("div", { class: "modal compact" });
+  const close = () => { const m = $("#delete-server"); if (m) m.remove(); };
+  const render = (error) => {
+    const typed = h("input", { autocomplete: "off", placeholder: s.name });
+    const go = async (e) => {
+      e.preventDefault();
+      if (everything && typed.value.trim() !== s.name) return render(`Type the server's name, ${s.name}, to delete everything.`);
+      try {
+        const r = await api("/api/hub/delete", { method: "POST", body: { id: s.id, delete_files: everything } });
+        close();
+        toast(`${s.name}: ${r.message}`);
+        if (after) after();
+      } catch (err) { if (!(err instanceof Unauthorized)) render(err.message); }
+    };
+    const choice = (value, title, desc) => h("button", { type: "button", class: "choice" + (everything === value ? " selected" : "") + (value ? " danger" : ""),
+      onclick: () => { everything = value; render(); } }, h("strong", {}, title), h("span", { class: "small muted" }, desc));
+    fill(box,
+      h("h2", { id: "delete-title" }, `Delete ${s.name}?`),
+      s.state === "running" || s.state === "starting" ? h("div", { class: "notice warn" }, "Stop the server first.") : null,
+      h("p", {}, "Would you also like to delete its world, mods and everything else that belongs to it?"),
+      h("div", { class: "choices" },
+        choice(false, "Keep the files", `Take it off the list; the world and mods stay in ${s.folder}.`),
+        choice(true, "Delete everything", "The world, mods, backups and settings are erased. This can't be undone.")),
+      h("form", { class: "mt", onsubmit: go },
+        everything ? h("label", {}, `Type ${s.name} to confirm`, typed) : null,
+        h("p", { class: "error" }, error || ""),
+        h("div", { class: "row" },
+          h("button", { class: "btn danger", type: "submit" }, everything ? "Delete everything" : "Remove from the list"),
+          h("button", { class: "btn ghost", type: "button", onclick: close }, "Cancel"))));
+    if (everything) typed.focus();
+  };
+  render();
+  document.body.append(h("div", { class: "modal-backdrop", id: "delete-server", role: "dialog", "aria-modal": "true", "aria-labelledby": "delete-title" }, box));
+}
 
 // The home page: every server, each started and stopped by hand.
 views.servers = () => {
@@ -925,10 +1011,7 @@ views.servers = () => {
               ? h("button", { class: "btn primary", disabled: !!s.job || busy.has(s.id), onclick: () => control(s, "start") }, "Start")
               : h("button", { class: "btn danger", disabled: busy.has(s.id), onclick: () => control(s, "stop") }, "Stop"),
           s.setup_pending ? null : h("a", { class: "btn", href: `#s/${s.id}/dashboard` }, "Open"),
-          s.setup_pending && !s.job && !hb.single ? h("button", { class: "btn ghost", onclick: async () => {
-            if (!confirm(`Remove "${s.name}" from the list? It was never installed, so there's no world to lose; its files are kept in mcsm's trash folder.`)) return;
-            await act(() => api("/api/hub/remove", { method: "POST", body: { id: s.id } }), `Removed ${s.name}`);
-          } }, "Remove") : null),
+          !hb.single && !s.job ? h("button", { class: "btn ghost", onclick: () => deleteServer(s, refreshStatus) }, "Delete") : null),
         h("div", { class: "muted small folder" }, s.folder))),
       hb.single ? null : h("a", { class: "card server-card new", href: "#new" },
         h("strong", {}, "+ New server"), h("span", { class: "muted small" }, "Pick a server type, Minecraft version and mods")));
@@ -1002,7 +1085,7 @@ views.mcsm = () => {
 
 // ------------------------------------------------------------------- setup
 // Kept outside the view so choices survive re-renders and a failed attempt.
-const setupState = { loader: "fabric", minecraft: "latest", mods: new Map(), motd: "A Minecraft server",
+const setupState = { loader: null, minecraft: "latest", mods: new Map(), motd: "A Minecraft server", properties: null, advancedOpen: false,
   max_players: 20, difficulty: "normal", gamemode: "survival", port: 25565, memory_gb: null,
   network_access: null, accept_eula: false, submitted: false, prefilled: false };
 
@@ -1011,6 +1094,8 @@ views.setup = () => {
   let opts = null;
   const st = setupState;
   const isNew = !server;  // #new: a brand-new server; #s/<id>/setup: finish one that exists
+  const topMods = new Map();  // loader -> the popular list, fetched once
+  let propDefaults = {};
 
   const field = (label, input, hint) => h("label", {}, label, input, hint ? h("span", { class: "muted small" }, hint) : null);
 
@@ -1019,6 +1104,17 @@ views.setup = () => {
       type: "button", class: "choice" + (st.loader === l.name ? " selected" : ""),
       onclick: () => { st.loader = l.name; if (!l.mods) st.mods.clear(); renderForm(); },
     }, h("strong", {}, l.label), h("span", { class: "small muted" }, l.description))));
+    const intro = [
+      h("h2", { class: "view-title" }, isNew ? "Create a new server" : "Set up your server"),
+      h("p", { class: "muted" }, "Choose what kind of server you want. mcsm downloads everything it needs (Minecraft, the mod loader, mods and Java) and keeps it up to date from then on. " +
+        (opts.network_option ? "" : "It won't start until you press Start.")),
+      error ? h("div", { class: "notice bad" }, h("strong", {}, "Setup didn't finish: "), error, h("div", { class: "small mt-s" }, "Change your choices below and try again.")) : null,
+    ];
+    if (!st.loader) {  // one step at a time: the rest depends on the server type
+      fill(main, intro, card("1. Server type", loaderCards,
+        h("p", { class: "muted small mt-s" }, "Pick a server type to continue. Fabric, NeoForge, Forge and Quilt run mods; Vanilla is plain Minecraft.")));
+      return;
+    }
 
     const version = h("select", { onchange: (e) => { st.minecraft = e.target.value; } },
       h("option", { value: "latest" }, st.loader === "vanilla" ? "Newest release (recommended)" : "Newest version your mods support (recommended)"),
@@ -1036,21 +1132,28 @@ views.setup = () => {
       : h("p", { class: "empty" }, "No mods yet. Search above, or leave empty for an unmodded server."));
     const q = h("input", { type: "search", placeholder: "Search Modrinth, e.g. lithium, create, farmer's delight" });
     let timer;
+    const loaderLabel = (opts.loaders.find((l) => l.name === st.loader) || {}).label || st.loader;
     const search = async () => {
       const term = q.value.trim();
-      if (!term) { fill(results); return; }
-      const r = await api(`${isNew ? "/api/hub" : "/api"}/mods/search?loader=${encodeURIComponent(st.loader)}&q=${encodeURIComponent(term)}`).catch((e) => { toast(e.message, true); return null; });
-      if (!r) return;
-      fill(results, r.results.length ? r.results.slice(0, 8).map((m) => h("div", { class: "mod" },
+      const url = `${isNew ? "/api/hub" : "/api"}/mods/search?loader=${encodeURIComponent(st.loader)}&` +
+        (term ? `q=${encodeURIComponent(term)}` : "top=1");
+      const key = st.loader + "|" + term;
+      const r = term || !topMods.has(key)
+        ? await api(url).catch((e) => { toast(e.message, true); return null; }) : topMods.get(key);
+      if (!r || q.value.trim() !== term) return;  // a newer search is on its way
+      if (!term) topMods.set(key, r);
+      fill(results, term ? null : h("h3", { class: "mt-s" }, `Most popular ${loaderLabel} mods`),
+        r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
         m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
         h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
         st.mods.has(m.slug) ? h("span", { class: "tag ok" }, "added")
           : h("button", { type: "button", class: "btn small primary", onclick: () => { st.mods.set(m.slug, { name: m.name, required: true }); renderSelected(); search(); } }, "Add"),
-      )) : [h("p", { class: "empty" }, `No ${st.loader} server mods found.`)]);
+      )) : [h("p", { class: "empty" }, `No ${loaderLabel} server mods found.`)]);
     };
     q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
     renderSelected();
-    const modsCard = opts.loaders.find((l) => l.name === st.loader).mods ? card("3. Mods",
+    if (st.loader && opts.loaders.find((l) => l.name === st.loader).mods) search();  // the popular list
+    const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card("3. Mods",
       q, results, h("h3", { class: "mt" }, "Your mods"), selected,
       st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null) : null;
 
@@ -1072,11 +1175,12 @@ views.setup = () => {
       const optional = [...st.mods].filter(([, m]) => !m.required).map(([slug]) => slug);
       const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
-        network_access: st.network_access, accept_eula: true };
+        network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults) };
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));
         if (r) {
-          Object.assign(setupState, { mods: new Map(), motd: "A Minecraft server", accept_eula: false, prefilled: false });
+          Object.assign(setupState, { loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
+            prefilled: false, properties: null, advancedOpen: false });
           location.hash = `#s/${r.id}/setup`;
         }
         return;
@@ -1085,11 +1189,13 @@ views.setup = () => {
       if (r) { st.submitted = true; renderProgress(); }
     };
 
-    fill(main,
-      h("h2", { class: "view-title" }, isNew ? "Create a new server" : "Set up your server"),
-      h("p", { class: "muted" }, "Choose what kind of server you want. mcsm downloads everything it needs (Minecraft, the mod loader, mods and Java) and keeps it up to date from then on. " +
-        (opts.network_option ? "" : "It won't start until you press Start.")),
-      error ? h("div", { class: "notice bad" }, h("strong", {}, "Setup didn't finish: "), error, h("div", { class: "small mt-s" }, "Change your choices below and try again.")) : null,
+    const advanced = h("details", { class: "card advanced", open: st.advancedOpen },
+      h("summary", {}, "Advanced settings (optional)"),
+      h("p", { class: "muted small" }, "The rest of Minecraft's server settings: world seed and type, PvP, spawn protection, view distance and more. The defaults suit most servers, and you can change these later in the server's Settings."),
+      propsEditor(opts.properties_schema, st.properties));
+    advanced.addEventListener("toggle", () => { st.advancedOpen = advanced.open; });
+
+    fill(main, intro,
       h("form", { onsubmit: submit },
         card("1. Server type", loaderCards),
         h("div", { class: "mt" }, card("2. Minecraft version", field("Version", version,
@@ -1105,6 +1211,7 @@ views.setup = () => {
             field("Memory", mem, opts.total_ram_gb ? `This computer has ${opts.total_ram_gb} GB.` : null),
             field("Port", inp("port", { type: "number", min: 1024, max: 65535 }), "25565 is Minecraft's usual port.")),
           opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null)),
+        h("div", { class: "mt" }, advanced),
         h("div", { class: "mt" }, card("Almost done",
           h("label", { class: "row" }, eula, h("span", {}, "I accept the ",
             h("a", { href: "https://aka.ms/MinecraftEULA", target: "_blank", rel: "noopener noreferrer" }, "Minecraft EULA ↗"),
@@ -1140,6 +1247,8 @@ views.setup = () => {
       for (const m of c.mods) st.mods.set(m.slug, { name: m.slug, required: m.required });
       if (c.memory_gb) st.memory_gb = c.memory_gb;
     }
+    propDefaults = Object.fromEntries(opts.properties_schema.map((p) => [p.key, p.default]));
+    if (!st.properties) st.properties = { ...propDefaults };
     if (st.memory_gb === null) st.memory_gb = opts.memory_gb;
     if (isNew && opts.port) st.port = opts.port;  // a port no other server here uses
     if (st.network_access === null) st.network_access = opts.network_access;

@@ -294,3 +294,20 @@ def test_skins(tmp_path, http):
     http.json[f"{SESSION_PROFILE}/{'0' * 32}"] = {"properties": [{"name": "textures", "value": bad}]}
     with pytest.raises(SkinError):
         skins.png("Evil")
+
+
+def test_advanced_server_settings():
+    from mcsm import serverprops
+    ok = serverprops.validate({"pvp": False, "view-distance": "16", "level-type": "minecraft:flat",
+                               "level-seed": " 12345 ", "resource-pack": "", "hardcore": "true"})
+    assert ok == {"pvp": "false", "view-distance": "16", "level-type": "minecraft:flat", "level-seed": "12345",
+                  "resource-pack": "", "hardcore": "true"}
+    assert serverprops.validate(None) == {}
+    for bad in ({"enable-rcon": True}, {"server-port": 1}, {"view-distance": 2}, {"view-distance": "x"},
+                {"pvp": "maybe"}, {"level-type": "minecraft:mars"}, {"level-seed": "a\nb"},
+                {"level-name": "../../etc"}, {"resource-pack": "ftp://x"}, "pvp=false"):
+        with pytest.raises(ConfigError):
+            serverprops.validate(bad)
+    current = serverprops.current({"pvp": "false"})
+    assert current["pvp"] == "false" and current["view-distance"] == "10"
+    assert {p["key"] for p in serverprops.schema()} >= {"level-seed", "online-mode", "spawn-protection"}

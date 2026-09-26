@@ -135,12 +135,16 @@ On a Raspberry Pi or another ARM machine, use `mcsm-linux-arm64` instead.
 3. **Your servers** lists every server you've made. Nothing starts by itself: press
    **Start** on the one you want to play, and **Stop** when you're done (closing mcsm
    stops them too). Several can run at once, each on its own port.
-4. **New server** asks for:
+4. **New server** asks, one step at a time, for:
    - the server type: Fabric, NeoForge, Forge, Quilt or vanilla;
    - the Minecraft version: "newest" for a server that keeps upgrading itself, or a
      specific version to stay on;
-   - mods, found with a Modrinth search, each marked required or optional;
+   - mods (only for server types that run them): the 20 most popular are listed, or
+     search Modrinth; each is marked required or optional;
    - the server name, players, difficulty, game mode, memory and port;
+   - optionally, **Advanced settings**: world seed and type, PvP, spawn protection,
+     view distance, whitelist, idle kicks, resource pack and the rest of
+     `server.properties` (also on each server's Settings page later);
    - the Minecraft EULA.
 5. **Create my server** downloads Java, the mod loader, Minecraft and your mods, checks
    that the server starts, and adds it to the list, ready for you to start. If a
@@ -160,6 +164,10 @@ Servers live in a folder called `mcsm` in your home folder (`C:\Users\<you>\mcsm
 on Windows), one folder each. To keep them somewhere else, set the `MCSM_HOME`
 environment variable. A folder that already contains an `mcsm.toml` (for example from
 an older mcsm) shows up in the list too.
+
+**Deleting a server:** use **Delete** on its card, or **Delete server…** at the bottom
+of its Settings. You choose whether to keep its files (it just leaves the list) or
+erase its world, mods, backups and settings too (you type its name to confirm).
 
 **Forgot the password?** On the server's own computer, the sign-in page has a
 **Reset it to PASSWORD** link (or run `mcsm web-password --reset`).
