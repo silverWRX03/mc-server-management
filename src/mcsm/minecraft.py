@@ -46,6 +46,19 @@ class Mojang:
         except (KeyError, ValueError):
             return None
 
+    def betas(self, limit: int = 15) -> list[str]:
+        """Snapshots, pre-releases and release candidates newer than the newest release, newest first.
+
+        They're for trying what's coming next: worlds opened in one can't go back, and most
+        mods don't support them yet.
+        """
+        manifest = self._manifest()
+        latest = manifest["latest"]["release"]
+        since = next((v["releaseTime"] for v in manifest["versions"] if v["id"] == latest), "")
+        found = [v for v in manifest["versions"] if v["type"] == "snapshot" and v["releaseTime"] > since]
+        found.sort(key=lambda v: v["releaseTime"], reverse=True)
+        return [v["id"] for v in found[:limit]]
+
     def is_release(self, version: str) -> bool:
         return version in self.releases()
 

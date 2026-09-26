@@ -198,8 +198,8 @@ class Planner:
             # Fresh install: newest release that works, looking back a limited distance.
             return self.mojang.newer_than(None)[:FIRST_INSTALL_LOOKBACK]
         current = self.lock.minecraft
-        if strategy == "mods-only":
-            return [current]
+        if strategy == "mods-only" or current not in self.mojang.releases():
+            return [current]  # a beta stays a beta until you choose otherwise
         newer = self.mojang.newer_than(current)
         if strategy == "latest":
             return newer[:1] + [current]

@@ -86,7 +86,10 @@ class FakeMojang(Mojang):
                              "releaseTime": f"2025-01-{i + 1:02d}T00:00:00+00:00"})
             self.http.json[url] = {"javaVersion": {"majorVersion": 21},
                                    "downloads": {"server": {"url": f"https://files.test/{v}/server.jar"}}}
-        versions.append({"id": "99w01a", "type": "snapshot", "url": "x", "releaseTime": "2026-01-01T00:00:00+00:00"})
+        versions.append({"id": "99w01a", "type": "snapshot", "url": "https://meta.test/99w01a.json",
+                         "releaseTime": "2026-01-01T00:00:00+00:00"})
+        self.http.json["https://meta.test/99w01a.json"] = {
+            "javaVersion": {"majorVersion": 21}, "downloads": {"server": {"url": "https://files.test/99w01a/server.jar"}}}
         self.http.json[MANIFEST_URL] = {"latest": {"release": releases[-1]}, "versions": list(reversed(versions))}
 
 

@@ -392,9 +392,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 def setup_options(mojang: Mojang) -> dict:
     """The choices on the setup page."""
-    versions, error = [], None
+    versions, betas, error = [], [], None
     try:
         versions = list(reversed(mojang.releases()))[:40]
+        betas = mojang.betas()
     except Exception as e:  # offline: "latest" still works once the network is back
         error = f"couldn't load the list of Minecraft versions: {e}"
     total = setupmod.total_ram_gb()
@@ -402,6 +403,7 @@ def setup_options(mojang: Mojang) -> dict:
         "loaders": [{"name": n, "label": label, "description": desc, "mods": mods}
                     for n, label, desc, mods in setupmod.LOADER_INFO],
         "versions": versions,
+        "betas": betas,
         "versions_error": error,
         "total_ram_gb": round(total, 1) if total else None,
         "memory_gb": setupmod.suggested_memory_gb(total),
@@ -631,6 +633,7 @@ class Api:
         post("/api/server/stop", lambda q, b: self._job("stop", self.d.stop_server))
         post("/api/server/restart", lambda q, b: self._job("restart", self.d.restart_server))
         get("/api/updates", lambda q, b: {"check": self.d.last_check})
+        get("/api/beta", self.betas)
         post("/api/updates/check", lambda q, b: self._job("update check", self.d.check_only, b.get("target")))
         post("/api/updates/apply", lambda q, b: self._job(
             "update", self.d.check_for_updates, True, b.get("target") or None))
@@ -649,6 +652,7 @@ class Api:
         post("/api/open", self.open_folder)
         post("/api/world/replace", self.replace_world)
         post("/api/updates/remove-and-upgrade", self.remove_and_upgrade)
+        post("/api/beta/test", self.test_beta)
         get("/api/export", self.exports)
         post("/api/export", self.export)
         post("/api/export/delete", self.delete_export)
@@ -1080,6 +1084,55 @@ class Api:
         if not opener.open_path(where):
             raise ApiError(500, f"couldn't open a file manager; the folder is {where}")
         return {"ok": True, "path": str(where)}
+
+    def betas(self, q, b) -> dict:
+        try:
+            versions = self.m.mojang.betas()
+        except Exception as e:
+            raise ApiError(502, f"couldn't load Minecraft's beta versions: {e}") from None
+        return {"betas": versions, "current": self.m.lock.minecraft,
+                "copies": not self.web.hub.is_single}
+
+    def test_beta(self, q, b) -> dict:
+        """Try a beta Minecraft on a copy of this server; the server itself isn't touched."""
+        from . import transfer
+        hub = self.web.hub
+        if hub.is_single:
+            raise ApiError(400, "testing betas needs `mcsm start` (the server list)")
+        version = str(b.get("version", ""))
+        if version not in self.m.mojang.betas():
+            raise ApiError(400, "pick one of the beta versions in the list")
+        name = read_properties(self.m.server_dir / "server.properties").get("motd") or self.sid
+
+        def prepare(root: Path) -> None:
+            path = root / configmod.CONFIG_NAME
+            configmod.set_value(path, "server", "minecraft", json.dumps(version))
+            configmod.set_value(path, "updates", "strategy", '"mods-only"')  # stays on the beta
+            for spec in configmod.load(root).mods:  # run with whichever mods support the beta
+                configmod.remove_mod(path, spec.source, spec.id)
+                configmod.append_mod(path, ModSpec(spec.source, spec.id, required=False))
+
+        def run():
+            running = self.d.proc and self.d.proc.running
+            if running:
+                self.d.proc.send("save-off")
+                self.d.proc.send("save-all flush")
+                time.sleep(5)
+            tmp = hub.staging_dir / f"beta-{time.time_ns()}"
+            try:
+                archive = transfer.export(self.m, tmp / "copy.zip")
+            finally:
+                if running and self.d.proc and self.d.proc.running:
+                    self.d.proc.send("save-on")
+            try:
+                sid = hub.import_archive(archive, f"{name} (beta {version})", prepare)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            copy = hub.get(sid)
+            if copy is None or not copy.submit("install beta", copy.check_for_updates, True, version):
+                raise RuntimeError("the copy was made but couldn't start installing; open it and press Update")
+            return f"made a copy, \"{name} (beta {version})\", and is installing Minecraft {version} on it"
+        return self._job("beta test copy", run)
 
     def remove_and_upgrade(self, q, b) -> dict:
         lag = (self.d.last_check or {}).get("lagging")

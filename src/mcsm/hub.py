@@ -434,7 +434,6 @@ class Hub:
 
     def import_server(self, stage_id: str) -> str:
         """Add a server from an export (Settings → Export on another computer)."""
-        from . import transfer
         if self.is_single:
             raise RuntimeError("this mcsm runs a single server (`mcsm run`); use `mcsm start` to import servers")
         if not re.fullmatch(r"[a-f0-9]{16}", stage_id or ""):
@@ -442,25 +441,37 @@ class Hub:
         found = list((self.staging_dir / stage_id).glob("*.zip"))
         if not found:
             raise ConfigError("that upload isn't here any more; upload the file again")
-        manifest = transfer.read_manifest(found[0])
+        sid = self.import_archive(found[0])
+        shutil.rmtree(self.staging_dir / stage_id, ignore_errors=True)
+        return sid
+
+    def import_archive(self, archive: Path, name: str | None = None,
+                       prepare: Callable[[Path], None] | None = None) -> str:
+        """A new server from an export (``name`` renames it; ``prepare`` adjusts its folder
+        before it's loaded)."""
+        from . import transfer
+        manifest = transfer.read_manifest(archive)
         with self._lock:
-            base = slugify(manifest.get("name") or manifest.get("folder") or "imported")
+            base = slugify(name or manifest.get("name") or manifest.get("folder") or "imported")
             sid, n = base, 2
             taken = set(self.discover()) | {HOME_ID}
             while sid in taken or (self.home / SERVERS_DIR / sid).exists():
                 sid, n = f"{base}-{n}", n + 1
             root = self.home / SERVERS_DIR / sid
-            transfer.import_into(found[0], root)
-            shutil.rmtree(self.staging_dir / stage_id, ignore_errors=True)
+            transfer.import_into(archive, root)
             from .properties import read_properties, write_properties
             props_path = configmod.load(root).server.dir / "server.properties"
+            if name:
+                write_properties(props_path, {"motd": name[:59]})
             port = int(read_properties(props_path).get("server-port", "25565") or 25565)
             if port in self.ports():  # another server here already uses it
                 new = self.free_port(port)
                 write_properties(props_path, {"server-port": str(new)})
                 log.info("the imported server used port %d, which is taken here; it now uses %d", port, new)
+            if prepare:
+                prepare(root)
             self._attach(sid, root)
-        log.info("imported %s into %s", manifest.get("name"), root)
+        log.info("imported %s into %s", name or manifest.get("name"), root)
         return sid
 
     def delete(self, sid: str, delete_files: bool) -> str:

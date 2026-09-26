@@ -649,8 +649,22 @@ views.updates = () => {
     const c = r.check;
     const s = status || {};
     const checkBtn = h("button", { class: "btn", onclick: () => act(() => api("/api/updates/check", { method: "POST", body: {} }), "Checking…") }, "Check now");
+    // Betas are tried on a copy, so the real world never meets one.
+    const betaCard = h("div");
+    api("/api/beta").then((r) => {
+      if (!r.betas.length || !r.copies) return;
+      const pick = h("select", { "aria-label": "Beta version" }, r.betas.map((v) => h("option", { value: v }, `Minecraft ${v}`)));
+      fill(betaCard, card("Test a beta version",
+        h("p", { class: "muted small" }, "Try the next Minecraft before it's released. mcsm makes a separate copy of this server " +
+          "(world, mods and settings) on the beta, so this server and its world aren't touched. In the copy, mods that don't support " +
+          "the beta yet are left out. Delete the copy when you're done."),
+        h("div", { class: "row" }, pick, h("button", { class: "btn", onclick: () => {
+          if (!confirm(`Make a copy of this server on Minecraft ${pick.value}? It appears in your server list as a separate server.`)) return;
+          act(() => api("/api/beta/test", { method: "POST", body: { version: pick.value } }), "Copying the server…");
+        } }, "Make a test copy"))));
+    }).catch(() => {});
     if (!c) {
-      fill(body, card(null, h("p", {}, "No update check has run yet."), checkBtn));
+      fill(body, card(null, h("p", {}, "No update check has run yet."), checkBtn), h("div", { class: "mt" }, betaCard));
       return;
     }
     const applyBtn = h("button", {
@@ -705,11 +719,12 @@ views.updates = () => {
     const dropped = c.dropped.length ? card("Left out (optional or client-only)",
       h("ul", { class: "list" }, c.dropped.map((x) => h("li", {}, h("div", {}, h("strong", {}, x.name), h("div", { class: "muted small" }, x.reason)))))) : null;
 
+
     fill(body, 
       summary,
       laggingNotice(c.lagging, c.installed, true),
       h("div", { class: "row mb mt-s" }, applyBtn, checkBtn, h("span", { class: "muted small" }, `Last checked ${ago(c.checked_at)}`)),
-      manual, changes, blocked, dropped);
+      manual, changes, blocked, dropped, h("div", { class: "mt" }, betaCard));
   };
   fill($("#main"), h("h2", { class: "view-title" }, "Updates"), body);
   load();
@@ -1687,9 +1702,23 @@ views.setup = () => {
       return;
     }
 
-    const version = h("select", { onchange: (e) => { st.minecraft = e.target.value; } },
+    const betas = opts.betas || [];
+    const version = h("select", { onchange: (e) => { st.minecraft = e.target.value; renderForm(); } },
       h("option", { value: "latest" }, st.loader === "vanilla" ? "Newest release (recommended)" : "Newest version your mods support (recommended)"),
-      opts.versions.map((v) => h("option", { value: v }, `Minecraft ${v}`)));
+      st.showBetas && betas.length ? h("optgroup", { label: "Beta versions (for testing)" }, betas.map((v) => h("option", { value: v }, `Minecraft ${v} (beta)`))) : null,
+      h("optgroup", { label: "Releases" }, opts.versions.map((v) => h("option", { value: v }, `Minecraft ${v}`))));
+    const isBeta = betas.includes(st.minecraft);
+    const betaToggle = betas.length ? h("label", { class: "row mt-s" },
+      h("input", { type: "checkbox", checked: !!st.showBetas || isBeta, onchange: (e) => {
+        st.showBetas = e.target.checked;
+        if (!st.showBetas && betas.includes(st.minecraft)) st.minecraft = "latest";
+        renderForm();
+      } }),
+      h("span", {}, "Show beta versions (snapshots and pre-releases of the next Minecraft)")) : null;
+    const betaNote = isBeta ? h("div", { class: "notice warn mt-s" }, h("strong", {}, `Minecraft ${st.minecraft} is a beta. `),
+      "It's for trying what's coming: things may break, a world opened in it can't go back to a release, and most mods " +
+      "(and the NeoForge and Forge loaders) don't support betas yet. The server stays on this version until you change it in Settings. " +
+      "To try a beta with an existing world, use \"Test a beta version\" on that server's Updates page instead: it works on a copy.") : null;
     if (st.modpack && ![...version.options].some((o) => o.value === st.minecraft)) version.append(h("option", { value: st.minecraft }, `Minecraft ${st.minecraft}`));
     version.value = st.minecraft;
     version.disabled = !!st.modpack;
@@ -1855,7 +1884,8 @@ views.setup = () => {
         card("1. Server type", loaderCards),
         h("div", { class: "mt" }, card("2. Minecraft version", field("Version", version,
           "\"Newest\" picks the newest Minecraft your mods work on, and upgrades only once every mod supports the next version: a forever server. " +
-          "Picking a specific version keeps the server on that version (mods still update); you can change this later in Settings."))),
+          "Picking a specific version keeps the server on that version (mods still update); you can change this later in Settings."),
+          betaToggle, betaNote)),
         modsCard ? h("div", { class: "mt" }, modsCard) : null,
         h("div", { class: "mt" }, worldCard),
         h("div", { class: "mt" }, card(modsCard ? "5. Settings" : "4. Settings",

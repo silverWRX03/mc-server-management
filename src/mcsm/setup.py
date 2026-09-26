@@ -153,7 +153,7 @@ class SetupSpec:
         )
         if spec.loader not in configmod.LOADERS:
             raise ConfigError(f"unknown server type {spec.loader!r}")
-        if not re.fullmatch(r"latest|\d+(\.\d+){1,3}(-[A-Za-z0-9.]+)?", spec.minecraft):
+        if not re.fullmatch(r"latest|\d+(\.\d+){1,3}(-[A-Za-z0-9.]+)?|\d{2}w\d{2}[a-z]", spec.minecraft):
             raise ConfigError(f"{spec.minecraft!r} is not a Minecraft version")
         if spec.difficulty not in DIFFICULTIES or spec.gamemode not in GAMEMODES:
             raise ConfigError("invalid difficulty or game mode")
