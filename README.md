@@ -1,4 +1,4 @@
-# mcsm: a forever Minecraft server
+# mcsm: Creating managing a your own server should be easy! 
 
 <img src="docs/icon.png" alt="mcsm" width="128" align="right">
 
