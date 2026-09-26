@@ -484,6 +484,7 @@ class HubApi:
         r[("GET", "/api/hub/port")] = self.port_check
         r[("POST", "/api/hub/stage")] = self.stage
         r[("POST", "/api/hub/open")] = self.open_folder
+        r[("GET", "/api/hub/saves")] = self.saves
         r[("POST", "/api/hub/import")] = lambda q, b: {"ok": True, "id": self.hub.import_server(str(b.get("id", "")))}
         r[("GET", "/api/hub/browse/search")] = lambda q, b: browse_search(self.browser(), q)
         r[("GET", "/api/hub/browse/project")] = lambda q, b: browse_project(self.browser(), q)
@@ -515,6 +516,11 @@ class HubApi:
     def browser(self):
         from .browse import Browser
         return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+
+    def saves(self, q, b) -> dict:
+        """Singleplayer worlds on this computer, to start a server from (or put on one)."""
+        from . import world
+        return {"worlds": world.list_saves()}
 
     def open_folder(self, q, b) -> dict:
         from . import opener
@@ -631,6 +637,7 @@ class Api:
         post("/api/backups/create", self.create_backup)
         post("/api/backups/restore", self.restore_backup)
         post("/api/open", self.open_folder)
+        post("/api/world/replace", self.replace_world)
         get("/api/export", self.exports)
         post("/api/export", self.export)
         post("/api/export/delete", self.delete_export)
@@ -761,6 +768,7 @@ class Api:
         if not self.d.setup_pending:
             raise ApiError(409, "this server is already set up")
         spec = setupmod.SetupSpec.from_dict(b)
+        spec.world_source = self.web.hub.world_source(spec.world)
         if spec.local_mods:
             self.web.hub.take_staged(spec.local_mods, self.m.server_dir / "mods")
         return self._job("set up server", self.d.run_setup, spec)
@@ -1061,6 +1069,28 @@ class Api:
         if not opener.open_path(where):
             raise ApiError(500, f"couldn't open a file manager; the folder is {where}")
         return {"ok": True, "path": str(where)}
+
+    def replace_world(self, q, b) -> dict:
+        """Swap the server's world for another one (a backup is made first)."""
+        from . import world
+        if self.d.state != "stopped":
+            raise ApiError(409, "stop the server before replacing its world")
+        choice = str(b.get("world", ""))
+        if not re.fullmatch(r"(save:)?[a-f0-9]{16}", choice):
+            raise ApiError(400, "pick a world first")
+        source = self.web.hub.world_source(choice)
+
+        def run():
+            sd, cfg = self.m.server_dir, self.m.config
+            dest = self.folder("world")
+            if dest.exists():
+                path = backup.create(sd, cfg.backups.dir, "before-new-world", cfg.backups.exclude)
+                log.info("backed up the old world to %s", path.name)
+            info = world.replace(source, dest)
+            if source.parent.parent == self.web.hub.staging_dir:
+                shutil.rmtree(source.parent, ignore_errors=True)
+            return f"the world is now {info.get('name') or dest.name}; press Start to play it"
+        return self._job("replace world", run)
 
     # --------------------------------------------------------------- export
     @property

@@ -103,6 +103,8 @@ class SetupSpec:
     port_chosen: bool = False      # the port was picked by the person (not just the default)
     modpack_version: str = ""      # a Modrinth modpack version to build the server from
     local_mods: list[str] = field(default_factory=list)  # uploaded jars waiting in the hub's staging area
+    world: str = ""                # an existing world: an upload's staging id, or "save:<id>" (singleplayer)
+    world_source: Path | None = None  # where that world is, found by the hub (never from the form)
 
     @classmethod
     def from_dict(cls, d: dict) -> SetupSpec:
@@ -147,6 +149,7 @@ class SetupSpec:
             port_chosen="port" in d,
             modpack_version=str(d.get("modpack_version") or ""),
             local_mods=[str(x) for x in (d.get("local_mods") or []) if isinstance(x, str)],
+            world=str(d.get("world") or ""),
         )
         if spec.loader not in configmod.LOADERS:
             raise ConfigError(f"unknown server type {spec.loader!r}")
@@ -156,6 +159,8 @@ class SetupSpec:
             raise ConfigError("invalid difficulty or game mode")
         if spec.modpack_version and not re.fullmatch(r"[A-Za-z0-9]{8}", spec.modpack_version):
             raise ConfigError("that isn't a Modrinth modpack version")
+        if spec.world and not re.fullmatch(r"(save:)?[a-f0-9]{16}", spec.world):
+            raise ConfigError("that world choice isn't valid; pick the world again")
         if not all(re.fullmatch(r"[a-f0-9]{16}", x) for x in spec.local_mods):
             raise ConfigError("bad uploaded file reference")
         if spec.loader == "vanilla" and (spec.mods or spec.optional_mods or spec.local_mods):

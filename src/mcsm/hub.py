@@ -374,6 +374,18 @@ class Hub:
         receive(handler, dest, max_bytes)
         return {"id": sid, "filename": filename, "size": dest.stat().st_size}
 
+    def world_source(self, choice: str) -> Path | None:
+        """Where a world picked on the setup page (or Settings) is: an upload, or a singleplayer save."""
+        from . import world
+        if not choice:
+            return None
+        if choice.startswith("save:"):
+            return world.find_save(choice[5:])
+        found = list((self.staging_dir / choice).glob("*.zip")) if re.fullmatch(r"[a-f0-9]{16}", choice) else []
+        if not found:
+            raise ConfigError("the uploaded world isn't here any more; upload it again")
+        return found[0]
+
     def take_staged(self, stage_ids: list[str], mods_dir: Path) -> int:
         """Move jars picked with "Local files" on the setup page into a server's mods folder."""
         moved = 0
@@ -403,6 +415,7 @@ class Hub:
                     raise ConfigError(f"port {spec.port} is already used by another server here ({other}); pick another")
                 spec.port = self.free_port(spec.port)  # two servers can't share a port
             spec.network_access = False  # the hub's own setting decides who can open the panel
+            spec.world_source = self.world_source(spec.world)  # before any files are written
             setupmod.configure(root, spec)
             setupmod.mark_pending(root)
             self.take_staged(spec.local_mods, configmod.load(root).server.dir / "mods")

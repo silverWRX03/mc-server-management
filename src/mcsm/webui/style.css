@@ -323,3 +323,10 @@ body.join-page { overflow: auto; }
 .choice.launcher.missing { opacity: .8; }
 .block { display: block; }
 .log { max-height: 260px; overflow: auto; background: var(--panel-2); padding: 10px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+
+/* world choices (setup) and the world picker */
+.choices.two { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.choices.world-types { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.list.worlds { max-height: 50vh; overflow: auto; }
+.list.worlds img, .list.worlds .noicon { width: 40px; height: 40px; border-radius: 6px; image-rendering: pixelated; flex: none; }
+.list.worlds .noicon { background: var(--panel-2); border: 1px solid var(--border); }

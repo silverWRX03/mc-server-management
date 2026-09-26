@@ -501,6 +501,12 @@ class Daemon:
             log.info("downloading the modpack")
             modpack.apply(self.m.config.root, spec.modpack_version, self.m.http)
         self.m.reload_config()
+        if spec.world_source is not None:
+            from . import world
+            from .properties import read_properties
+            level = read_properties(self.m.server_dir / "server.properties").get("level-name") or "world"
+            log.info("bringing in your world")
+            world.install(spec.world_source, self.m.server_dir / level)
         log.info("setting up a %s server (Minecraft %s, %d mod(s))", self.m.config.server.loader,
                  self.m.config.server.minecraft, len(self.m.config.mods))
         self.check_only()

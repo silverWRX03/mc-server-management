@@ -985,7 +985,17 @@ views.settings = () => {
       h("div", { class: "row mt-s" }, h("p", { class: "muted small grow" }, "Exports are kept in ", h("code", {}, r.folder)),
         folderBtn("exports", "Exports folder"), folderBtn("server", "Server folder")));
   };
-  fill($("#main"), h("h2", { class: "view-title" }, "Server settings"), form, exportCard, danger);
+  const worldCard = card("World",
+    h("p", { class: "muted small" }, "Put a different world on this server: a singleplayer world or a world .zip. " +
+      "The current world is backed up first (see Backups), so you can go back."),
+    h("div", { class: "row" },
+      h("button", { class: "btn", onclick: () => pickWorld(async (w) => {
+        if (!confirm(`Replace this server's world with ${w.name}? The current world is backed up first.`)) return;
+        await act(() => api("/api/world/replace", { method: "POST", body: { world: w.world } }), "Replacing the world…");
+      }) }, "Replace the world…"),
+      folderBtn("world", "World folder")));
+  worldCard.classList.add("mt");
+  fill($("#main"), h("h2", { class: "view-title" }, "Server settings"), form, worldCard, exportCard, danger);
   load();
   loadExports();
   renderDanger();
@@ -1367,6 +1377,46 @@ function changedProps(values, base) {
   return Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== base[k]));
 }
 
+// ------------------------------------------------------------- pick a world
+// An existing world: a .zip uploaded from here, or a singleplayer world on the server's
+// computer (Minecraft Launcher, Prism, Modrinth App, CurseForge). Calls onPick with
+// { world, name, version } where `world` is what the API takes.
+function pickWorld(onPick) {
+  if ($("#pick-world")) return;
+  const close = () => { const m = $("#pick-world"); if (m) m.remove(); };
+  const list = h("div", {}, h("p", { class: "muted" }, "Looking for worlds…"));
+  const note = h("p", { class: "muted small" });
+  const picker = h("input", { type: "file", accept: ".zip", class: "hidden" });
+  const choose = (w) => { close(); onPick(w); };
+  picker.addEventListener("change", async () => {
+    const f = picker.files[0];
+    picker.value = "";
+    if (!f) return;
+    try {
+      const r = await upload(`/api/hub/stage?filename=${encodeURIComponent(f.name.replace(/[^A-Za-z0-9 ()\[\]+_.,'-]/g, "_"))}`, f,
+        (done) => { note.textContent = `Uploading ${f.name}: ${Math.round(done * 100)}%`; });
+      choose({ world: r.id, name: f.name.replace(/\.zip$/i, ""), version: null });
+    } catch (e) { if (!(e instanceof Unauthorized)) { note.textContent = ""; toast(e.message, true); } }
+  });
+  const box = h("div", { class: "modal" },
+    h("h2", { id: "pick-world-title" }, "Choose a world"),
+    h("h3", {}, "Upload a world"),
+    h("p", { class: "muted small" }, "A .zip of a world folder (the folder with level.dat in it). On Windows: right-click the folder → Send to → Compressed (zipped) folder."),
+    h("div", { class: "row" }, h("button", { class: "btn", type: "button", onclick: () => picker.click() }, "Upload a .zip…"), picker), note,
+    h("h3", { class: "mt" }, "Worlds on ", hubInfo && hubInfo.local ? "this computer" : "the server's computer"),
+    list,
+    h("div", { class: "row mt" }, h("button", { class: "btn ghost", type: "button", onclick: close }, "Cancel")));
+  document.body.append(h("div", { class: "modal-backdrop", id: "pick-world", role: "dialog", "aria-modal": "true", "aria-labelledby": "pick-world-title" }, box));
+  api("/api/hub/saves").then((r) => {
+    fill(list, r.worlds.length ? h("ul", { class: "list worlds" }, r.worlds.map((w) => h("li", {},
+      w.icon ? h("img", { src: w.icon, alt: "" }) : h("div", { class: "noicon" }),
+      h("div", { class: "grow" }, h("strong", {}, w.name), w.hardcore ? h("span", { class: "tag bad" }, "hardcore") : null,
+        h("div", { class: "small muted" }, [w.launcher, w.version ? `Minecraft ${w.version}` : null, `played ${fmtTime(w.played)}`].filter(Boolean).join(" · "))),
+      h("button", { class: "btn small primary", type: "button", onclick: () => choose({ world: "save:" + w.id, name: w.name, version: w.version }) }, "Use"))))
+      : h("p", { class: "empty" }, "No singleplayer worlds found. Upload one as a .zip instead."));
+  }).catch((e) => fill(list, h("p", { class: "empty" }, e.message)));
+}
+
 // ------------------------------------------------------------ delete a server
 function deleteServer(s, after) {
   if ($("#delete-server")) return;
@@ -1559,7 +1609,7 @@ views.mcsm = () => {
 // Kept outside the view so choices survive re-renders and a failed attempt.
 const setupState = { friends: false, loader: null, minecraft: "latest", mods: new Map(), motd: "A Minecraft server", properties: null, advancedOpen: false,
   max_players: 20, difficulty: "normal", gamemode: "survival", port: 25565, memory_gb: null,
-  network_access: null, accept_eula: false, submitted: false, prefilled: false, modpack: null, localMods: [] };
+  network_access: null, accept_eula: false, submitted: false, prefilled: false, modpack: null, localMods: [], world: null };
 
 views.setup = () => {
   const main = h("div", { class: "setup" });
@@ -1689,6 +1739,37 @@ views.setup = () => {
       return field("Port (players connect to this)", input, note);
     };
 
+    // World: a new one (seed, type, structures, hardcore) or one you already have.
+    const P = st.properties;
+    const worldTypes = [["minecraft:normal", "Normal", "The usual Minecraft world."], ["minecraft:large_biomes", "Large biomes", "Biomes 4× bigger."],
+      ["minecraft:amplified", "Amplified", "Huge mountains (needs a fast computer)."], ["minecraft:flat", "Flat", "Superflat, for building."],
+      ["minecraft:single_biome_surface", "Single biome", "One biome everywhere."]];
+    const seed = h("input", { value: P["level-seed"] || "", maxlength: 64, placeholder: "Random",
+      oninput: (e) => { P["level-seed"] = e.target.value; } });
+    const flag = (key, text) => h("label", { class: "row" }, h("input", { type: "checkbox", checked: P[key] === "true",
+      onchange: (e) => { P[key] = String(e.target.checked); } }), h("span", {}, text));
+    const hasMods = !!(st.loader && opts.loaders.find((l) => l.name === st.loader).mods);
+    const worldCard = card(hasMods ? "4. World" : "3. World",
+      h("div", { class: "choices two" },
+        h("button", { type: "button", class: "choice" + (st.world ? "" : " selected"), onclick: () => { st.world = null; renderForm(); } },
+          h("strong", {}, "New world"), h("span", { class: "small muted" }, "Minecraft makes a fresh world the first time the server starts.")),
+        h("button", { type: "button", class: "choice" + (st.world ? " selected" : ""), onclick: () => pickWorld((w) => { st.world = w; renderForm(); }) },
+          h("strong", {}, "Import a world"), h("span", { class: "small muted" }, "Bring a singleplayer world or a world .zip, from any version of Minecraft Java."))),
+      st.world ? h("div", { class: "notice mt-s" }, h("strong", {}, st.world.name),
+        st.world.version ? h("span", { class: "muted" }, ` · last played on Minecraft ${st.world.version}`) : null,
+        h("div", { class: "small muted" }, "Minecraft upgrades an older world when the server first starts; a world can't go back to an older version, " +
+          "and blocks from mods the server doesn't have are lost."),
+        h("div", { class: "row mt-s" }, h("button", { type: "button", class: "btn small", onclick: () => pickWorld((w) => { st.world = w; renderForm(); }) }, "Choose another"),
+          h("button", { type: "button", class: "btn small ghost", onclick: () => { st.world = null; renderForm(); } }, "Use a new world instead")))
+      : h("div", { class: "mt-s" },
+        h("div", { class: "grid" }, field("Seed", seed, "A number or any text. The same seed makes the same world.")),
+        h("h3", { class: "mt-s" }, "World type"),
+        h("div", { class: "choices world-types" }, worldTypes.map(([v, label, desc]) => h("button", { type: "button",
+          class: "choice" + ((P["level-type"] || "minecraft:normal") === v ? " selected" : ""),
+          onclick: () => { P["level-type"] = v; renderForm(); } }, h("strong", {}, label), h("span", { class: "small muted" }, desc)))),
+        h("div", { class: "grid mt-s" }, flag("generate-structures", "Villages, temples and other structures"),
+          flag("hardcore", "Hardcore: one life, locked to hard"))));
+
     const eula = h("input", { type: "checkbox", checked: st.accept_eula, onchange: (e) => { st.accept_eula = e.target.checked; } });
     const lan = h("input", { type: "checkbox", checked: st.network_access, onchange: (e) => { st.network_access = e.target.checked; } });
 
@@ -1700,13 +1781,13 @@ views.setup = () => {
       const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
         network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults),
-        friends: !!st.friends, local_mods: st.localMods.map((m) => m.id) };
+        friends: !!st.friends, local_mods: st.localMods.map((m) => m.id), world: st.world ? st.world.world : "" };
       if (st.modpack) body.modpack_version = st.modpack.version_id;
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));
         if (r) {
           Object.assign(setupState, { friends: false, loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
-            prefilled: false, properties: null, advancedOpen: false, modpack: null, localMods: [], minecraft: "latest" });
+            prefilled: false, properties: null, advancedOpen: false, modpack: null, localMods: [], minecraft: "latest", world: null });
           location.hash = `#s/${r.id}/setup`;
         }
         return;
@@ -1717,7 +1798,7 @@ views.setup = () => {
 
     const advanced = h("details", { class: "card advanced", open: st.advancedOpen },
       h("summary", {}, "Advanced settings (optional)"),
-      h("p", { class: "muted small" }, "The rest of Minecraft's server settings: world seed and type, PvP, spawn protection, view distance and more. The defaults suit most servers, and you can change these later in the server's Settings."),
+      h("p", { class: "muted small" }, "The rest of Minecraft's server settings: PvP, spawn protection, view distance and more. The defaults suit most servers, and you can change these later in the server's Settings."),
       propsEditor(opts.properties_schema, st.properties));
     advanced.addEventListener("toggle", () => { st.advancedOpen = advanced.open; });
 
@@ -1728,7 +1809,8 @@ views.setup = () => {
           "\"Newest\" picks the newest Minecraft that all your required mods work on, and keeps upgrading as they catch up: a forever server. " +
           "Picking a specific version keeps the server on that version (mods still update); you can change this later in Settings."))),
         modsCard ? h("div", { class: "mt" }, modsCard) : null,
-        h("div", { class: "mt" }, card(modsCard ? "4. Settings" : "3. Settings",
+        h("div", { class: "mt" }, worldCard),
+        h("div", { class: "mt" }, card(modsCard ? "5. Settings" : "4. Settings",
           h("div", { class: "grid" },
             field("Server name (shown in the server list)", inp("motd", { maxlength: 59 })),
             field("Max players", inp("max_players", { type: "number", min: 1, max: 1000 })),
