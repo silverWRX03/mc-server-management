@@ -27,6 +27,8 @@ def test_requirements(http, modrinth):
     assert r["compatible"] and r["project"]["name"] == "Top Mod"
     # dependencies of dependencies too; client-only ones aren't server mods
     assert [(d["name"], d["needed_by"]) for d in r["deps"]] == [("Mid Lib", "Top Mod"), ("Dep Lib", "Mid Lib")]
+    # ...they're companions for the friends' download instead
+    assert [(c["slug"], c["needed_by"]) for c in r["companions"]] == [("minimap", "Top Mod")]
     old = mod_requirements(p, "oldmod", ("fabric",), "1.21.1")
     assert not old["compatible"] and "no build for Minecraft 1.21.1" in old["reason"]
     assert mod_requirements(p, "oldmod", ("fabric",), None)["compatible"]  # any version

@@ -425,19 +425,6 @@ body.join-page { overflow: auto; }
 .invite { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .invite:last-of-type { border-bottom: 0; }
 
-/* a new server's progress, docked at the bottom while you do something else */
-.progress-panel { transition: transform .6s cubic-bezier(.5, 0, .75, 0), opacity .6s ease-in; transform-origin: 50% 100%; }
-.progress-panel.slide-away { transform: translateY(70vh) scale(.35); opacity: 0; }
-.dock { position: fixed; left: 50%; bottom: 14px; z-index: 15; width: min(760px, calc(100vw - 32px)); display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px; background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--info);
-  border-radius: 10px; box-shadow: 0 10px 30px var(--shadow); transform: translate(-50%, 140%); transition: transform .45s cubic-bezier(.2, .8, .2, 1); }
-.dock.in { transform: translate(-50%, 0); }
-.dock.done { border-left-color: var(--accent); }
-.dock.failed { border-left-color: var(--danger); }
-.dock-msg { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.toasts { bottom: 84px; }
-@media (prefers-reduced-motion: reduce) { .progress-panel, .dock { transition: none; } }
-
 /* ----------------------------------------------------------------- flair */
 /* the console stays dark in both themes */
 .console { color: #d8dee4; }

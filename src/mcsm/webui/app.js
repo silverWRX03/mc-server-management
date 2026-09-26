@@ -405,7 +405,7 @@ async function refreshStatus() {
   }
   document.body.classList.toggle("setup-mode", !!s.setup_pending);
   if (s.setup_pending && currentName !== "setup") { location.hash = link("setup"); return; }
-  if (!s.setup_pending && currentName === "setup" && !s.job) { location.hash = link("dashboard"); return; }
+  if (!s.setup_pending && currentName === "setup" && !s.job) { setupFinished(); return; }
   if (current && current.onStatus) current.onStatus(s);
 }
 
@@ -1328,13 +1328,7 @@ views.friends = () => {
     );
     announceCompanions(d);
   };
-  // Reached from a new server's setup: it's still installing (see the bar at the bottom).
-  const installing = dock && dock.sid === server && !dock.done;
-  fill($("#main"), h("h2", { class: "view-title" }, installing ? `Friends for ${dock.name}` : "Friends"),
-    installing ? h("div", { class: "notice mb" }, h("strong", {}, "Your server is still installing. "),
-      "Meanwhile, pick the mods your friends' Minecraft gets. The invite link works once it's ready.",
-      h("div", { class: "row mt-s" }, h("a", { class: "btn small", href: `#s/${server}/setup` }, "Back to the progress"))) : null,
-    body);
+  fill($("#main"), h("h2", { class: "view-title" }, "Friends"), body);
   api("/api/client").then((r) => { data = r; render(); }).catch((e) => { if (!(e instanceof Unauthorized)) toast(e.message, true); });
   return { refresh: reload };
 };
@@ -1654,6 +1648,13 @@ function browserPanel(params, host) {
     const mods = [...st.selected.values()].map((m) => ({ source: m.source, id: m.id, slug: m.slug, name: m.name,
       channel: m.channel && m.channel !== "release" ? m.channel : null }));
     if (!confirmEarly(mods)) return;
+    if (forPlayers && target === "setup") {  // a new server: kept with the setup form until it's created
+      for (const m of mods) setupState.clientMods.set(m.slug || m.id, m.name);
+      setupState.friends = true;
+      toast(`Added ${mods.map((m) => m.name).join(", ")} to your friends' download`);
+      if (host) host.changed(); else location.hash = "#new";
+      return;
+    }
     if (forPlayers) {  // extras in the friends' download (their dependencies come along there)
       const cur = await api(`/api/servers/${encodeURIComponent(target)}/client`).catch(() => null);
       if (!cur) return;
@@ -2607,7 +2608,8 @@ views.mcsm = () => {
 // Kept outside the view so choices survive re-renders and a failed attempt.
 const setupState = { friends: false, loader: null, minecraft: "latest", mods: new Map(), motd: "A Minecraft server", properties: null, advancedOpen: false,
   max_players: 20, difficulty: "normal", gamemode: "survival", port: 25565, memory_gb: null,
-  network_access: null, accept_eula: false, submitted: false, prefilled: false, modpack: null, localMods: [], world: null };
+  network_access: null, accept_eula: false, submitted: false, prefilled: false, modpack: null, localMods: [], world: null,
+  clientMods: new Map(), clientLocal: [], companionsSeen: new Set() };  // friends' download: slug -> name; staged files
 
 // A mod picked in setup brings the mods it needs along (marked "needed by ..."). Entries:
 // key -> { name, required, explicit (picked by you), by: Set(keys of mods that need it), bad }.
@@ -2647,6 +2649,8 @@ async function setupCheckMod(key, quiet = false) {
   if (!r || st.mods.get(key) !== e) return;
   e.name = r.project.name;
   e.bad = r.compatible ? "" : r.reason;
+  e.companions = r.companions || [];  // what players need on their computers for it
+  if (!quiet) setupAnnounceCompanions();
   const added = [];
   for (const d of r.deps) {
     const dk = d.slug || d.id;
@@ -2658,6 +2662,27 @@ async function setupCheckMod(key, quiet = false) {
       [...new Set(added.map((d) => d.needed_by))].join(" and ") + ".");
   }
   setupChanged();
+}
+// Mods the picked server mods need on players' computers: they go in the friends' download
+// by themselves. Each one is announced once.
+function setupCompanions() {
+  const out = new Map();
+  for (const m of setupState.mods.values()) for (const c of m.companions || []) {
+    const k = c.slug || c.id;
+    if (!out.has(k) && !setupState.mods.has(k)) out.set(k, { name: c.name, needed_by: c.needed_by });
+  }
+  return out;
+}
+function setupAnnounceCompanions() {
+  const st = setupState;
+  if (!st.friends) return;
+  const byMod = new Map();
+  for (const [k, c] of setupCompanions()) {
+    if (st.companionsSeen.has(k)) continue;
+    st.companionsSeen.add(k);
+    byMod.set(c.needed_by, [...(byMod.get(c.needed_by) || []), c.name]);
+  }
+  for (const [by, names] of byMod) toast(`Added ${names.join(", ")} to your friends' download, because ${by} needs ${names.length === 1 ? "it" : "them"} on players' computers.`);
 }
 function setupRemoveMod(key) {
   const st = setupState;
@@ -2717,43 +2742,13 @@ function offerAikar(gb, accept, decline = () => {}) {
       h("a", { class: "small", href: "https://docs.papermc.io/paper/aikars-flags", target: "_blank", rel: "noopener noreferrer" }, "What are they? ↗"))]);
 }
 
-// ------------------------------------------------------ setup progress dock
-// While a new server installs you can go elsewhere (e.g. set up its friend download): its
-// progress keeps going in a bar docked at the bottom of the window.
-let dock = null;  // { sid, name, seq, el, timer }
-function dockSetup(sid, name) {
-  undock();
-  const msg = h("span", { class: "grow dock-msg" }, "Starting…");
-  const el = h("div", { class: "dock", id: "dock", role: "status" },
-    h("span", { class: "spinner" }), h("strong", {}, `Creating ${name}`), msg,
-    h("a", { class: "btn small", href: `#s/${sid}/setup` }, "Show"));
-  document.body.append(el);
-  requestAnimationFrame(() => el.classList.add("in"));
-  dock = { sid, name, seq: 0, el, msg };
-  const poll = async () => {
-    if (!dock || dock.sid !== sid) return;
-    el.classList.toggle("hidden", currentName === "setup" && server === sid);  // the full page shows it already
-    const ev = await api(`/api/servers/${sid}/events?since=${dock.seq}`).catch(() => null);
-    if (ev && ev.events.length) { dock.seq = ev.last; msg.textContent = ev.events[ev.events.length - 1].message; }
-    const st = await api(`/api/servers/${sid}/status`).catch(() => null);
-    if (!st || st.job || !st.last_job || st.last_job.name !== "set up server") return;
-    clearInterval(dock.timer);
-    dock.done = true;
-    if (currentName === "friends" && server === sid) route();  // drop the "still installing" note
-    el.classList.add(st.last_job.ok ? "done" : "failed");
-    fill(el, h("strong", {}, st.last_job.ok ? `✓ ${name} is ready` : `${name}: setup didn't finish`),
-      h("span", { class: "grow dock-msg" }, st.last_job.ok ? "Press Start when you want to play." : failureText(st.last_job.message, sid)),
-      h("a", { class: "btn small primary", href: `#s/${sid}/${st.last_job.ok ? "dashboard" : "setup"}`, onclick: undock }, st.last_job.ok ? "Open" : "See why"),
-      h("button", { class: "btn small ghost", "aria-label": "Close", onclick: undock }, "✕"));
-  };
-  dock.timer = setInterval(poll, 2000);
-  poll();
-}
-function undock() {
-  if (!dock) return;
-  clearInterval(dock.timer);
-  dock.el.remove();
-  dock = null;
+// A new server is ready: its dashboard, or the friends' invite when it was made with friends.
+function setupFinished() {
+  if (!location.hash.endsWith("/setup")) return;  // already on its way (status and job-done both call this)
+  if (setupState.friendsFor !== server) { location.hash = link("dashboard"); return; }  // the job's toast says it's ready
+  setupState.friendsFor = null;
+  toast("Your server is ready. Here's your friends' invite.");
+  location.hash = link("friends");
 }
 
 views.setup = () => {
@@ -2956,20 +2951,65 @@ views.setup = () => {
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
         network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults),
         friends: !!st.friends, local_mods: st.localMods.map((m) => m.id), world: st.world ? st.world.world : "",
+        client_mods: st.friends ? [...st.clientMods.keys()] : [], client_local: st.friends ? st.clientLocal.map((m) => m.id) : [],
         mod_channels: Object.fromEntries([...st.mods].filter(([, m]) => m.explicit && m.channel).map(([k, m]) => [k, m.channel])) };
       if (st.modpack) body.modpack_version = st.modpack.version_id;
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));
         if (r) {
-          setupState.offerFriends = { sid: r.id, name: body.motd, friends: !!body.friends };  // slide the progress down
+          setupState.friendsFor = body.friends || body.client_mods.length || body.client_local.length ? r.id : null;
           Object.assign(setupState, { friends: false, loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
-            prefilled: false, properties: null, advancedOpen: false, modpack: null, localMods: [], minecraft: "latest", world: null });
+            prefilled: false, properties: null, advancedOpen: false, modpack: null, localMods: [], minecraft: "latest", world: null,
+            clientMods: new Map(), clientLocal: [], companionsSeen: new Set() });
           location.hash = `#s/${r.id}/setup`;
         }
         return;
       }
       const r = await act(() => api("/api/setup", { method: "POST", body }));
       if (r) { st.submitted = true; renderProgress(); }
+    };
+
+    // Friends: a download that sets up their Minecraft. "Set up now" opens the mod browser for
+    // players' mods (client-side ones only); the server's mods and what they need on players'
+    // computers come along by themselves.
+    const friendsCard = () => {
+      const moddable = hasMods && !plugins;
+      const friendPicker = h("input", { type: "file", multiple: true, accept: ".jar", class: "hidden" });
+      friendPicker.addEventListener("change", async () => {
+        for (const f of [...friendPicker.files]) {
+          const r = await api(`/api/hub/stage?filename=${encodeURIComponent(f.name)}`, { method: "POST", raw: f })
+            .catch((e) => { toast(`${f.name}: ${e.message}`, true); return null; });
+          if (r) st.clientLocal.push({ id: r.id, name: f.name });
+        }
+        friendPicker.value = "";
+        st.friends = true;
+        renderForm();
+      });
+      const companions = setupCompanions();
+      const list = st.clientMods.size || st.clientLocal.length || companions.size ? h("ul", { class: "list" },
+        [...st.clientMods].map(([k, name]) => h("li", {}, h("strong", { class: "grow" }, name), h("span", { class: "tag" }, "players only"),
+          h("button", { type: "button", class: "btn small danger", onclick: () => { st.clientMods.delete(k); renderForm(); } }, "Remove"))),
+        st.clientLocal.map((m) => h("li", {}, h("div", { class: "grow" }, h("strong", {}, m.name), h("span", { class: "tag" }, "local file")),
+          h("button", { type: "button", class: "btn small danger", onclick: () => { st.clientLocal = st.clientLocal.filter((x) => x !== m); renderForm(); } }, "Remove"))),
+        [...companions.values()].map((c) => h("li", { class: "dep" }, h("div", { class: "grow" }, "↳ ", h("strong", {}, c.name),
+          h("span", { class: "tag" }, `added automatically: ${c.needed_by} needs it`)))))
+        : h("p", { class: "empty" }, "No extra mods for players yet. Friends get the server's mods either way.");
+      return card("Friends (optional)",
+        h("label", { class: "row check-row" },
+          h("input", { type: "checkbox", checked: st.friends, onchange: (e) => { st.friends = e.target.checked; if (st.friends) setupAnnounceCompanions(); renderForm(); } }),
+          h("span", {}, "Make a download for my friends: it sets up their Minecraft with this server's version and mods, and adds the server to their list")),
+        moddable ? h("div", { class: "source-buttons mt-s" },
+          h("button", { type: "button", class: "btn", onclick: () => {
+            if (!st.friends) { st.friends = true; setupAnnounceCompanions(); renderForm(); }
+            openBrowser({ type: "mod", target: "setup", side: "client", loader: st.loader, version: setupModVersion() });
+          } }, "🔎 Set up now", h("span", { class: "small muted" }, "Pick mods for your friends' Minecraft (a minimap, JEI, …)")),
+          h("button", { type: "button", class: "btn", onclick: () => friendPicker.click() }, "📁 Local files",
+            h("span", { class: "small muted" }, ".jar files on this computer, for players")),
+          friendPicker) : null,
+        moddable && st.friends ? [h("h3", { class: "mt" }, "Your friends' mods"), list,
+          h("p", { class: "muted small" }, "Friends also get the server's mods that players need; server-only mods are left out.")] : null,
+        !moddable ? h("p", { class: "muted small" }, plugins ? "Paper plugins run on the server only: friends join with plain Minecraft." : "Friends join with plain Minecraft.") : null,
+        h("p", { class: "muted small" }, "You get a link to share on the server's Friends page. You can change all this later there."));
     };
 
     const advanced = h("details", { class: "card advanced", open: st.advancedOpen },
@@ -3002,11 +3042,7 @@ views.setup = () => {
             h("button", { type: "button", class: "btn", onclick: openRemoteAccess }, "🔒 Remote access…"),
             h("span", { class: "muted small" }, "Manage your servers from your phone or another computer (needs a strong password).")))),
         h("div", { class: "mt" }, advanced),
-        opts.network_option ? null : h("div", { class: "mt" }, card("Friends (optional)",
-          h("label", { class: "row check-row" },
-            h("input", { type: "checkbox", checked: st.friends, onchange: (e) => { st.friends = e.target.checked; } }),
-            h("span", {}, "Make a download for my friends: it sets up their Minecraft with this server's version and mods, and adds the server to their list")),
-          h("p", { class: "muted small" }, "You get a link to share on the server's Friends page. You can switch this on or off later."))),
+        opts.network_option ? null : h("div", { class: "mt" }, friendsCard()),
         h("div", { class: "mt" }, card("Almost done",
           h("label", { class: "row" }, eula, h("span", {}, "I accept the ",
             h("a", { href: "https://aka.ms/MinecraftEULA", target: "_blank", rel: "noopener noreferrer" }, "Minecraft EULA ↗"),
@@ -3027,30 +3063,6 @@ views.setup = () => {
       h("details", { class: "card mt router-help", open: true }, h("summary", {}, h("strong", {}, "While you wait: letting friends outside your home join")),
         routerHelp({ port: (status && status.port) || st.port })));
     fill(main, panel);
-    if (dock && dock.sid === server) undock();  // the full page is back
-    const offer = st.offerFriends && st.offerFriends.sid === server ? st.offerFriends : null;
-    if (offer) {
-      // A new server: its progress slides down to the bottom of the window and keeps going
-      // there, so you can look around meanwhile (and, with friends ticked, set up their side).
-      st.offerFriends = null;
-      setTimeout(() => {
-        if (currentName !== "setup" || server !== offer.sid) return;
-        panel.classList.add("slide-away");
-        setTimeout(() => {
-          dockSetup(offer.sid, offer.name);
-          fill(main, h("div", { class: "empty mt-l" }, "Your server is installing: its progress is at the bottom of the window.",
-            h("div", { class: "row mt-s center" },
-              h("button", { class: "btn small", onclick: () => { closeToast("friends-offer"); undock(); renderProgress(); } }, "Show the progress here"),
-              hubInfo && hubInfo.single ? null : h("a", { class: "btn small ghost", href: "#servers" }, "Your servers"))));
-          if (offer.friends) stickyToast("friends-offer", [
-            h("strong", {}, "Set up your friends' download now?"),
-            h("span", { class: "small" }, "While the server installs, choose the mods your friends get (a minimap, JEI, …)."),
-            h("div", { class: "row mt-s" },
-              h("button", { class: "btn small primary", onclick: () => { closeToast("friends-offer"); location.hash = `#s/${offer.sid}/friends`; } }, "Yes"),
-              h("button", { class: "btn small ghost", onclick: () => closeToast("friends-offer") }, "Not now"))]);
-        }, 650);
-      }, 1800);
-    }
     let startedAt = null;  // only this setup's events, not an earlier attempt's
     every(1500, async () => {
       if (!events.isConnected && seq) return;  // slid away (or shown again in a newer panel)
@@ -3097,7 +3109,7 @@ views.setup = () => {
     onJobDone: () => {
       const last = status && status.last_job;
       if (!last || last.name !== "set up server") return;
-      if (last.ok) location.hash = link("dashboard");  // the job's own toast says it's ready
+      if (last.ok) setupFinished();
       else { st.submitted = false; clearTimers(); every(2000, refreshStatus); renderForm(last.message); }
     },
   };

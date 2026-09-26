@@ -608,8 +608,9 @@ def mod_requirements(provider: ModrinthProvider, mod_id: str, loaders: tuple[str
     version = newest(project.id)
     if version is None:
         where = f"Minecraft {minecraft}" if minecraft else "this server type"
-        return {"project": info, "compatible": False, "reason": f"{project.name} has no build for {where}", "deps": []}
-    deps, seen = [], {project.id}
+        return {"project": info, "compatible": False, "reason": f"{project.name} has no build for {where}", "deps": [],
+                "companions": []}
+    deps, companions, seen = [], [], {project.id}
     queue = [(pid, project.name) for pid in required(version)]
     while queue and len(seen) < limit:
         pid, needed_by = queue.pop(0)
@@ -620,14 +621,15 @@ def mod_requirements(provider: ModrinthProvider, mod_id: str, loaders: tuple[str
             dep = provider.project(pid)
         except ModError:
             continue
-        if dep.server_side == "unsupported":
-            continue  # only players need it
+        if dep.server_side == "unsupported":  # only players need it: it goes in friends' downloads
+            companions.append({"id": dep.id, "slug": dep.slug, "name": dep.name, "needed_by": needed_by})
+            continue
         dep_version = newest(dep.id)
         deps.append({"id": dep.id, "slug": dep.slug, "name": dep.name, "needed_by": needed_by,
                      "compatible": dep_version is not None})
         if dep_version is not None:
             queue += [(x, dep.name) for x in required(dep_version)]
-    return {"project": info, "compatible": all(d["compatible"] for d in deps), "deps": deps,
+    return {"project": info, "compatible": all(d["compatible"] for d in deps), "deps": deps, "companions": companions,
             "reason": next((f"it needs {d['name']}, which has no build for Minecraft {minecraft}"
                             for d in deps if not d["compatible"]), "")}
 
@@ -1272,6 +1274,9 @@ class Api:
         spec.world_source = self.web.hub.world_source(spec.world)
         if spec.local_mods:
             self.web.hub.take_staged(spec.local_mods, self.m.mods_dir)
+        if spec.client_local:
+            from .clientpack import client_dir
+            self.web.hub.take_staged(spec.client_local, client_dir(self.m.config))  # friends' own files
         return self._job("set up server", self.d.run_setup, spec)
 
     # ---------------------------------------------------------------- mods

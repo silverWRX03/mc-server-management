@@ -174,6 +174,7 @@ def test_new_server_from_a_modpack_and_local_files(hub_env):
     status, staged, _ = c.call("POST", "/api/hub/stage?filename=homemade.jar", raw=b"homemade")
     assert status == 200 and len(staged["id"]) == 16
     assert c.call("POST", "/api/hub/stage?filename=notes.txt", raw=b"x")[0] == 400
+    friend_file = c.call("POST", "/api/hub/stage?filename=friendmap.jar", raw=b"for players")[1]["id"]
 
     pack = make_pack([{"path": "mods/good.jar", "downloads": ["https://cdn.modrinth.com/data/AAA00000/versions/V1111111/good.jar"],
                        "hashes": {"sha1": "0" * 40}, "env": {"server": "required"}}],
@@ -188,7 +189,7 @@ def test_new_server_from_a_modpack_and_local_files(hub_env):
                                                            "hashes": {"sha1": hashlib.sha1(pack).hexdigest()}}]}
     status, body, _ = c.post("/api/hub/create", {"loader": "fabric", "minecraft": "1.21.1", "motd": "Packed",
                                                   "modpack_version": "PV111111", "local_mods": [staged["id"]],
-                                                  "accept_eula": True})
+                                                  "client_local": [friend_file], "accept_eula": True})
     assert status == 200, body
     d = hub.get(body["id"])
     wait_for(lambda: d.last_job and d.last_job["name"] == "set up server", timeout=30)
@@ -197,6 +198,9 @@ def test_new_server_from_a_modpack_and_local_files(hub_env):
     assert cfg.updates.strategy == "mods-only" and "AAA00000" in {m.id for m in cfg.mods}
     assert (d.m.server_dir / "config" / "pack.txt").read_text() == "from the pack"
     assert (d.m.server_dir / "mods" / "homemade.jar").read_bytes() == b"homemade"
+    # A file picked for friends goes in their download, not the server.
+    assert cfg.client.enabled and (cfg.root / "client-mods" / "friendmap.jar").read_bytes() == b"for players"
+    assert not (d.m.server_dir / "mods" / "friendmap.jar").exists()
     assert "Good Mod" in {m.name for m in lockmod.load(cfg.root).mods}
     assert not (hub.staging_dir / staged["id"]).exists()
     assert c.post("/api/hub/create", {"loader": "fabric", "modpack_version": "nope", "accept_eula": True})[0] == 400

@@ -310,9 +310,11 @@ installs) walks you through your router's port forwarding:
 ![The router guide](docs/web-help.png)
 
 The Friends page has two invite links: a **local** one for friends on your Wi-Fi, and an
-**internet** one; **Use my public IP** finds your public address for it. If you tick
-"Make a download for my friends" when creating a server, mcsm offers to set up the
-friends' mods while the server installs (its progress stays at the bottom of the window).
+**internet** one; **Use my public IP** finds your public address for it. When creating a
+server, the **Friends** section's **Set up now** opens the mod browser for players' mods
+(client-side ones only) and **Local files** adds your own; mods the server's mods need on
+players' computers are added by themselves. Once the server is ready, its Friends page
+opens with the invite.
 
 In a terminal, `mcsm join <invite> --launcher prism,modrinth` (or `--console`) does the
 same without the page.

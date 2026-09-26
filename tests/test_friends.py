@@ -313,3 +313,17 @@ def test_player_mod_search_leaves_out_server_only_mods(http):
     assert ["client_side:required", "client_side:optional"] in json.loads(seen[-1]["facets"])
     with pytest.raises(BrowseError):
         Browser(http, "key").search("curseforge", "mod", "map", loader="fabric", side="client")
+
+
+def test_new_server_form_takes_friends_mods_and_files(tmp_path):
+    spec = setupmod.SetupSpec.from_dict({"loader": "fabric", "accept_eula": True,
+                                         "client_mods": ["minimap", "minimap", "jei"], "client_local": ["ab" * 8]})
+    assert spec.friends  # picking mods for friends makes their download
+    assert spec.client_mods == ["minimap", "jei"] and spec.client_local == ["ab" * 8]
+    root = tmp_path / "srv"
+    setupmod.configure(root, spec)
+    cfg = configmod.load(root)
+    assert cfg.client.enabled and cfg.client.mods == ["minimap", "jei"]
+    for bad in ({"client_mods": ["curseforge:123"]}, {"client_mods": ["../x"]}, {"client_local": ["nope"]}):
+        with pytest.raises(configmod.ConfigError):
+            setupmod.SetupSpec.from_dict({"loader": "fabric", "accept_eula": True, **bad})

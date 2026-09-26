@@ -105,6 +105,8 @@ class SetupSpec:
     port_chosen: bool = False      # the port was picked by the person (not just the default)
     modpack_version: str = ""      # a Modrinth modpack version to build the server from
     local_mods: list[str] = field(default_factory=list)  # uploaded jars waiting in the hub's staging area
+    client_mods: list[str] = field(default_factory=list)   # Modrinth slugs for friends' Minecraft only
+    client_local: list[str] = field(default_factory=list)  # uploaded jars for friends, in the staging area
     mod_channels: dict = field(default_factory=dict)  # slug -> "beta"/"alpha": mods picked with only early builds
     world: str = ""                # an existing world: an upload's staging id, or "save:<id>" (singleplayer)
     world_source: Path | None = None  # where that world is, found by the hub (never from the form)
@@ -153,6 +155,8 @@ class SetupSpec:
             port_chosen="port" in d,
             modpack_version=str(d.get("modpack_version") or ""),
             local_mods=[str(x) for x in (d.get("local_mods") or []) if isinstance(x, str)],
+            client_mods=[str(x) for x in (d.get("client_mods") or []) if isinstance(x, str)],
+            client_local=[str(x) for x in (d.get("client_local") or []) if isinstance(x, str)],
             world=str(d.get("world") or ""),
             mod_channels={str(k): v for k, v in (d.get("mod_channels") or {}).items()
                           if v in ("beta", "alpha")} if isinstance(d.get("mod_channels"), dict) else {},
@@ -167,8 +171,13 @@ class SetupSpec:
             raise ConfigError("that isn't a Modrinth modpack version")
         if spec.world and not re.fullmatch(r"(save:)?[a-f0-9]{16}", spec.world):
             raise ConfigError("that world choice isn't valid; pick the world again")
-        if not all(re.fullmatch(r"[a-f0-9]{16}", x) for x in spec.local_mods):
+        if not all(re.fullmatch(r"[a-f0-9]{16}", x) for x in spec.local_mods + spec.client_local):
             raise ConfigError("bad uploaded file reference")
+        if not all(re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", x) for x in spec.client_mods):
+            raise ConfigError("friends' mods must be Modrinth projects")
+        spec.client_mods = list(dict.fromkeys(spec.client_mods))
+        if spec.client_mods or spec.client_local:
+            spec.friends = True  # picking mods for friends means making their download
         if spec.loader == "vanilla" and (spec.mods or spec.optional_mods or spec.local_mods):
             raise ConfigError("vanilla servers can't run mods; pick a mod loader or remove the mods")
         if not spec.accept_eula:
@@ -207,6 +216,8 @@ def configure(root: Path, spec: SetupSpec) -> configmod.Config:
         from .clientpack import new_token
         configmod.set_value(path, "client", "enabled", "true")
         configmod.set_value(path, "client", "token", json.dumps(new_token()))
+        if spec.client_mods:
+            configmod.set_value(path, "client", "mods", json.dumps(spec.client_mods))
     for slug in spec.mods:
         configmod.append_mod(path, _mod_spec(slug, required=True, channel=spec.mod_channels.get(slug)))
     for slug in spec.optional_mods:
