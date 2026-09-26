@@ -2461,7 +2461,6 @@ views.setup = () => {
   let opts = null;
   const st = setupState;
   const isNew = !server;  // #new: a brand-new server; #s/<id>/setup: finish one that exists
-  const topMods = new Map();  // loader -> the popular list, fetched once
   let propDefaults = {};
 
   const field = (label, input, hint) => h("label", {}, label, input, hint ? h("span", { class: "muted small" }, hint) : null);
@@ -2507,7 +2506,6 @@ views.setup = () => {
     version.disabled = !!st.modpack;
 
     // Mods
-    const results = h("div");
     const selected = h("div");
     // Each picked mod, with the mods it needs listed under it.
     const modRows = () => {
@@ -2538,45 +2536,10 @@ views.setup = () => {
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.localMods = st.localMods.filter((x) => x !== m); renderSelected(); } }, "Remove"))),
       modRows())
       : h("p", { class: "empty" }, st.modpack ? "No extra mods. The modpack's own mods are added when the server is created."
-        : "No mods yet. Search above, or leave empty for an unmodded server."));
-    const q = h("input", { type: "search", placeholder: "Search Modrinth, e.g. lithium, create, farmer's delight" });
-    let timer;
+        : "Nothing yet. Download mods or add files from this computer above, or leave it empty for an unmodded server."));
     const loaderLabel = (opts.loaders.find((l) => l.name === st.loader) || {}).label || st.loader;
     const plugins = st.loader === "paper";  // Paper: server plugins rather than mods
-    const noun = plugins ? "plugins" : "mods";
-    if (plugins) q.placeholder = "Search Modrinth plugins, e.g. luckperms, chunky, coreprotect";
-    const search = async () => {
-      const term = q.value.trim();
-      const mcv = setupModVersion();  // only mods with a build for the chosen Minecraft
-      const url = `${isNew ? "/api/hub" : "/api"}/mods/search?loader=${encodeURIComponent(st.loader)}&version=${encodeURIComponent(mcv)}&` +
-        (term ? `q=${encodeURIComponent(term)}` : "top=1") + (st.early ? "&early=1" : "");
-      const key = st.loader + "|" + mcv + "|" + term + "|" + !!st.early;
-      const r = term || !topMods.has(key)
-        ? await api(url).catch((e) => { toast(e.message, true); return null; }) : topMods.get(key);
-      if (!r || q.value.trim() !== term) return;  // a newer search is on its way
-      if (!term) topMods.set(key, r);
-      fill(results, term ? null : h("h3", { class: "mt-s" }, `Most popular ${loaderLabel} ${noun}` + (mcv ? ` for Minecraft ${mcv}` : "")),
-        mcv ? h("p", { class: "muted small" }, `Only ${noun} that work on Minecraft ${mcv} are shown` +
-          (st.minecraft === "latest" ? " (the newest release; pick a version above to see mods for another)." : ".") +
-          (r.hidden ? ` ${r.hidden} hidden: no ${loaderLabel} build for it.` : ""),
-          r.early_hidden ? [` ${r.early_hidden} only ${r.early_hidden === 1 ? "has" : "have"} alpha/beta builds. `,
-            h("button", { type: "button", class: "link-btn", onclick: () => { st.early = true; earlyBox.checked = true; search(); } }, "Show them")] : null) : null,
-        r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
-        m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
-        h("div", { class: "info" }, h("div", { class: "name" }, m.name, " ", channelTag(m.channel)), h("div", { class: "desc" }, m.description)),
-        st.mods.has(m.slug) ? h("span", { class: "tag ok" }, "added")
-          : h("button", { type: "button", class: "btn small primary", onclick: () => {
-            if (!confirmEarly([m])) return;
-            setupAddMod(m.slug, m.name, m.channel); search();
-          } }, "Add"),
-      )) : [h("p", { class: "empty" }, `No ${loaderLabel} server ${noun} found` + (mcv ? ` for Minecraft ${mcv}.` : "."))]);
-    };
-    q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
-    const earlyBox = h("input", { type: "checkbox", checked: !!st.early, onchange: (e) => { st.early = e.target.checked; search(); } });
-    const earlyRow = h("label", { class: "row small early-opt", title: EARLY_WARNING }, earlyBox,
-      h("span", {}, `Also show ${noun} with only alpha/beta builds (less stable)`));
     renderSelected();
-    if (st.loader && opts.loaders.find((l) => l.name === st.loader).mods) search();  // the popular list
     // Three ways to add mods: files on this computer, the mod browser window, or a whole modpack.
     const picker = h("input", { type: "file", multiple: true, accept: ".jar", class: "hidden" });
     picker.addEventListener("change", async () => {
@@ -2602,7 +2565,7 @@ views.setup = () => {
         h("div", { class: "small muted" }, `Minecraft ${st.minecraft}, ${loaderLabel}. The pack decides the version and server type; its mods are installed and kept up to date.`)),
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.modpack = null; st.minecraft = "latest"; renderForm(); } }, "Remove modpack")) : null;
     const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card(plugins ? "3. Plugins" : "3. Mods",
-      sources, packCard, h("h3", { class: "mt" }, "Quick add"), q, earlyRow, results, h("h3", { class: "mt" }, "Your mods"), selected,
+      sources, packCard, h("h3", { class: "mt" }, plugins ? "Your plugins" : "Your mods"), selected,
       h("div", { class: "row mt-s" }, testButton({
         check: ["/api/hub/mods/check", { loader: st.loader, minecraft: setupModVersion(),
           mods: [...st.mods].filter(([k, m]) => m.explicit && !k.startsWith("curseforge:")).map(([k]) => k), channels: earlyChannels() }],
