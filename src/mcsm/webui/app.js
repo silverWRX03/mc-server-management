@@ -470,6 +470,7 @@ views.dashboard = () => {
   const playerCard = h("div", { class: "card" }, h("h3", {}, "Online now ", onlineCount), online);
   const cpu = meter("CPU"), mem = meter("Memory");
   const con = consolePanel({ compact: true });
+  const lagBanner = h("div");
   let evSeq = 0;
   let selected = null;      // player whose actions are open
   let ops = new Set();
@@ -545,6 +546,7 @@ views.dashboard = () => {
       h("dt", {}, "Port"), h("dd", {}, s.port),
     );
     const u = s.update;
+    fill(lagBanner, u ? laggingNotice(u.lagging, s.minecraft) : null);
     fill(update,
       !u ? h("p", { class: "empty" }, "Not checked yet.")
         : u.up_to_date && u.latest !== s.minecraft
@@ -572,6 +574,7 @@ views.dashboard = () => {
 
   fill($("#main"),
     h("h2", { class: "view-title" }, "Dashboard"),
+    lagBanner,
     h("div", { class: "meters" }, cpu.el, mem.el),
     h("div", { class: "mt" }, playerCard),
     h("div", { class: "card mt" }, h("h3", {}, "Console"), con.el),
@@ -594,6 +597,36 @@ views.console = () => {
   every(1000, con.poll);
   return {};
 };
+
+// Mods holding back a newer Minecraft. After a month (and every month after) the admin is
+// asked whether to remove them and update; "Keep waiting" hides it until the next reminder.
+function laggingNotice(lag, installed, always = false) {
+  if (!lag || !lag.mods.length) return null;
+  const round = Math.floor(lag.days / lag.remind_days);
+  const key = `mcsm-lag-${server}-${lag.version}-${round}`;
+  let hidden = false;
+  try { hidden = localStorage.getItem(key) === "1"; } catch (_) { /* private mode */ }
+  if (!always && (!lag.due || hidden)) return null;
+  const removable = lag.mods.filter((m) => m.config);
+  const el = h("div", { class: "notice " + (lag.due ? "warn" : "") + " lagging" },
+    h("strong", {}, lag.due ? `Minecraft ${lag.version} came out ${lag.days} days ago, and ${lag.mods.length === 1 ? "a mod hasn't" : `${lag.mods.length} mods haven't`} caught up`
+      : `Minecraft ${lag.version} is out; waiting for ${lag.mods.length === 1 ? "a mod" : `${lag.mods.length} mods`} to support it`),
+    h("p", { class: "small" }, `The server stays on Minecraft ${installed} until every mod supports ${lag.version}, so nothing breaks. ` +
+      (lag.due ? "You can wait longer, or remove these mods and update now:" : `mcsm reminds you ${lag.remind_days} days after the release if they still haven't. These are:`)),
+    h("ul", { class: "small" }, lag.mods.map((m) => h("li", {}, h("strong", {}, m.name), m.required ? h("span", { class: "tag" }, "required") : null,
+      h("span", { class: "muted" }, ` — ${m.reason}`)))),
+    h("div", { class: "row" },
+      removable.length ? h("button", { class: "btn " + (lag.due ? "danger" : "small"), onclick: () => {
+        const names = removable.map((m) => m.name).join(", ");
+        if (!confirm(`Remove ${names} from this server and update to Minecraft ${lag.version}?\n\n` +
+          "Their blocks and items disappear from the world. A backup is made first, and the update rolls back if the new version fails to start. " +
+          "You can add the mods back later, once they support the new version.")) return;
+        act(() => api("/api/updates/remove-and-upgrade", { method: "POST", body: { version: lag.version, mods: removable.map((m) => m.config) } }),
+          `Removing ${removable.length} mod(s) and updating…`);
+      } }, `Remove ${removable.length === 1 ? "it" : "them"} and update to ${lag.version}`) : null,
+      lag.due && !always ? h("button", { class: "btn ghost", onclick: () => { try { localStorage.setItem(key, "1"); } catch (_) {} el.remove(); } }, "Keep waiting") : null));
+  return el;
+}
 
 views.updates = () => {
   const body = h("div");
@@ -652,7 +685,8 @@ views.updates = () => {
           h("td", {}, b.minecraft),
           h("td", {}, h("ul", { class: "list" },
             b.loader_missing ? h("li", {}, "Loader has no build for this version yet") : null,
-            b.blockers.map((x) => h("li", {}, h("div", {}, h("strong", {}, x.name), h("div", { class: "muted small" }, x.reason)))))),
+            b.blockers.map((x) => h("li", {}, h("div", {}, h("strong", {}, x.name), x.waiting ? h("span", { class: "tag" }, "optional") : null,
+              h("div", { class: "muted small" }, x.reason)))))),
         ))))) : null;
 
     const dropped = c.dropped.length ? card("Left out (optional or client-only)",
@@ -660,7 +694,8 @@ views.updates = () => {
 
     fill(body, 
       summary,
-      h("div", { class: "row mb" }, applyBtn, checkBtn, h("span", { class: "muted small" }, `Last checked ${ago(c.checked_at)}`)),
+      laggingNotice(c.lagging, c.installed, true),
+      h("div", { class: "row mb mt-s" }, applyBtn, checkBtn, h("span", { class: "muted small" }, `Last checked ${ago(c.checked_at)}`)),
       manual, changes, blocked, dropped);
   };
   fill($("#main"), h("h2", { class: "view-title" }, "Updates"), body);
@@ -792,7 +827,7 @@ views.mods = () => {
     info = r;
     fill(configured, r.configured.length ? h("ul", { class: "list" }, r.configured.map((s) => h("li", {},
       h("div", { class: "grow" }, h("strong", {}, s.id), h("span", { class: "tag" }, s.source)),
-      h("label", { class: "row", title: "Required mods hold back Minecraft upgrades until they support the new version" },
+      h("label", { class: "row", title: "Every mod holds back Minecraft upgrades until it supports the new version. Required ones also decide the Minecraft version a new server starts on." },
         h("input", { type: "checkbox", checked: s.required, onchange: (e) => act(() => api("/api/mods/required", { method: "POST", body: { source: s.source, id: s.id, required: e.target.checked } })) }),
         "required"),
       h("button", { class: "btn danger small", onclick: () => confirm(`Remove ${s.id}? It is uninstalled at the next update.`) && act(() => api("/api/mods/remove", { method: "POST", body: { source: s.source, id: s.id } }), `Removed ${s.id}`).then(load) }, "Remove"),
@@ -923,7 +958,7 @@ views.settings = () => {
         h("label", {}, "Check every (e.g. 6h, 30m)", txt("check_interval")),
         h("label", {}, "In-game warnings (minutes, comma separated)", txt("warn_minutes", { value: s.warn_minutes.join(", ") }))),
       h("div", { class: "grid mt-s" },
-        chk("auto_upgrade", "Apply updates automatically"),
+        chk("auto_upgrade", "Apply updates automatically (a new Minecraft only once every mod supports it)"),
         chk("wait_for_empty", "Wait until nobody is online"),
         chk("verify_boot", "Test-boot and roll back on failure")),
       h("h3", { class: "mt-l" }, "Server"),
@@ -1654,7 +1689,7 @@ views.setup = () => {
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.localMods = st.localMods.filter((x) => x !== m); renderSelected(); } }, "Remove"))),
       [...st.mods].map(([slug, m]) => h("li", {},
       h("div", { class: "grow" }, h("strong", {}, m.name), h("span", { class: "tag" }, slug.startsWith("curseforge:") ? "CurseForge" : slug)),
-      h("label", { class: "row", title: "Required mods hold back Minecraft upgrades until they support the new version" },
+      h("label", { class: "row", title: "Every mod holds back Minecraft upgrades until it supports the new version. Required ones also decide the Minecraft version a new server starts on." },
         h("input", { type: "checkbox", checked: m.required, onchange: (e) => { m.required = e.target.checked; } }), "required"),
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.mods.delete(slug); renderSelected(); search(); } }, "Remove"))))
       : h("p", { class: "empty" }, st.modpack ? "No extra mods. The modpack's own mods are added when the server is created."
@@ -1806,7 +1841,7 @@ views.setup = () => {
       h("form", { onsubmit: submit },
         card("1. Server type", loaderCards),
         h("div", { class: "mt" }, card("2. Minecraft version", field("Version", version,
-          "\"Newest\" picks the newest Minecraft that all your required mods work on, and keeps upgrading as they catch up: a forever server. " +
+          "\"Newest\" picks the newest Minecraft your mods work on, and upgrades only once every mod supports the next version: a forever server. " +
           "Picking a specific version keeps the server on that version (mods still update); you can change this later in Settings."))),
         modsCard ? h("div", { class: "mt" }, modsCard) : null,
         h("div", { class: "mt" }, worldCard),

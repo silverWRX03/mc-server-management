@@ -638,6 +638,7 @@ class Api:
         post("/api/backups/restore", self.restore_backup)
         post("/api/open", self.open_folder)
         post("/api/world/replace", self.replace_world)
+        post("/api/updates/remove-and-upgrade", self.remove_and_upgrade)
         get("/api/export", self.exports)
         post("/api/export", self.export)
         post("/api/export/delete", self.delete_export)
@@ -727,7 +728,7 @@ class Api:
         if not c:
             return None
         return {"checked_at": c["checked_at"], "up_to_date": c["up_to_date"], "target": c["target"],
-                "latest": c["latest"], "manual": len(c["manual"])}
+                "latest": c["latest"], "manual": len(c["manual"]), "lagging": c.get("lagging")}
 
     def console(self, q, b) -> dict:
         items, last = self.d.console.since(int(q.get("since", 0) or 0), 1000)
@@ -1069,6 +1070,16 @@ class Api:
         if not opener.open_path(where):
             raise ApiError(500, f"couldn't open a file manager; the folder is {where}")
         return {"ok": True, "path": str(where)}
+
+    def remove_and_upgrade(self, q, b) -> dict:
+        lag = (self.d.last_check or {}).get("lagging")
+        version, mods = str(b.get("version", "")), b.get("mods")
+        if not lag or lag["version"] != version:
+            raise ApiError(409, "that's out of date; check for updates and try again")
+        allowed = {x["config"] for x in lag["mods"] if x["config"]}
+        if not isinstance(mods, list) or not mods or not set(map(str, mods)) <= allowed:
+            raise ApiError(400, "pick mods from the list of mods holding the update back")
+        return self._job("update", self.d.remove_and_upgrade, version, [str(x) for x in mods])
 
     def replace_world(self, q, b) -> dict:
         """Swap the server's world for another one (a backup is made first)."""

@@ -132,7 +132,13 @@ class _EventHandler(logging.Handler):
 
 
 def decision_to_dict(m: Manager, decision, changes) -> dict:
+    from . import reminders
     plan = decision.plan
+    try:
+        lagging = reminders.lagging(m, decision)
+    except Exception as e:  # never let this break the update check
+        log.debug("couldn't work out which mods are behind: %s", e)
+        lagging = None
     return {
         "checked_at": time.time(),
         "installed": m.lock.minecraft,
@@ -147,8 +153,9 @@ def decision_to_dict(m: Manager, decision, changes) -> dict:
         "blocked": [{
             "minecraft": p.minecraft,
             "loader_missing": p.loader_version is None,
-            "blockers": [{"name": b.name, "reason": b.reason} for b in p.blockers],
+            "blockers": [{"name": b.name, "reason": b.reason, "waiting": b.waiting} for b in p.blockers],
         } for p in decision.blocked],
+        "lagging": lagging,
     }
 
 
@@ -421,7 +428,13 @@ class Daemon:
     def check_only(self, target: str | None = None) -> str:
         decision, changes = self.m.check(target, retry_failed=True)
         self.last_check = decision_to_dict(self.m, decision, changes)
+        from . import reminders
+        reminders.remind(self.m, self.last_check.get("lagging"))
         if self.last_check["up_to_date"]:
+            lag = self.last_check.get("lagging")
+            if lag:
+                return (f"up to date on Minecraft {self.m.lock.minecraft}; {lag['version']} waits for "
+                        f"{len(lag['mods'])} mod(s) to support it")
             return f"up to date (Minecraft {self.m.lock.minecraft})"
         if decision.plan:
             return f"update available: Minecraft {decision.plan.minecraft}"
@@ -437,6 +450,8 @@ class Daemon:
             log.warning("update check failed: %s", e)
             return f"update check failed: {e}"
         self.last_check = decision_to_dict(self.m, decision, changes)
+        from . import reminders
+        reminders.remind(self.m, self.last_check.get("lagging"))
         for plan in decision.blocked:
             if plan.minecraft == decision.latest and plan.fingerprint not in self.announced:
                 self.announced.add(plan.fingerprint)
@@ -485,6 +500,16 @@ class Daemon:
         if not result.ok:
             raise RuntimeError(result.message)
         return result.message
+
+    def remove_and_upgrade(self, version: str, mods: list[str]) -> str:
+        """The admin's answer to a reminder: drop the mods that haven't caught up, then update."""
+        from . import config as configmod
+        for item in mods:
+            source, _, mod_id = item.partition(":")
+            if configmod.remove_mod(self.m.config.path, source, mod_id):
+                log.info("removed %s from mcsm.toml so the server can move to Minecraft %s", mod_id, version)
+        self.m.reload_config()
+        return self.check_for_updates(force=True, target=version)
 
     # ------------------------------------------------------------ setup
     @property

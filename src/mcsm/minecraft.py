@@ -37,6 +37,15 @@ class Mojang:
     def latest_release(self) -> str:
         return self._manifest()["latest"]["release"]
 
+    def release_time(self, version: str) -> float | None:
+        """When a version came out (seconds since the epoch)."""
+        from datetime import datetime
+        entry = next((v for v in self._manifest()["versions"] if v["id"] == version), None)
+        try:
+            return datetime.fromisoformat(entry["releaseTime"].replace("Z", "+00:00")).timestamp() if entry else None
+        except (KeyError, ValueError):
+            return None
+
     def is_release(self, version: str) -> bool:
         return version in self.releases()
 

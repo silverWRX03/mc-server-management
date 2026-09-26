@@ -53,6 +53,8 @@ class UpdateConfig:
     warn_minutes: list[int] = field(default_factory=lambda: [10, 5, 1])
     wait_for_empty: bool = False
     verify_boot: bool = True
+    wait_for_all_mods: bool = True   # upgrade Minecraft only once every mod (optional ones too) supports it
+    remind_days: int = 30            # then remind about mods still not updated, this often
 
 
 @dataclass
@@ -187,6 +189,8 @@ def parse(root: Path, data: dict) -> Config:
         warn_minutes=sorted((int(x) for x in u.get("warn_minutes", [10, 5, 1])), reverse=True),
         wait_for_empty=bool(u.get("wait_for_empty", False)),
         verify_boot=bool(u.get("verify_boot", True)),
+        wait_for_all_mods=bool(u.get("wait_for_all_mods", True)),
+        remind_days=max(1, int(u.get("remind_days", 30))),
     )
 
     b = data.get("backups", {})
@@ -272,6 +276,8 @@ check_interval = "6h"
 warn_minutes = [10, 5, 1]      # in-game countdown before a restart
 wait_for_empty = false         # postpone upgrades until nobody is online
 verify_boot = true             # boot the upgraded server and roll back if it fails to start
+wait_for_all_mods = true       # upgrade Minecraft only when every mod (optional ones too) supports it
+remind_days = 30               # a month after a new version is out (and every month after), list the mods holding it back
 
 [backups]
 dir = "backups"

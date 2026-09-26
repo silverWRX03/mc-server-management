@@ -3,7 +3,9 @@
 For a candidate Minecraft version the planner checks the loader and resolves every
 configured mod plus its required dependencies. A plan is *complete* when the loader
 and every required mod are available. Optional mods that are not ready are dropped
-from the plan and picked up again by a later update.
+from the plan and picked up again by a later update, except that moving an installed
+server to a newer Minecraft waits for every mod (``updates.wait_for_all_mods``):
+nothing is removed without the admin saying so.
 """
 
 from __future__ import annotations
@@ -33,6 +35,9 @@ class Blocker:
     reason: str
     required: bool
     dependency_of: str | None = None
+    client_only: bool = False
+    config: str | None = None    # "source:id" as listed in mcsm.toml, for mods listed there
+    waiting: bool = False        # optional, but upgrades wait for every mod (wait_for_all_mods)
 
 
 @dataclass
@@ -123,17 +128,22 @@ class Planner:
         resolved: dict[str, ModFile] = {}
         failed: dict[str, Blocker] = {}
         client_only: set[str] = set()
+        listed: dict[str, str] = {}  # project key -> "source:id" in mcsm.toml
         queue = deque(self.config.mods)
 
         while queue:
             spec: ModSpec = queue.popleft()
             provider = self.providers[spec.source]
+            config_id = f"{spec.source}:{spec.id}" if spec.dependency_of is None else None
             try:
                 project = provider.project(spec.id)
             except ModError as e:
-                failed[spec.label] = Blocker(spec.label, spec.id, str(e), spec.required, spec.dependency_of)
+                failed[spec.label] = Blocker(spec.label, spec.id, str(e), spec.required, spec.dependency_of,
+                                             config=config_id)
                 continue
             key = project.key
+            if config_id:
+                listed.setdefault(key, config_id)
             if key in resolved or key in failed or key in client_only:
                 # Something required depends on it, so it is required too.
                 if spec.required:
@@ -147,10 +157,10 @@ class Planner:
             except ClientOnly as e:
                 client_only.add(key)
                 if spec.dependency_of is None:
-                    plan.dropped.append(Blocker(key, project.name, str(e), False))
+                    plan.dropped.append(Blocker(key, project.name, str(e), False, client_only=True, config=config_id))
                 continue
             except Unavailable as e:
-                failed[key] = Blocker(key, project.name, str(e), spec.required, spec.dependency_of)
+                failed[key] = Blocker(key, project.name, str(e), spec.required, spec.dependency_of, config=config_id)
                 continue
             resolved[key] = mod
             for dep in mod.dependencies:
@@ -165,7 +175,7 @@ class Planner:
                 if missing:
                     del resolved[key]
                     failed[key] = Blocker(key, mod.name, f"needs {missing[0].name}: {missing[0].reason}",
-                                          mod.required, mod.dependency_of)
+                                          mod.required, mod.dependency_of, config=listed.get(key))
                     changed = True
 
         plan.mods = sorted(resolved.values(), key=lambda m: m.name.lower())
@@ -210,6 +220,13 @@ class Planner:
         skip_failed = self.lock.installed and not retry_failed
         for version in self._candidates():
             plan = self.plan_for(version)
+            if self.config.updates.wait_for_all_mods and self.lock.installed and version != self.lock.minecraft:
+                # A newer Minecraft waits for every mod, optional ones too (client-only ones never
+                # run on the server, so they don't count).
+                for b in [b for b in plan.dropped if not b.client_only]:
+                    plan.dropped.remove(b)
+                    b.waiting = True
+                    plan.blockers.append(b)
             if skip_failed and plan.complete and plan.fingerprint in self.lock.failed_plans:
                 log.info("not retrying Minecraft %s automatically: the same update failed before", version)
                 plan.blockers.append(Blocker("mcsm:failed", "an earlier attempt",
