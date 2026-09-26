@@ -32,7 +32,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, backup, config as configmod, licenses, notice, serverprops, setup as setupmod, stats, webauth
+from . import __version__, backup, config as configmod, configs, licenses, notice, serverprops, setup as setupmod, stats, webauth
 from .config import ConfigError, ModSpec
 from .daemon import Daemon, set_current_server
 from .hub import Hub
@@ -714,6 +714,9 @@ class Api:
         post("/api/world/replace", self.replace_world)
         post("/api/updates/remove-and-upgrade", self.remove_and_upgrade)
         post("/api/beta/test", self.test_beta)
+        get("/api/configs", lambda q, b: configs.grouped(self.m.server_dir, self.m.lock.mods))
+        get("/api/configs/file", lambda q, b: configs.read(self.m.server_dir, q.get("path", "")))
+        post("/api/configs/file", self.save_config)
         get("/api/export", self.exports)
         post("/api/export", self.export)
         post("/api/export/delete", self.delete_export)
@@ -1190,6 +1193,17 @@ class Api:
         if not opener.open_path(where):
             raise ApiError(500, f"couldn't open a file manager; the folder is {where}")
         return {"ok": True, "path": str(where)}
+
+    def save_config(self, q, b) -> dict:
+        """Save a mod's config file (the previous version is kept in .mcsm/config-backups/)."""
+        text = b.get("text")
+        if not isinstance(text, str):
+            raise ApiError(400, "nothing to save")
+        modified = b.get("modified")
+        result = configs.write(self.m.server_dir, self.m.config.state_dir / "config-backups", str(b.get("path", "")),
+                               text, float(modified) if isinstance(modified, (int, float)) else None)
+        log.info("saved %s", b.get("path"))
+        return {**result, "running": bool(self.d.proc and self.d.proc.running)}
 
     def betas(self, q, b) -> dict:
         try:

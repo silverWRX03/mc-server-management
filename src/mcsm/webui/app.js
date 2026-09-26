@@ -852,10 +852,24 @@ views.mods = () => {
 
   const cfId = h("input", { placeholder: "CurseForge project id or slug" });
   let info = {};
+  const configsCard = h("div");
   const load = async () => {
-    const r = await api("/api/mods").catch(() => null);
+    const [r, cfg] = await Promise.all([api("/api/mods").catch(() => null), api("/api/configs").catch(() => null)]);
     if (!r) return;
     info = r;
+    // Config files, matched to mods by the ids inside their jars.
+    const groupByJar = new Map(((cfg && cfg.mods) || []).map((g) => [g.jar, g]));
+    const groupFor = (key) => { const x = r.installed.find((m) => m.key === key); return x ? groupByJar.get(x.filename) : null; };
+    const cfgBtn = (g) => g ? h("button", { class: "btn small", title: g.files.join("\n"), onclick: () => openConfigEditor(`${g.name} config`, g.files) },
+      `⚙ Config${g.files.length > 1 ? ` (${g.files.length})` : ""}`) : null;
+    fill(configsCard, cfg && (cfg.mods.length || cfg.other.length) ? card("Mod config files",
+      h("p", { class: "muted small" }, "Change how mods behave. Most changes apply when the server restarts; the previous version of a file is kept each time you save."),
+      h("ul", { class: "list" }, cfg.mods.map((g) => h("li", {},
+        h("div", { class: "grow" }, h("strong", {}, g.name), h("div", { class: "small muted" }, g.files.join(", "))), cfgBtn(g))),
+        cfg.other.length ? h("li", {}, h("div", { class: "grow" }, h("strong", {}, "Other config files"),
+          h("div", { class: "small muted" }, `${cfg.other.length} file(s) not matched to an installed mod`)),
+          h("button", { class: "btn small", onclick: () => openConfigEditor("Other config files", cfg.other) }, "⚙ Open")) : null))
+      : null);
     // Each mod you added, with the mods installed because it needs them: they go together.
     const removeMods = async (specs, what) => {
       for (const x of specs) await api("/api/mods/remove", { method: "POST", body: { source: x.source, id: x.id } }).catch((e) => toast(e.message, true));
@@ -868,6 +882,7 @@ views.mods = () => {
       h("label", { class: "row", title: "Every mod holds back Minecraft upgrades until it supports the new version. Required ones also decide the Minecraft version a new server starts on." },
         h("input", { type: "checkbox", checked: s.required, onchange: (e) => act(() => api("/api/mods/required", { method: "POST", body: { source: s.source, id: s.id, required: e.target.checked } })) }),
         "required"),
+      cfgBtn(groupFor(s.key)),
       h("button", { class: "btn danger small", onclick: () => confirm(`Remove ${s.name}?` +
         (s.deps.length ? ` The mods it needs (${s.deps.map((d) => d.name).join(", ")}) go too, unless another mod needs them.` : "") +
         " It's uninstalled at the next update.") && removeMods([s], s.name) }, "Remove")),
@@ -915,6 +930,7 @@ views.mods = () => {
     card("Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, results,
       h("div", { class: "row mt-s" }, cfId,
         h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
+    h("div", { class: "mt" }, configsCard),
     h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured),
       card("Installed", hubInfo && hubInfo.local ? h("div", { class: "row mb" }, folderBtn("mods", "Mods folder"), folderBtn("config", "Config folder")) : null, installed)),
   );
@@ -1473,6 +1489,156 @@ function propsEditor(schema, values) {
 // Only the settings that differ from `base`, so untouched ones keep Minecraft's own defaults.
 function changedProps(values, base) {
   return Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== base[k]));
+}
+
+// ------------------------------------------------------------- code editor
+// A config file editor with IDE-style colours: a transparent <textarea> typed into over a
+// highlighted copy of the same text. Each language is a list of [sticky regex, token class]
+// tried in order at every position; anything unmatched is plain text.
+const STR = /"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/y;
+const NUM = /[+-]?(?:0x[0-9a-fA-F_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?[dDfFlLbBsS]?)(?![\w.])/y;
+const HIGHLIGHT = {
+  toml: [[/#.*/y, "c"], [/^[ \t]*\[\[?[^\]\n]*\]\]?/my, "h"], [/"""[\s\S]*?"""|'''[\s\S]*?'''/y, "s"], [STR, "s"],
+    [/(?:true|false)(?![\w-])/y, "b"], [NUM, "n"], [/[A-Za-z0-9_.-]+(?=[ \t]*=)/y, "k"], [/[=,{}[\]]/y, "p"]],
+  json: [[/\/\/.*|\/\*[\s\S]*?\*\//y, "c"], [/"(?:\\.|[^"\\\n])*"(?=\s*:)/y, "k"], [STR, "s"],
+    [/(?:true|false|null)(?!\w)/y, "b"], [NUM, "n"], [/[A-Za-z_$][\w$]*(?=\s*:)/y, "k"], [/[{}[\],:]/y, "p"]],
+  snbt: [[STR, "s"], [/[A-Za-z_][\w.+-]*(?=\s*:)/y, "k"], [/(?:true|false)(?!\w)/y, "b"], [NUM, "n"], [/[{}[\],:;]/y, "p"]],
+  yaml: [[/#.*/y, "c"], [/^---|^\.\.\./my, "h"], [/^[ \t]*(?:- +)?[^\s#:'"][^:#\n]*?(?=:(?:\s|$))/my, "k"],
+    [STR, "s"], [/(?:true|false|yes|no|on|off|null|~)(?![\w-])/iy, "b"], [NUM, "n"], [/[:\-|>[\]{},&*!]/y, "p"]],
+  properties: [[/^[ \t]*[#!].*/my, "c"], [/^[ \t]*[^=:\s#!][^=:\n]*?(?=[ \t]*[=:])/my, "k"], [/(?:true|false)(?![\w-])/y, "b"],
+    [NUM, "n"], [/[=:]/y, "p"]],
+  ini: [[/^[ \t]*[;#].*/my, "c"], [/^[ \t]*\[[^\]\n]*\]/my, "h"], [/^[ \t]*[^=\s;#[][^=\n]*?(?=[ \t]*=)/my, "k"], [STR, "s"],
+    [/(?:true|false)(?![\w-])/iy, "b"], [NUM, "n"], [/=/y, "p"]],
+  // Forge's old .cfg: "B:name=true", "S:name=text", lists in < >, blocks in { }
+  cfg: [[/#.*/y, "c"], [/^[ \t]*[\w. -]+(?=[ \t]*\{)/my, "h"], [/[BISD]:/y, "t"], [/"[^"\n]*"(?=[ \t]*[=<])|[\w.-]+(?=[ \t]*[=<])/y, "k"],
+    [STR, "s"], [/(?:true|false)(?![\w-])/y, "b"], [NUM, "n"], [/[=<>{}]/y, "p"]],
+  text: [[/^[ \t]*#.*/my, "c"]],
+};
+function highlight(text, lang) {
+  const rules = HIGHLIGHT[lang] || HIGHLIGHT.text;
+  const out = [];
+  let i = 0, plain = "";
+  const flush = () => { if (plain) { out.push(plain); plain = ""; } };
+  while (i < text.length) {
+    let hit = null;
+    for (const [re, cls] of rules) {
+      re.lastIndex = i;
+      const m = re.exec(text);
+      if (m && m[0].length) { hit = [m[0], cls]; break; }
+    }
+    if (hit) { flush(); out.push(h("span", { class: "tk-" + hit[1] }, hit[0])); i += hit[0].length; continue; }
+    // plain text: a whole word at once (a word can't start a token midway), else one character
+    const word = /[A-Za-z_]\w*/y;
+    word.lastIndex = i;
+    const w = /[A-Za-z_]/.test(text[i]) ? word.exec(text) : null;
+    const take = w ? w[0] : text[i];
+    plain += take;
+    i += take.length;
+  }
+  flush();
+  return out;
+}
+
+function codeEditor(text, lang, onChange) {
+  const pre = h("pre", { class: "code-hl", "aria-hidden": "true" });
+  const gutter = h("div", { class: "code-gutter", "aria-hidden": "true" });
+  const input = h("textarea", { class: "code-input", spellcheck: "false", autocapitalize: "off", autocomplete: "off", wrap: "off", "aria-label": "File contents" });
+  input.value = text;
+  let lines = 0, frame = 0;
+  const sync = () => { pre.scrollTop = input.scrollTop; pre.scrollLeft = input.scrollLeft; gutter.scrollTop = input.scrollTop; };
+  const paint = () => {
+    frame = 0;
+    fill(pre, highlight(input.value, lang), "\n");  // the extra line keeps the last one visible
+    const n = input.value.split("\n").length;
+    if (n !== lines) { lines = n; gutter.textContent = Array.from({ length: n }, (_, k) => k + 1).join("\n") + "\n"; }
+    sync();
+  };
+  input.addEventListener("input", () => { if (!frame) frame = requestAnimationFrame(paint); onChange(); });
+  input.addEventListener("scroll", sync);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey) {  // indent instead of leaving the editor
+      e.preventDefault();
+      input.setRangeText("  ", input.selectionStart, input.selectionEnd, "end");
+      input.dispatchEvent(new Event("input"));
+    }
+  });
+  paint();
+  const el = h("div", { class: "code-editor" }, gutter, h("div", { class: "code-wrap" }, pre, input));
+  return { el, input, get value() { return input.value; }, set value(v) { input.value = v; paint(); } };
+}
+
+// The config files of one mod (or all of them), in a big dialog: a file list and the editor.
+function openConfigEditor(title, files, first) {
+  if ($("#config-editor")) return;
+  let current = null;   // { path, text, modified, format }
+  let editor = null;
+  let dirty = false;
+  const list = h("ul", { class: "cfg-files" });
+  const pane = h("div", { class: "cfg-pane" }, h("p", { class: "empty" }, "Pick a file."));
+  const status = h("span", { class: "muted small grow" });
+  const saveBtn = h("button", { class: "btn primary small", disabled: true }, "Save");
+  const revertBtn = h("button", { class: "btn small", disabled: true }, "Revert");
+  const keys = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); }
+    if (e.key === "Escape") close();
+  };
+  const close = () => {
+    if (dirty && !confirm("Close without saving your changes?")) return;
+    $("#config-editor").remove();
+    document.removeEventListener("keydown", keys);
+  };
+  const checkJson = () => {
+    if (!current || !current.path.endsWith(".json")) return "";
+    try { JSON.parse(editor.value); return ""; } catch (e) { return `JSON problem: ${e.message}`; }
+  };
+  const showPos = () => {
+    if (!editor) return;
+    const upto = editor.input.value.slice(0, editor.input.selectionStart).split("\n");
+    const problem = checkJson();
+    status.className = "small grow " + (problem ? "bad-text" : "muted");
+    status.textContent = problem || `Line ${upto.length}, column ${upto[upto.length - 1].length + 1} · ${current.format.toUpperCase()}` +
+      (dirty ? " · unsaved changes" : "");
+  };
+  const renderList = () => fill(list, files.map((path) => h("li", {},
+    h("button", { type: "button", class: current && current.path === path ? "active" : null, title: path, onclick: () => load(path) },
+      path, current && current.path === path && dirty ? " •" : ""))));
+  const setDirty = (v) => { dirty = v; saveBtn.disabled = !v; revertBtn.disabled = !v; renderList(); };
+  const load = async (path) => {
+    if (dirty && !confirm("Switch files without saving your changes?")) return;
+    const f = await api(`/api/configs/file?path=${encodeURIComponent(path)}`).catch((e) => { toast(e.message, true); return null; });
+    if (!f) return;
+    current = f;
+    editor = codeEditor(f.text, f.format, () => { setDirty(editor.value !== current.text); showPos(); });
+    editor.input.addEventListener("keyup", showPos);
+    editor.input.addEventListener("click", showPos);
+    fill(pane, editor.el);
+    setDirty(false);
+    showPos();
+    editor.input.focus();
+  };
+  const save = async () => {
+    if (!current || !dirty) return;
+    const problem = checkJson();
+    if (problem && !confirm(`${problem}\n\nSave anyway?`)) return;
+    try {
+      const r = await api("/api/configs/file", { method: "POST", body: { path: current.path, text: editor.value, modified: current.modified } });
+      current = { ...current, text: editor.value, modified: r.modified };
+      setDirty(false);
+      showPos();
+      toast(r.running ? "Saved. Restart the server for it to take effect (some mods reload their config by themselves)." : "Saved.");
+    } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, true); }
+  };
+  saveBtn.addEventListener("click", save);
+  revertBtn.addEventListener("click", () => { if (current && confirm("Undo your unsaved changes?")) { editor.value = current.text; setDirty(false); showPos(); } });
+  renderList();
+  const box = h("div", { class: "modal editor-modal" },
+    h("div", { class: "row" }, h("h2", { id: "config-editor-title", class: "grow" }, title), folderBtn("config", "Config folder"),
+      h("button", { class: "btn ghost small", onclick: close }, "Close")),
+    h("div", { class: "cfg-body" + (files.length > 1 ? "" : " single") }, files.length > 1 ? list : null, pane),
+    h("div", { class: "row mt-s" }, status, revertBtn, saveBtn));
+  document.body.append(h("div", { class: "modal-backdrop", id: "config-editor", role: "dialog", "aria-modal": "true", "aria-labelledby": "config-editor-title" }, box));
+  document.addEventListener("keydown", keys);
+  if (first || files.length) load(first || files[0]);
 }
 
 // ------------------------------------------------------------- pick a world
