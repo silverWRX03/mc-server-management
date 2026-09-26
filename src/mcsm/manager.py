@@ -148,7 +148,12 @@ class Manager:
         if mem == "auto":
             from .setup import suggested_memory_gb
             mem = f"{suggested_memory_gb()}G"
-        return [java, f"-Xms{mem}", f"-Xmx{mem}", *self.config.server.jvm_args, *lock.launch]
+        gc = []
+        if self.config.server.aikar_flags:
+            from .jvmflags import aikar
+            from .stats import heap_bytes
+            gc = aikar(heap_bytes(mem, 4))
+        return [java, f"-Xms{mem}", f"-Xmx{mem}", *gc, *self.config.server.jvm_args, *lock.launch]
 
     def new_process(self, lock: Lock | None = None) -> ServerProcess:
         return ServerProcess(self.launch_argv(lock), self.server_dir, echo=self.echo, on_line=self.on_line)

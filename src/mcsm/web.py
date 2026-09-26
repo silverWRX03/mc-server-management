@@ -1685,6 +1685,7 @@ class Api:
     SETTINGS = {
         # key: (table, toml key, type)
         "memory": ("server", "memory", str),
+        "aikar_flags": ("server", "aikar_flags", bool),
         "restart_on_crash": ("server", "restart_on_crash", bool),
         "strategy": ("updates", "strategy", str),
         "mod_channel": ("updates", "mod_channel", str),
@@ -1701,7 +1702,7 @@ class Api:
         c = self.m.config
         interval = c.updates.check_interval
         return {
-            "memory": c.server.memory, "restart_on_crash": c.restart_on_crash,
+            "memory": c.server.memory, "aikar_flags": c.server.aikar_flags, "restart_on_crash": c.restart_on_crash,
             "strategy": c.updates.strategy, "mod_channel": c.updates.mod_channel,
             "auto_upgrade": c.updates.auto_upgrade,
             "check_interval": f"{interval // 3600}h" if interval % 3600 == 0 else f"{interval // 60}m",

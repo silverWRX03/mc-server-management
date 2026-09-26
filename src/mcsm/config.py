@@ -42,6 +42,7 @@ class ServerConfig:
     minecraft: str
     memory: str = "4G"
     jvm_args: list[str] = field(default_factory=list)
+    aikar_flags: bool = False       # Aikar's garbage-collection flags (see jvmflags.py)
     startup_timeout: int = 600
     stop_timeout: int = 120
 
@@ -178,6 +179,7 @@ def parse(root: Path, data: dict) -> Config:
         minecraft=str(s.get("minecraft", "latest")),
         memory=_memory(s.get("memory", "4G")),
         jvm_args=list(s.get("jvm_args", [])),
+        aikar_flags=bool(s.get("aikar_flags", False)),
         startup_timeout=parse_duration(s.get("startup_timeout", 600)),
         stop_timeout=parse_duration(s.get("stop_timeout", 120)),
     )
@@ -264,6 +266,7 @@ loader = "{loader}"            # fabric | quilt | neoforge | forge | paper | van
 minecraft = "{minecraft}"      # version to install on first `mcsm update` ("latest" = newest release)
 memory = "4G"
 jvm_args = []                  # extra JVM flags, e.g. ["-XX:+UseZGC"]
+aikar_flags = false            # Aikar's GC flags: fewer lag spikes with lots of memory (16 GB+)
 startup_timeout = "10m"        # how long a boot may take before it counts as failed
 stop_timeout = "2m"
 restart_on_crash = true

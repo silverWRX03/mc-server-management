@@ -1127,7 +1127,9 @@ views.settings = () => {
         h("label", {}, "Port players connect to", txt("port", { type: "number", min: 1024, max: 65535 })),
         h("label", {}, "Backups to keep", txt("backups_keep", { type: "number", min: 1 })),
         h("label", {}, "Discord webhook URL", txt("discord_webhook", { type: "url", placeholder: "https://discord.com/api/webhooks/…" }))),
-      h("div", { class: "grid mt-s" }, chk("restart_on_crash", "Restart after crashes")),
+      h("div", { class: "grid mt-s" }, chk("restart_on_crash", "Restart after crashes"),
+        h("label", { class: "row", title: "Garbage-collection settings that avoid lag spikes with lots of memory" },
+          (f.aikar_flags = h("input", { type: "checkbox", checked: s.aikar_flags })), h("span", {}, "Use Aikar's flags (smoother with 16 GB+)"))),
       advancedEl,
       h("div", { class: "row mt" }, h("button", { class: "btn primary", type: "submit" }, "Save settings"),
         h("span", { class: "muted small" }, "Memory, port and advanced changes apply at the next restart.")),
@@ -1140,9 +1142,13 @@ views.settings = () => {
         auto_upgrade: f.auto_upgrade.checked, wait_for_empty: f.wait_for_empty.checked, verify_boot: f.verify_boot.checked,
         memory: f.memory.value.trim(), backups_keep: Number(f.backups_keep.value), discord_webhook: f.discord_webhook.value.trim(),
         port: Number(f.port.value),
-        restart_on_crash: f.restart_on_crash.checked,
+        restart_on_crash: f.restart_on_crash.checked, aikar_flags: f.aikar_flags.checked,
         properties: changedProps(advanced, s.properties),
       };
+      const gb = memoryGb(body.memory);
+      if (gb > AIKAR_ABOVE_GB && !body.aikar_flags) {
+        offerAikar(gb, () => { f.aikar_flags.checked = true; act(() => api("/api/settings", { method: "POST", body: { aikar_flags: true } }), "Aikar's flags on").then(load); });
+      }
       act(() => api("/api/settings", { method: "POST", body }), "Settings saved").then(load);
     };
   };
@@ -2495,6 +2501,22 @@ function failureText(message, sid) {
       api(`/api/servers/${sid}/open`, { method: "POST", body: { what: "reports" } }).catch((e) => toast(e.message, true)) }, "Open the folder")] : null));
 }
 
+// Aikar's flags: tuned garbage collection so big heaps don't cause lag spikes. Offered when a
+// server gets more than 16 GB.
+const AIKAR_ABOVE_GB = 16;
+const memoryGb = (text) => { const m = /^(\d+)([MG])$/i.exec(String(text || "").trim()); return m ? Number(m[1]) / (m[2].toUpperCase() === "M" ? 1024 : 1) : 0; };
+function offerAikar(gb, accept, decline = () => {}) {
+  closeToast("aikar-offer");
+  stickyToast("aikar-offer", [
+    h("strong", {}, `${gb} GB: use Aikar's flags?`),
+    h("span", { class: "small" }, "With this much memory, Java's default garbage collection can pause the server for long enough to cause lag spikes. " +
+      "Aikar's flags are widely used settings that keep those pauses short. Recommended."),
+    h("div", { class: "row mt-s" },
+      h("button", { class: "btn small primary", onclick: () => { closeToast("aikar-offer"); accept(); } }, "Use them"),
+      h("button", { class: "btn small ghost", onclick: () => { closeToast("aikar-offer"); decline(); } }, "No thanks"),
+      h("a", { class: "small", href: "https://docs.papermc.io/paper/aikars-flags", target: "_blank", rel: "noopener noreferrer" }, "What are they? ↗"))]);
+}
+
 // ------------------------------------------------------ setup progress dock
 // While a new server installs you can go elsewhere (e.g. set up its friend download): its
 // progress keeps going in a bar docked at the bottom of the window.
@@ -2657,7 +2679,11 @@ views.setup = () => {
     const inp = (key, attrs = {}) => h("input", { value: st[key], ...attrs, oninput: (e) => { st[key] = attrs.type === "number" ? Number(e.target.value) : e.target.value; } });
     const sel = (key, choices) => { const el = h("select", { onchange: (e) => { st[key] = e.target.value; } }, choices.map((c) => h("option", { value: c }, c[0].toUpperCase() + c.slice(1)))); el.value = st[key]; return el; };
     const ram = opts.total_ram_gb || 0;
-    const mem = h("select", { onchange: (e) => { st.memory_gb = Number(e.target.value); renderForm(); } },
+    const mem = h("select", { onchange: (e) => {
+      st.memory_gb = Number(e.target.value);
+      if (st.memory_gb > AIKAR_ABOVE_GB && !st.aikar) offerAikar(st.memory_gb, () => { st.aikar = true; renderForm(); }, () => { st.aikar = false; });
+      renderForm();
+    } },
       Array.from({ length: 32 }, (_, i) => i + 1).map((g) => h("option", { value: String(g) },
         `${g} GB${g === opts.memory_gb ? " (suggested)" : ""}${ram && g > ram ? " (more than this computer has)" : ""}`)));
     mem.value = String(st.memory_gb);
@@ -2726,6 +2752,7 @@ views.setup = () => {
       const mods = [...st.mods].filter(([, m]) => m.explicit && m.required).map(([slug]) => slug);
       const optional = [...st.mods].filter(([, m]) => m.explicit && !m.required).map(([slug]) => slug);
       const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
+        aikar_flags: !!st.aikar && st.memory_gb > AIKAR_ABOVE_GB,
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
         network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults),
         friends: !!st.friends, local_mods: st.localMods.map((m) => m.id), world: st.world ? st.world.world : "",
@@ -2767,7 +2794,8 @@ views.setup = () => {
             field("Max players", inp("max_players", { type: "number", min: 1, max: 1000 })),
             field("Difficulty", sel("difficulty", opts.difficulties)),
             field("Game mode", sel("gamemode", opts.gamemodes)),
-            field("Memory", mem, ram ? (st.memory_gb > ram - 2 ? `This computer has ${ram} GB. Leave some for Windows and other programs, or the server may crash.` : `This computer has ${ram} GB.`) : null),
+            field("Memory", mem, [ram ? (st.memory_gb > ram - 2 ? `This computer has ${ram} GB. Leave some for Windows and other programs, or the server may crash.` : `This computer has ${ram} GB.`) : "",
+              st.aikar && st.memory_gb > AIKAR_ABOVE_GB ? " Aikar's flags: on (smoother garbage collection)." : ""].join("") || null),
             portField()),
           opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null)),
         h("div", { class: "mt" }, advanced),

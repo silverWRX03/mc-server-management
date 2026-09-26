@@ -193,7 +193,7 @@ FAKE_JAVA = textwrap.dedent("""\
     if args[:1] == ["-version"]:
         print('openjdk version "21.0.4" 2024-07-16', file=sys.stderr)
         sys.exit(0)
-    while args and args[0].startswith("-X"):
+    while args and args[0].startswith("-"):  # JVM flags
         args.pop(0)
     sys.argv = args
     runpy.run_path(args[0], run_name="__main__")

@@ -92,6 +92,7 @@ class SetupSpec:
     mods: list[str] = field(default_factory=list)            # Modrinth slugs, required
     optional_mods: list[str] = field(default_factory=list)   # Modrinth slugs, optional
     memory_gb: int = 4
+    aikar_flags: bool = False
     motd: str = "A Minecraft server"
     max_players: int = 20
     difficulty: str = "normal"
@@ -139,6 +140,7 @@ class SetupSpec:
             mods=slugs("mods"),
             optional_mods=slugs("optional_mods"),
             memory_gb=number("memory_gb", 1, 64, 4),
+            aikar_flags=d.get("aikar_flags") is True,
             motd=" ".join(str(d.get("motd", "A Minecraft server")).split())[:NAME_LIMIT] or "A Minecraft server",
             max_players=number("max_players", 1, 1000, 20),
             difficulty=str(d.get("difficulty", "normal")),
@@ -192,6 +194,8 @@ def configure(root: Path, spec: SetupSpec) -> configmod.Config:
     root.mkdir(parents=True, exist_ok=True)
     path.write_text(configmod.render_template(spec.loader, spec.minecraft))
     configmod.set_value(path, "server", "memory", json.dumps(f"{spec.memory_gb}G"))
+    if spec.aikar_flags:
+        configmod.set_value(path, "server", "aikar_flags", "true")
     if spec.minecraft != "latest":
         # Choosing a specific version (e.g. for a modpack) means staying on it; mods still update.
         configmod.set_value(path, "updates", "strategy", '"mods-only"')
