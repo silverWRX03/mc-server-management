@@ -79,3 +79,14 @@ def test_test_boot_finds_the_culprit(hub_env, modrinth):
     assert c.get(f"/api/hub/trial?id={r['id']}")[1]["result"]["ok"]
     assert c.post("/api/servers/alpha/mods/check")[1]["ok"]
     assert c.post("/api/hub/mods/check", {"loader": "fabric", "minecraft": "1.21.1", "mods": ["goodmod", "crashmod"]})[1]["ok"]
+
+
+def test_backups_made_in_the_same_second_are_both_kept(tmp_path):
+    from mcsm import backup
+    sd = tmp_path / "server"
+    sd.mkdir()
+    (sd / "a.txt").write_text("a")
+    first = backup.create(sd, tmp_path / "b", "same", [])
+    second = backup.create(sd, tmp_path / "b", "same", [])
+    assert first != second and first.exists() and second.exists()
+    assert backup.list_backups(tmp_path / "b") == [first, second]  # still in order

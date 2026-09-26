@@ -19,6 +19,10 @@ def create(server_dir: Path, backups_dir: Path, label: str, exclude: list[str]) 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", label)
     dest = backups_dir / f"{stamp}-{safe}{SUFFIX}"
+    n = 2
+    while dest.exists():  # two backups in the same second: keep both
+        dest = backups_dir / f"{stamp}.{n}-{safe}{SUFFIX}"  # sorts after the first one
+        n += 1
     tmp = dest.with_name(dest.name + ".part")
     excluded = set(exclude)
 
