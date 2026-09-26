@@ -533,3 +533,4 @@ main > * { animation: rise .25s ease-out; }
 .tester-time { font-variant-numeric: tabular-nums; }
 .key-panel ol { padding-left: 18px; margin: 6px 0 10px; }
 .key-panel .row input { flex: 1; min-width: 0; }
+.row.center { justify-content: center; }

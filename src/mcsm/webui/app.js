@@ -2468,7 +2468,7 @@ views.setup = () => {
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));
         if (r) {
-          setupState.offerFriends = body.friends ? { sid: r.id, name: body.motd } : null;
+          setupState.offerFriends = { sid: r.id, name: body.motd, friends: !!body.friends };  // slide the progress down
           Object.assign(setupState, { friends: false, loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
             prefilled: false, properties: null, advancedOpen: false, modpack: null, localMods: [], minecraft: "latest", world: null });
           location.hash = `#s/${r.id}/setup`;
@@ -2530,24 +2530,29 @@ views.setup = () => {
     if (dock && dock.sid === server) undock();  // the full page is back
     const offer = st.offerFriends && st.offerFriends.sid === server ? st.offerFriends : null;
     if (offer) {
-      // Keep going at the bottom of the window, and meanwhile offer the friends' side.
+      // A new server: its progress slides down to the bottom of the window and keeps going
+      // there, so you can look around meanwhile (and, with friends ticked, set up their side).
       st.offerFriends = null;
       setTimeout(() => {
         if (currentName !== "setup" || server !== offer.sid) return;
         panel.classList.add("slide-away");
         setTimeout(() => {
           dockSetup(offer.sid, offer.name);
-          fill(main, h("div", { class: "empty mt-l" }, "Your server is installing: its progress is at the bottom of the window."));
-          stickyToast("friends-offer", [
+          fill(main, h("div", { class: "empty mt-l" }, "Your server is installing: its progress is at the bottom of the window.",
+            h("div", { class: "row mt-s center" },
+              h("button", { class: "btn small", onclick: () => { closeToast("friends-offer"); undock(); renderProgress(); } }, "Show the progress here"),
+              hubInfo && hubInfo.single ? null : h("a", { class: "btn small ghost", href: "#servers" }, "Your servers"))));
+          if (offer.friends) stickyToast("friends-offer", [
             h("strong", {}, "Set up your friends' download now?"),
             h("span", { class: "small" }, "While the server installs, choose the mods your friends get (a minimap, JEI, …)."),
             h("div", { class: "row mt-s" },
               h("button", { class: "btn small primary", onclick: () => { closeToast("friends-offer"); location.hash = `#s/${offer.sid}/friends`; } }, "Yes"),
-              h("button", { class: "btn small ghost", onclick: () => { closeToast("friends-offer"); undock(); renderProgress(); } }, "Not now"))]);
+              h("button", { class: "btn small ghost", onclick: () => closeToast("friends-offer") }, "Not now"))]);
         }, 650);
       }, 1800);
     }
     every(1500, async () => {
+      if (!events.isConnected && seq) return;  // slid away (or shown again in a newer panel)
       const r = await api(`/api/events?since=${seq}`).catch(() => null);
       if (!r) return;
       seq = r.last;
