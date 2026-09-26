@@ -230,6 +230,7 @@ class Hub:
         else:
             data.pop("curseforge_api_key", None)
             os.environ.pop("MCSM_CURSEFORGE_API_KEY", None)
+            cf.use_bundled_key()  # back to the built-in one, if this build has one
         self._save_hub_file(data)
         for d in list(self.daemons.values()):
             try:

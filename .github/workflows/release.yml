@@ -62,6 +62,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Built-in CurseForge key (only if the CURSEFORGE_API_KEY secret is set)
+        shell: bash
+        env:
+          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+        run: python packaging/write_build_keys.py
       - name: Build (Linux, portable)
         if: runner.os == 'Linux'
         run: packaging/build_linux.sh

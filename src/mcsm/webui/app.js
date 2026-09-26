@@ -2286,15 +2286,17 @@ views.mcsm = () => {
     if (hubInfo && hubInfo.single) return;
     const r = await api("/api/hub/curseforge").catch(() => null);
     if (!r) return;
-    const input = h("input", { type: "password", placeholder: r.set ? "•••••••• (saved)" : "Paste your CurseForge API key", autocomplete: "off", "aria-label": "CurseForge API key" });
+    const input = h("input", { type: "password", placeholder: r.own ? "•••••••• (saved)" : "Paste your CurseForge API key", autocomplete: "off", "aria-label": "CurseForge API key" });
     const saveKey = (key, msg) => act(() => api("/api/hub/curseforge", { method: "POST", body: { key } }), msg).then(renderCf);
     fill(cf, card("CurseForge",
       h("p", { class: "muted small" }, "Needed to search CurseForge and to use CurseForge mods (Modrinth works without it). Get a free key at ",
         h("a", { href: "https://console.curseforge.com/", target: "_blank", rel: "noopener noreferrer" }, "console.curseforge.com ↗"), " → API keys."),
       h("div", { class: "row" }, input,
-        h("button", { class: "btn primary", onclick: () => input.value.trim() && saveKey(input.value, "CurseForge key saved") }, r.set ? "Replace key" : "Save key"),
-        r.set ? h("button", { class: "btn ghost", onclick: () => confirm("Remove the CurseForge key?") && saveKey("", "CurseForge key removed") }, "Remove") : null),
-      r.set ? h("p", { class: "small ok-text" }, "✓ A key is saved.") : null));
+        h("button", { class: "btn primary", onclick: () => input.value.trim() && saveKey(input.value, "CurseForge key saved") }, r.own ? "Replace key" : "Save key"),
+        r.own ? h("button", { class: "btn ghost", onclick: () => confirm("Remove the CurseForge key?") && saveKey("", "CurseForge key removed") }, "Remove") : null),
+      r.own ? h("p", { class: "small ok-text" }, "✓ Your own key is saved.")
+        : r.builtin ? h("p", { class: "small ok-text" }, "✓ This version of mcsm has CurseForge built in. You only need your own key if CurseForge starts refusing requests.")
+        : null));
   };
   renderCf();
   // The Discord bot that posts invites (set up from a server's Friends page)

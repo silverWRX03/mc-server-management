@@ -580,7 +580,7 @@ class HubApi:
         r[("POST", "/api/hub/stage")] = self.stage
         r[("POST", "/api/hub/open")] = self.open_folder
         r[("POST", "/api/hub/quit")] = self.quit
-        r[("GET", "/api/hub/curseforge")] = lambda q, b: {"set": bool(self.curseforge_key_now())}
+        r[("GET", "/api/hub/curseforge")] = self.curseforge_info
         r[("POST", "/api/hub/curseforge")] = self.save_curseforge
         r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
         r[("GET", "/api/hub/discord")] = self.discord_info
@@ -726,6 +726,12 @@ class HubApi:
         self.hub.save_share(self.hub.share_settings()["port"], ip)
         log.info("friends outside your network now use %s", ip)
         return {"ok": True, "ip": ip, "share": self.hub.share_status()}
+
+    def curseforge_info(self, q, b) -> dict:
+        from .mods.curseforge import bundled_key
+        key = self.curseforge_key_now()
+        own = bool(key) and key != bundled_key()
+        return {"set": bool(key), "own": own, "builtin": bool(bundled_key())}
 
     def curseforge_key_now(self) -> str:
         return self.hub.curseforge_key() if not self.hub.is_single else os.environ.get("MCSM_CURSEFORGE_API_KEY", "")

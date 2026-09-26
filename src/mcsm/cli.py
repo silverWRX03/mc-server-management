@@ -1004,6 +1004,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     from . import desktop
     desktop.setup()  # the Windows executable has no command window of its own
+    from .mods.curseforge import use_bundled_key
+    use_bundled_key()  # release builds may carry mcsm's own CurseForge key
     try:
         return _entry(argv)
     except Exception as e:  # pragma: no cover - last resort, so a windowless failure isn't silent

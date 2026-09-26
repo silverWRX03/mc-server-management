@@ -48,7 +48,7 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Dependency resolution**: required dependencies are pulled in automatically, and
   client-only mods are skipped.
 - **Loaders:** Fabric, Quilt, NeoForge, Forge (1.17+), Paper (with plugins from Modrinth), and vanilla.
-- **Mod sources:** Modrinth, and CurseForge (needs an API key).
+- **Mod sources:** Modrinth, and CurseForge (release builds can include a CurseForge key; otherwise paste your own free key in mcsm settings).
 - **Server supervisor** (`mcsm run`): restarts after crashes, gives in-game restart
   countdowns, can wait until nobody is online, passes console input through, and
   shuts down gracefully on SIGTERM.
@@ -589,6 +589,13 @@ required = true
   the run under the repository's **Actions** tab (workflow **test**), scroll to
   **Artifacts**, and download `test-build-…` for your system. It's a zip containing the
   executable; you need to be signed in to GitHub.
+- **CurseForge key in releases (optional):** like Prism Launcher, release builds can carry
+  the project's own CurseForge API key so people don't need one. Add it as the repository
+  secret `CURSEFORGE_API_KEY` (Settings → Secrets and variables → Actions); the release
+  workflow writes it into the executables at build time
+  ([`packaging/write_build_keys.py`](packaging/write_build_keys.py)) and it never goes in the
+  source. A key someone enters in mcsm settings always takes priority. Use a key CurseForge
+  issued for mcsm as an app, since anything inside a program can be dug out of it.
 - **Real end-to-end test:** the **e2e** workflow ([`packaging/e2e_test.py`](packaging/e2e_test.py))
   uses a built executable against the real services:
   - it creates real Fabric, NeoForge, Forge, Paper and vanilla servers with real Modrinth

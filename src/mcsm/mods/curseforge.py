@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from ..config import ModSpec
@@ -9,6 +10,21 @@ from ..http import HttpClient, HttpError
 from .base import CHANNEL_RANK, ModError, ModFile, ModProvider, Project, Unavailable
 
 API = "https://api.curseforge.com/v1"
+
+
+def bundled_key() -> str:
+    """The key built into release executables (see packaging/write_build_keys.py), if any."""
+    try:
+        from .. import _buildkeys  # only exists in release builds made with the key
+    except ImportError:
+        return ""
+    return str(getattr(_buildkeys, "CURSEFORGE_API_KEY", "") or "")
+
+
+def use_bundled_key() -> None:
+    """Fall back to the built-in key wherever MCSM_CURSEFORGE_API_KEY is read."""
+    if bundled_key():
+        os.environ.setdefault("MCSM_CURSEFORGE_API_KEY", bundled_key())
 WEBSITE = "https://www.curseforge.com/minecraft/mc-mods"
 MINECRAFT_GAME_ID = 432
 MODS_CLASS_ID = 6
