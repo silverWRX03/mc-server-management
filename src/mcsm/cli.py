@@ -727,9 +727,44 @@ def cmd_self_update(args) -> int:
     return 0
 
 
+def _panel_service(args) -> int:
+    """`mcsm service install --panel`: the control panel at boot, for a computer without a screen
+    that you manage from another one (see docs/headless.md)."""
+    from . import service, webauth
+    from .hub import Hub, running_hub
+    home = default_home()
+    try:
+        if args.action == "install":
+            if running_hub(home):
+                print("mcsm is already running; stop it first (Quit in the control panel, or Ctrl+C), then install the service")
+                return 1
+            home.mkdir(parents=True, exist_ok=True)
+            hub = Hub(home)
+            if hub.web.host in ("127.0.0.1", "localhost", "::1"):
+                hub.save_web(host="0.0.0.0")  # managed from other computers
+            first = webauth.AuthStore(hub).first_run_password()
+            for line in service.install(home, panel=True):
+                print(line)
+            ip = lan_ip()
+            print(f"\ncontrol panel: http://{ip or '<this computer>'}:{hub.web.port}/  (open it on your own computer)")
+            if first:
+                print(f"first sign-in password: {first}   (one-time: you'll choose your own; also in {home / '.mcsm' / 'first-password.txt'})")
+            print(f"allow it through the firewall if you use one, e.g.: sudo ufw allow {hub.web.port}/tcp && sudo ufw allow 25565/tcp")
+        elif args.action == "uninstall":
+            print(service.uninstall(home, panel=True))
+        else:
+            print(service.status(home, panel=True))
+    except service.ServiceError as e:
+        print(f"error: {e}")
+        return 1
+    return 0
+
+
 def cmd_service(args) -> int:
     from . import service
 
+    if args.panel:
+        return _panel_service(args)
     cfg = configmod.load(args.root)
     try:
         if args.action == "install":
@@ -816,7 +851,7 @@ def _notice_ok(args) -> bool:
     root = root.resolve() if (root / configmod.CONFIG_NAME).exists() else None
     if args.command in NOTICE_EXEMPT or notice.accepted(root):
         return True
-    if args.command == "start":
+    if args.command == "start" or (args.command == "service" and getattr(args, "panel", False)):
         return True  # the web UI shows the notice before anything is set up or downloaded
     if args.accept_notice:
         notice.accept(root, by="cli")
@@ -990,6 +1025,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("service", help="Linux: run mcsm in the background at boot with systemd")
     s.add_argument("action", choices=["install", "uninstall", "status"])
+    s.add_argument("--panel", action="store_true",
+                   help="the whole control panel with all your servers (mcsm start), reachable from other "
+                        "computers on your network; without it, just the server in this folder")
     s.set_defaults(fn=cmd_service)
 
     s = sub.add_parser("cmd", help="send a console command over RCON")

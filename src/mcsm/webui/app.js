@@ -1779,6 +1779,13 @@ const HELP = [
     h("p", {}, "If a server won't start or crashes, mcsm says which mod it suspects and writes a report. The message shows where it is ",
       "(in the server's ", h("code", {}, ".mcsm/logs"), " folder), and Minecraft's own log is in the server's ", h("code", {}, "logs/latest.log"), "."),
     h("p", {}, "Every update makes a backup first and rolls back by itself if the new version doesn't start. Backups are on the ", h("strong", {}, "Backups"), " tab.")]],
+  ["headless", "Running mcsm on another computer", () => [
+    h("p", {}, "mcsm can run on a spare Linux computer or a Raspberry Pi (64-bit) with no screen, and you manage it from here in the browser. " +
+      "From your own computer (PowerShell on Windows, Terminal on a Mac or Linux), run one command, using that computer's user and address:"),
+    h("pre", { class: "log" }, 'ssh minecraft@192.168.1.50 "curl -fsSL https://raw.githubusercontent.com/silverWRX03/mc-server-management/main/packaging/install.sh | sh"'),
+    h("p", {}, "It installs mcsm there, starts it at boot, and prints the address to open and a one-time password. ",
+      h("a", { href: "https://github.com/silverWRX03/mc-server-management/blob/main/docs/headless.md", target: "_blank", rel: "noopener noreferrer" }, "Step-by-step guide ↗"),
+      " · ", h("a", { href: "https://github.com/silverWRX03/mc-server-management/blob/main/docs/docker.md", target: "_blank", rel: "noopener noreferrer" }, "Docker ↗"))]],
   ["remote", "Using mcsm from your phone", () => [
     h("p", {}, "Open ", h("button", { type: "button", class: "link-btn", onclick: openRemoteAccess }, "Remote access & phones"),
       ": set a strong password, allow other devices, and pair your phone by scanning a QR code. Away from home, use Tailscale rather than opening ports.")]],

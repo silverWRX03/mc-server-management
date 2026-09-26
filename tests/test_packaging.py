@@ -170,3 +170,31 @@ def test_cmd_goes_through_the_real_parser(tmp_path, capsys):
     assert cli.main(["-C", str(tmp_path), "--accept-notice", "init"]) == 0
     assert cli.main(["-C", str(tmp_path), "cmd", "say", "hello"]) == 1  # RCON is off: a clean error
     assert "RCON is disabled" in capsys.readouterr().out
+
+
+def test_panel_service_for_a_computer_without_a_screen(tmp_path, monkeypatch, capsys):
+    """`mcsm service install --panel`: the whole control panel at boot, managed from another PC."""
+    import subprocess
+
+    from mcsm import service
+    home = tmp_path / "mcsm"
+    monkeypatch.setenv("MCSM_HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("MCSM_LAN_IP", "192.168.1.50")
+    monkeypatch.setattr(service, "supported", lambda: True)
+    monkeypatch.setattr(service, "mcsm_command", lambda: ["/home/me/.local/bin/mcsm"])
+    calls = []
+    fake = lambda args, **kw: calls.append(args) or subprocess.CompletedProcess(args, 0, "", "")  # noqa: E731
+    real_install = service.install
+    monkeypatch.setattr(service, "install", lambda root, **kw: real_install(root, runner=fake, system=False, **kw))
+    p = service.plan(home, system=False, panel=True)
+    assert p.name == "mcsm.service"
+    assert "ExecStart=/home/me/.local/bin/mcsm start --no-browser --web-host 0.0.0.0" in p.text
+    assert f"Environment=MCSM_HOME={home}" in p.text
+
+    assert cli.main(["service", "install", "--panel"]) == 0
+    out = capsys.readouterr().out
+    assert "http://192.168.1.50:8765/" in out and "first sign-in password: Mcsm-" in out
+    assert ["systemctl", "--user", "enable", "--now", "mcsm.service"] in calls
+    import json
+    assert json.loads((home / ".mcsm" / "hub.json").read_text())["web"]["host"] == "0.0.0.0"
