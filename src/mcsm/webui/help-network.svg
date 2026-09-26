@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 290" font-family="system-ui, -apple-system, Segoe UI, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">How a friend reaches your server</title>
+  <desc id="d">A friend on the internet connects to your public address. Your router forwards port 25565 to the computer running mcsm on your home network.</desc>
+  <rect width="760" height="290" rx="14" fill="#f4f7fb"/>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#3f9d3f"/>
+    </marker>
+  </defs>
+  <!-- friend -->
+  <rect x="24" y="78" width="170" height="124" rx="12" fill="#fff" stroke="#c9d3df"/>
+  <rect x="62" y="98" width="94" height="58" rx="6" fill="#dbe8f7" stroke="#6b89ad"/>
+  <rect x="98" y="156" width="22" height="10" fill="#6b89ad"/>
+  <text x="109" y="187" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2a37">Your friend</text>
+  <text x="109" y="72" text-anchor="middle" font-size="13" fill="#5a6776">anywhere on the internet</text>
+  <!-- internet cloud -->
+  <path d="M238 146c-14 0-24-10-24-22s10-22 24-22c3-15 17-26 34-26 14 0 26 8 31 20 4-2 8-3 13-3 15 0 27 12 27 27 0 14-12 26-27 26z" fill="#fff" stroke="#c9d3df"/>
+  <text x="279" y="131" text-anchor="middle" font-size="13" fill="#5a6776">Internet</text>
+  <!-- router -->
+  <rect x="380" y="92" width="160" height="96" rx="12" fill="#fff" stroke="#3f9d3f" stroke-width="2"/>
+  <rect x="402" y="112" width="116" height="30" rx="6" fill="#e7f4e7" stroke="#3f9d3f"/>
+  <circle cx="416" cy="127" r="4" fill="#3f9d3f"/><circle cx="430" cy="127" r="4" fill="#3f9d3f"/><circle cx="444" cy="127" r="4" fill="#9fb3c8"/>
+  <line x1="420" y1="112" x2="410" y2="86" stroke="#3f9d3f" stroke-width="3" stroke-linecap="round"/>
+  <line x1="500" y1="112" x2="510" y2="86" stroke="#3f9d3f" stroke-width="3" stroke-linecap="round"/>
+  <text x="460" y="166" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2a37">Your router</text>
+  <text x="460" y="214" text-anchor="middle" font-size="13" fill="#5a6776">public address, e.g. 203.0.113.7</text>
+  <text x="460" y="232" text-anchor="middle" font-size="13" font-weight="700" fill="#2f7d2f">forwards TCP 25565 →</text>
+  <!-- computer -->
+  <rect x="590" y="78" width="148" height="124" rx="12" fill="#fff" stroke="#c9d3df"/>
+  <rect x="616" y="98" width="96" height="58" rx="6" fill="#26303b"/>
+  <text x="664" y="133" text-anchor="middle" font-size="16" font-weight="800" fill="#7ad17a">mcsm</text>
+  <rect x="653" y="156" width="22" height="10" fill="#26303b"/>
+  <text x="664" y="187" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2a37">This computer</text>
+  <text x="664" y="56" text-anchor="middle" font-size="13" fill="#5a6776">on your home network</text>
+  <text x="664" y="72" text-anchor="middle" font-size="13" fill="#5a6776">e.g. 192.168.1.20</text>
+  <!-- arrows -->
+  <line x1="196" y1="140" x2="222" y2="130" stroke="#3f9d3f" stroke-width="3" marker-end="url(#a)"/>
+  <line x1="344" y1="128" x2="376" y2="136" stroke="#3f9d3f" stroke-width="3" marker-end="url(#a)"/>
+  <line x1="542" y1="140" x2="586" y2="140" stroke="#3f9d3f" stroke-width="3" marker-end="url(#a)"/>
+  <text x="380" y="262" text-anchor="middle" font-size="13" fill="#5a6776">Friends type your public address in Minecraft. Without the forwarding rule,</text>
+  <text x="380" y="279" text-anchor="middle" font-size="13" fill="#5a6776">the router doesn't know which computer to send them to.</text>
+</svg>

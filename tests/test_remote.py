@@ -85,3 +85,11 @@ def test_remote_access_needs_a_strong_password_and_phones_are_limited(hub_env):
     assert phone.get("/api/hub")[0] == 401
     with pytest.raises(ConfigError):
         webui.devices.pair("nope", "x", "1.2.3.4", 0)
+
+
+def test_help_images_and_app_manifest_are_served(hub_env):
+    hub, c = hub_env
+    for path, ctype in (("/help-network.svg", "image/svg+xml"), ("/help-router.svg", "image/svg+xml"),
+                        ("/manifest.webmanifest", "application/manifest+json")):
+        status, _, headers = c.get(path)
+        assert status == 200 and headers["Content-Type"] == ctype, path

@@ -1729,6 +1729,69 @@ function changedProps(values, base) {
   return Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== base[k]));
 }
 
+// ------------------------------------------------------------------ help
+// The router guide: shown on the Help page, and under a new server's progress (friends
+// outside your home can only join once the router passes Minecraft's port to this computer).
+function routerHelp(opts = {}) {
+  const mc = opts.port || 25565;
+  const share = opts.sharePort || ((hubInfo && hubInfo.share && hubInfo.share.port) || 8798);
+  const ip = opts.lanIp || (hubInfo && hubInfo.share && hubInfo.share.lan_ip) || "this computer's address";
+  return h("div", { class: "help-router" },
+    h("p", {}, "Friends on your home Wi-Fi can join straight away. Friends ", h("strong", {}, "anywhere else"),
+      " reach your server through your router, which has to be told to pass Minecraft's port on to this computer. That's called ",
+      h("strong", {}, "port forwarding"), ", and you set it up once:"),
+    h("img", { class: "help-img", src: "/help-network.svg", alt: "A friend on the internet connects to your router, which forwards port " + mc + " to this computer." }),
+    h("ol", { class: "steps" },
+      h("li", {}, "Give this computer a fixed address on your network, so the rule keeps working: in the router's ", h("strong", {}, "LAN / DHCP"),
+        " settings, look for ", h("em", {}, "address reservation"), " or ", h("em", {}, "static lease"), ` and reserve ${ip} for it.`),
+      h("li", {}, "Open your router's page in a browser. It's usually ", h("code", {}, "http://192.168.0.1"), " or ", h("code", {}, "http://192.168.1.1"),
+        ", and the address and admin password are often on a sticker on the router."),
+      h("li", {}, "Find ", h("strong", {}, "Port Forwarding"), ". Routers also call it Virtual Server, NAT, Port Mapping, or Applications & Gaming."),
+      h("li", {}, "Add a rule: protocol ", h("strong", {}, "TCP"), ", external and internal port ", h("strong", {}, String(mc)),
+        ", to ", h("strong", {}, ip), ". That's Minecraft."),
+      h("li", {}, "If friends download their setup from you over the internet, add a second rule for port ", h("strong", {}, String(share)), " the same way."),
+      h("li", {}, "Save, then test: ask a friend (or use your phone with Wi-Fi off) to connect.")),
+    h("img", { class: "help-img", src: "/help-router.svg", alt: "An example port forwarding rule: Minecraft, TCP, port " + mc + ", to this computer's address." }),
+    h("div", { class: "notice warn" }, h("strong", {}, "Every router is different. "),
+      "The menus and names above are typical, not exact. If you can't find the setting, check your router's manual or its maker's support site ",
+      "(search for your router's model and “port forwarding”), or ask your internet provider. Some providers share one public address between ",
+      "customers (called CGNAT); port forwarding can't work then, and they may give you your own address if you ask."),
+    h("p", { class: "muted small" }, "Only forward the ports above. Never forward the control panel's port (8765): to manage mcsm from elsewhere, use ",
+      h("button", { type: "button", class: "link-btn", onclick: openRemoteAccess }, "Remote access & phones"), " instead."));
+}
+
+const HELP = [
+  ["start", "Getting started", () => [
+    h("p", {}, "mcsm keeps your Minecraft servers running and up to date by themselves. Make a server under ", h("strong", {}, "New server"),
+      ": pick the server type (Fabric, NeoForge, Forge, Quilt, Paper or plain Minecraft), the Minecraft version and your mods, then press ",
+      h("strong", {}, "Create my server"), ". mcsm downloads Java, Minecraft, the mod loader and the mods, and checks that the server starts."),
+    h("p", {}, "Press ", h("strong", {}, "Start"), " when you want to play. In Minecraft, choose Multiplayer → Add Server and use this computer's address.")]],
+  ["friends", "Letting friends join", () => [
+    h("p", {}, "On a server's ", h("strong", {}, "Friends"), " page, turn on the friends' download and send the link. Their copy of mcsm sets up ",
+      "the right Minecraft version, mod loader and mods in their launcher, and adds your server to their list."),
+    h("p", {}, "Friends outside your home also need the router set up (below).")]],
+  ["router", "Router setup (port forwarding)", () => [routerHelp()]],
+  ["mods", "Mods and updates", () => [
+    h("p", {}, "Every mod you add is kept up to date. A new Minecraft version is only installed once every mod supports it; ",
+      "the ", h("strong", {}, "Updates"), " tab says what it's waiting for (", h("strong", {}, "Show why"), ")."),
+    h("p", {}, "Before installing, use ", h("strong", {}, "🧪 Test these mods"), " to check that a set of mods works together.")]],
+  ["crash", "When something goes wrong", () => [
+    h("p", {}, "If a server won't start or crashes, mcsm says which mod it suspects and writes a report. The message shows where it is ",
+      "(in the server's ", h("code", {}, ".mcsm/logs"), " folder), and Minecraft's own log is in the server's ", h("code", {}, "logs/latest.log"), "."),
+    h("p", {}, "Every update makes a backup first and rolls back by itself if the new version doesn't start. Backups are on the ", h("strong", {}, "Backups"), " tab.")]],
+  ["remote", "Using mcsm from your phone", () => [
+    h("p", {}, "Open ", h("button", { type: "button", class: "link-btn", onclick: openRemoteAccess }, "Remote access & phones"),
+      ": set a strong password, allow other devices, and pair your phone by scanning a QR code. Away from home, use Tailscale rather than opening ports.")]],
+];
+
+views.help = () => {
+  fill($("#main"), h("h2", { class: "view-title" }, "Help"),
+    h("nav", { class: "help-toc card" }, h("strong", {}, "Contents"),
+      h("ul", {}, HELP.map(([id, title]) => h("li", {}, h("a", { href: "#help", onclick: (e) => { e.preventDefault(); $(`#help-${id}`).scrollIntoView({ behavior: "smooth" }); } }, title))))),
+    HELP.map(([id, title, body]) => h("section", { class: "card mt help-section", id: `help-${id}` }, h("h3", {}, title), body())));
+  return {};
+};
+
 // ------------------------------------------------------------ remote access
 // Using mcsm from other devices: a strong password (never a PIN), then phones paired by
 // scanning a QR code. A paired phone gets its own key and only the everyday controls.
@@ -2951,7 +3014,10 @@ views.setup = () => {
       h("h2", { class: "view-title" }, "Creating your server…"),
       h("div", { class: "notice" }, h("div", { class: "row" }, h("span", { class: "spinner" }),
         h("span", { class: "grow" }, "Downloading Java, the mod loader, Minecraft and your mods, then checking that the server starts. This usually takes a few minutes."))),
-      card("What's happening", events));
+      card("What's happening", events),
+      // While it installs: what friends outside your home will need (the lower part of the screen).
+      h("details", { class: "card mt router-help", open: true }, h("summary", {}, h("strong", {}, "While you wait: letting friends outside your home join")),
+        routerHelp({ port: (status && status.port) || st.port })));
     fill(main, panel);
     if (dock && dock.sid === server) undock();  // the full page is back
     const offer = st.offerFriends && st.offerFriends.sid === server ? st.offerFriends : null;
@@ -3052,13 +3118,14 @@ function renderNav() {
       hb.single || hb.device ? null : a("#new", "New server", currentName === "new"),
     ],
     h("div", { class: "nav-sep" }),
+    a("#help", "Help", currentName === "help"),
     hb.device ? h("div", { class: "nav-server small", title: "A paired phone has the everyday controls only" }, `📱 ${hb.device} (limited)`)
       : a("#mcsm", "mcsm settings", currentName === "mcsm"));
   const inServer = !!server;
   $(".server-id").classList.toggle("hidden", !inServer);
   $(".actions").classList.toggle("hidden", !inServer);
   $("#page-title").classList.toggle("hidden", inServer);
-  $("#page-title").textContent = { servers: "Your servers", new: "New server", mcsm: "mcsm settings" }[currentName] || "";
+  $("#page-title").textContent = { servers: "Your servers", new: "New server", mcsm: "mcsm settings", help: "Help" }[currentName] || "";
   if (!inServer) $("#job").classList.add("hidden");
 }
 
@@ -3080,7 +3147,7 @@ function route() {
     view = m[2] === "setup" || SERVER_VIEWS.some(([v]) => v === m[2]) ? m[2] : "dashboard";
   } else {
     server = null;
-    view = ["servers", "new", "mcsm"].includes(hash) ? hash : "servers";
+    view = ["servers", "new", "mcsm", "help"].includes(hash) ? hash : "servers";
   }
   if (server !== before) { status = null; lastJobSeen = null; }
   currentName = view;

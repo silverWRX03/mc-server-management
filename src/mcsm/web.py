@@ -70,7 +70,9 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
           "/icon.png": ("icon.png", "image/png"),
-          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json")}
+          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+          "/help-network.svg": ("help-network.svg", "image/svg+xml"),
+          "/help-router.svg": ("help-router.svg", "image/svg+xml")}
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' https: data:; style-src 'self'; "
                                "script-src 'self'; connect-src 'self'; frame-ancestors 'none'",

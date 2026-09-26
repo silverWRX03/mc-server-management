@@ -562,3 +562,10 @@ ol.steps { padding-left: 20px; line-height: 1.6; }
 .ready-row.red { box-shadow: inset 3px 0 0 var(--danger, #d9534f); }
 .ready-row.yellow { box-shadow: inset 3px 0 0 var(--warn, #e0b400); }
 @media (max-width: 760px) { .readiness { padding: 16px; } }
+
+/* help */
+.help-img { display: block; width: 100%; max-width: 760px; height: auto; margin: 12px 0; border-radius: 12px; }
+.help-toc ul { columns: 2; margin: 8px 0 0; padding-left: 18px; }
+.help-section h3 { margin-top: 0; }
+.router-help summary { cursor: pointer; }
+@media (max-width: 760px) { .help-toc ul { columns: 1; } }
