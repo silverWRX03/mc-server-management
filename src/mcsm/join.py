@@ -48,6 +48,11 @@ PROFILE_FILES = ("launcher_profiles.json", "launcher_profiles_microsoft_store.js
 INVITE_IN_NAME = re.compile(r"\(mcsm-([A-Za-z0-9_-]{8,200})\)")
 LOADERS = ("vanilla", "fabric", "quilt", "neoforge", "forge")
 MANIFEST = ".mcsm-client.json"
+FOLDERS = ("mods", "resourcepacks", "shaderpacks")  # where a pack's files go in the game directory
+
+
+def folder_of(m: dict) -> str:
+    return m.get("folder") if m.get("folder") in FOLDERS else "mods"
 
 
 class JoinError(Exception):
@@ -262,7 +267,8 @@ class Joiner:
         return vid
 
     def sync_mods(self, pack: dict, game_dir: Path) -> tuple[int, int]:
-        """Download what's missing or changed; remove mods mcsm put here that the server dropped."""
+        """Download what's missing or changed; remove files mcsm put here that are no longer wanted
+        (the server dropped a mod, or the friend removed one of their extras)."""
         mods_dir = game_dir / "mods"
         mods_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = game_dir / MANIFEST
@@ -272,8 +278,10 @@ class Joiner:
             placed = set()
         wanted, fetched = set(), 0
         for m in pack.get("mods", []):
-            dest = mods_dir / m["filename"]
-            wanted.add(m["filename"])
+            folder = folder_of(m)
+            dest = game_dir / folder / m["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            wanted.add(m["filename"] if folder == "mods" else f"{folder}/{m['filename']}")
             if dest.exists() and m.get("sha1") and sha1_file(dest) == m["sha1"]:
                 continue
             self.say(f"  downloading {m['name']}")
@@ -283,11 +291,17 @@ class Joiner:
                 raise JoinError(f"{m['name']} didn't match its checksum, so it wasn't installed") from e
             fetched += 1
         removed = 0
+        gone_packs = []
         for old in placed - wanted:
-            if "/" not in old and "\\" not in old and (mods_dir / old).is_file():
-                (mods_dir / old).unlink()
+            folder, _, name = old.rpartition("/")
+            if folder == "resourcepacks":
+                gone_packs.append(name)
+            if (folder or "mods") in FOLDERS and name and "\\" not in name and (game_dir / (folder or "mods") / name).is_file():
+                (game_dir / (folder or "mods") / name).unlink()
                 removed += 1
         _write_json(manifest_path, {"mods": sorted(wanted), "server": pack["name"], "synced": _now()})
+        from .friendextras import enable_packs
+        enable_packs(game_dir, [m for m in pack.get("mods", []) if m.get("extra")], tuple(gone_packs))
         return fetched, removed
 
     def add_server(self, pack: dict, game_dir: Path) -> None:

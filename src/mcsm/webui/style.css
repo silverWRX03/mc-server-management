@@ -569,3 +569,15 @@ ol.steps { padding-left: 20px; line-height: 1.6; }
 .help-section h3 { margin-top: 0; }
 .router-help summary { cursor: pointer; }
 @media (max-width: 760px) { .help-toc ul { columns: 1; } }
+
+/* the friend's page: picking extras in a panel that slides in */
+.row.wrap { flex-wrap: wrap; }
+body.picking { overflow: hidden; }
+body.picking main.join { opacity: .35; transform: translateX(-30px); transition: opacity .25s ease, transform .25s ease; pointer-events: none; }
+.jrail { position: fixed; left: 0; top: 0; bottom: 0; width: 56px; z-index: 15; border: 0; border-right: 1px solid var(--border);
+  background: var(--panel-2); color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; writing-mode: vertical-rl; transform: rotate(180deg); }
+.jpanel { position: fixed; top: 0; right: 0; bottom: 0; left: 56px; z-index: 16; background: var(--panel); overflow: auto;
+  padding: 20px 24px; display: grid; gap: 10px; align-content: start; animation: browser-in .3s ease-out; }
+.jpanel h2 { margin: 0; font-size: 19px; }
+.jresults { display: grid; gap: 6px; }
+@media (prefers-reduced-motion: reduce) { .jpanel { animation: none; } body.picking main.join { transition: none; } }

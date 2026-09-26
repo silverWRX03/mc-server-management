@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import launchers
 from .http import HttpError
+from .friendextras import ExtrasError
 from .join import Invite, Joiner, JoinError, _supports_quick_play, validate_pack
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,14 @@ HEADERS = {
 STATIC = {"": ("join.html", "text/html; charset=utf-8"), "join.js": ("join.js", "text/javascript; charset=utf-8"),
           "style.css": ("style.css", "text/css; charset=utf-8"), "icon.png": ("icon.png", "image/png")}
 IDLE_SECONDS = 180  # the page pings while it's open; stop a while after it's closed
+
+
+class ExtrasChanges(Exception):
+    """Some of the friend's extras don't fit the server's Minecraft: ask before going on."""
+
+    def __init__(self, changes: list[dict]):
+        super().__init__("changes")
+        self.changes = changes
 
 
 class JoinUI:
@@ -86,7 +95,36 @@ class JoinUI:
             "launchers": [f.to_dict() for f in launchers.detect(self.joiner.mc, self.prism_dir)],
         }
 
-    def setup(self, targets: list[str], memory_gb: int | None = None) -> None:
+    # ------------------------------------------------------ the friend's extras
+    def store(self):
+        from .friendextras import Store
+        if self.pack is None:
+            raise ValueError(self.pack_error or "the server's details haven't loaded")
+        return Store(self.joiner.mc, self.pack["name"])
+
+    def extras(self) -> dict:
+        from .friendextras import MOD_LOADERS, SHADER_LOADERS
+        data = self.store().load()
+        loader = self.pack["loader"]
+        return {"items": data["items"], "minecraft": self.pack["minecraft"],
+                "kinds": {"shader": loader in SHADER_LOADERS, "resourcepack": True, "mod": loader in MOD_LOADERS}}
+
+    def _resolve(self, data: dict):
+        from .friendextras import resolve
+        included = {m.get("project") for m in self.pack.get("mods", []) if m.get("project")}
+        return resolve(self.joiner.http, data, self.pack, included)
+
+    def check_extras(self) -> dict:
+        """Which extras fit the server's Minecraft, what comes along with them, and what doesn't fit."""
+        from .friendextras import changes_for
+        store = self.store()
+        data = store.load()
+        entries, problems = self._resolve(data)
+        return {"adds": [{"name": e["name"], "needed_by": e.get("needed_by")} for e in entries if e.get("needed_by")],
+                "changes": changes_for(data, self.pack, problems), "previous": data.get("minecraft"),
+                "minecraft": self.pack["minecraft"]}
+
+    def setup(self, targets: list[str], memory_gb: int | None = None, accept_changes: bool = False) -> None:
         targets = [t for t in targets if t in launchers.KEYS]
         if not targets:
             raise ValueError("pick at least one launcher")
@@ -96,6 +134,22 @@ class JoinUI:
             if not 1 <= int(memory_gb) <= 64:
                 raise ValueError("pick between 1 and 64 GB of memory")
             self.pack = {**self.pack, "memory_gb": int(memory_gb)}
+        # Their own extras: some may not fit the server's (new) Minecraft. Ask before changing anything.
+        from .friendextras import apply_changes, changes_for
+        store = self.store()
+        data = store.load()
+        notes: list[str] = []
+        if data["items"]:
+            entries, problems = self._resolve(data)
+            if problems and not accept_changes:
+                raise ExtrasChanges(changes_for(data, self.pack, problems))
+            if problems:
+                data, notes = apply_changes(store, data, self.pack, problems)
+                entries, _ = self._resolve(data)
+            store.save({**data, "minecraft": self.pack["minecraft"]})
+            install_pack = {**self.pack, "mods": self.pack.get("mods", []) + entries}
+        else:
+            install_pack = self.pack
         with self._lock:
             if self.running:
                 raise RuntimeError("already setting things up")
@@ -105,7 +159,9 @@ class JoinUI:
         def work():
             try:
                 self._say(f"Setting up Minecraft {self.pack['minecraft']} for {self.pack['name']}")
-                self.results = self.joiner.run_targets(self.pack, targets, prism_dir=self.prism_dir, out_dir=self.out_dir)
+                for note in notes:
+                    self._say(note)
+                self.results = self.joiner.run_targets(install_pack, targets, prism_dir=self.prism_dir, out_dir=self.out_dir)
             except HttpError as e:
                 self._say(f"A download failed: {e}. Check your internet connection and try again.")
             except Exception as e:  # keep the page informed whatever happens
@@ -172,6 +228,26 @@ class JoinUI:
                     self._send(200, resources.files("mcsm").joinpath("webui", name).read_bytes(), ctype)
                 elif rest == "api/info":
                     self._json(200, ui.info())
+                elif rest.startswith("api/extras"):
+                    try:
+                        if rest == "api/extras":
+                            self._json(200, ui.extras())
+                        elif rest == "api/extras/check":
+                            self._json(200, ui.check_extras())
+                        elif rest == "api/extras/search":
+                            from .friendextras import search
+                            q = parse_qs(urlparse(self.path).query)
+                            if ui.pack is None:
+                                raise ValueError(ui.pack_error or "the server's details haven't loaded")
+                            self._json(200, {"results": search(ui.joiner.http, (q.get("kind") or [""])[0],
+                                                               (q.get("q") or [""])[0], ui.pack,
+                                                               int((q.get("offset") or ["0"])[0] or 0))})
+                        else:
+                            self._json(404, {"error": "not found"})
+                    except (ValueError, ExtrasError) as e:
+                        self._json(400, {"error": str(e)})
+                    except HttpError as e:
+                        self._json(502, {"error": e.friendly})
                 elif rest == "api/progress":
                     since = int((parse_qs(urlparse(self.path).query).get("since") or ["0"])[0] or 0)
                     with ui._lock:
@@ -194,8 +270,18 @@ class JoinUI:
                     if rest == "api/setup":
                         mem = body.get("memory_gb")
                         ui.setup([str(x) for x in body.get("launchers", [])],
-                                 int(mem) if isinstance(mem, (int, float)) else None)
+                                 int(mem) if isinstance(mem, (int, float)) else None, body.get("accept_changes") is True)
                         self._json(200, {"ok": True})
+                    elif rest == "api/extras/add":
+                        ui.store().add(str(body.get("kind", "")), str(body.get("id", "")), str(body.get("slug", "")),
+                                       str(body.get("name", "")))
+                        self._json(200, {**ui.extras(), **ui.check_extras()})
+                    elif rest == "api/extras/remove":
+                        ui.store().remove(str(body.get("id", "")))
+                        self._json(200, ui.extras())
+                    elif rest == "api/extras/enable":
+                        ui.store().set_enabled(str(body.get("id", "")), body.get("enabled") is True)
+                        self._json(200, ui.extras())
                     elif rest == "api/open":
                         self._json(200, {"ok": ui.open_again(str(body.get("launcher", "")))})
                     elif rest == "api/quit":
@@ -203,8 +289,12 @@ class JoinUI:
                         self._json(200, {"ok": True})
                     else:
                         self._json(404, {"error": "not found"})
-                except (ValueError, RuntimeError) as e:
+                except ExtrasChanges as e:
+                    self._json(409, {"error": "some of your extras don't fit this Minecraft version", "changes": e.changes})
+                except (ValueError, RuntimeError, ExtrasError) as e:
                     self._json(400, {"error": str(e)})
+                except HttpError as e:
+                    self._json(502, {"error": e.friendly})
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.daemon_threads = True
