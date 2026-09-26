@@ -23,6 +23,7 @@ MODES = ("password", "pin", "none")
 FILE = "web-auth.json"
 LEGACY_FILE = "web-password"   # mcsm 0.1 kept a generated password here in plain text
 ITERATIONS = 200_000
+FORMAT = 2   # files without it came from mcsm 0.2.0, which could carry over 0.1's random password
 
 
 def _hash(secret: str, salt: bytes, iterations: int = ITERATIONS) -> str:
@@ -103,6 +104,12 @@ class AuthStore:
         if self.path.exists():
             try:
                 d = json.loads(self.path.read_text())
+                if d.get("format") is None and d.get("mode") == "password" and not d.get("default"):
+                    # mcsm 0.2.0 turned 0.1's generated password (which nobody chose or saw) into
+                    # this file, so PASSWORD never worked afterwards. Start over from the default.
+                    auth = _hashed("password", DEFAULT_PASSWORD, default=True)
+                    self._save(auth)
+                    return auth
                 if d.get("mode") in MODES:
                     return Auth(mode=d["mode"], salt=d.get("salt", ""), hash=d.get("hash", ""),
                                 iterations=int(d.get("iterations", ITERATIONS)), default=bool(d.get("default")))
@@ -118,7 +125,7 @@ class AuthStore:
     def _save(self, auth: Auth) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"mode": auth.mode, "salt": auth.salt, "hash": auth.hash,
+        tmp.write_text(json.dumps({"format": FORMAT, "mode": auth.mode, "salt": auth.salt, "hash": auth.hash,
                                    "iterations": auth.iterations, "default": auth.default}, indent=2) + "\n")
         try:
             tmp.chmod(0o600)

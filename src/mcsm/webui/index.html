@@ -13,7 +13,14 @@
       <div class="brand big"><span class="logo"></span>mcsm</div>
       <p class="muted">Forever server control panel</p>
       <div id="login-fields" class="login-fields">
-        <label><span id="login-label">Password</span><input id="login-password" type="password" autocomplete="current-password" autofocus></label>
+        <label for="login-password"><span id="login-label">Password</span></label>
+        <div class="pw-field">
+          <input id="login-password" type="password" autocomplete="current-password" autofocus>
+          <button type="button" id="login-eye" class="eye" aria-label="Show password" aria-pressed="false" title="Show password">
+            <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M1.5 12S5.5 4.5 12 4.5 22.5 12 22.5 12 18.5 19.5 12 19.5 1.5 12 1.5 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>
+            <svg class="eye-shut hidden" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 5.1A10.8 10.8 0 0 1 12 4.5C18.5 4.5 22.5 12 22.5 12a18 18 0 0 1-3.3 4.3M6.6 6.6C3.4 8.6 1.5 12 1.5 12S5.5 19.5 12 19.5a10 10 0 0 0 5.4-1.6M9.9 9.9a3.2 3.2 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </div>
         <button class="btn primary" type="submit">Sign in</button>
         <p id="login-error" class="error"></p>
       </div>
@@ -24,16 +31,7 @@
   <div id="app" class="app hidden">
     <aside class="sidebar">
       <div class="brand"><span class="logo"></span>mcsm</div>
-      <nav id="nav">
-        <a href="#dashboard" data-view="dashboard">Dashboard</a>
-        <a href="#console" data-view="console">Console</a>
-        <a href="#players" data-view="players">Players</a>
-        <a href="#updates" data-view="updates">Updates<span id="nav-update-dot" class="dot hidden"></span></a>
-        <a href="#mods" data-view="mods">Mods</a>
-        <a href="#backups" data-view="backups">Backups</a>
-        <a href="#java" data-view="java">Java</a>
-        <a href="#settings" data-view="settings">Settings</a>
-      </nav>
+      <nav id="nav"></nav>
       <div class="sidebar-foot">
         <button id="logout" class="btn ghost small">Sign out</button>
         <span id="version" class="muted small"></span>
@@ -42,6 +40,7 @@
 
     <div class="content">
       <header class="topbar">
+        <h2 id="page-title" class="page-title hidden"></h2>
         <div class="server-id">
           <span id="state-pill" class="pill">…</span>
           <span id="server-title" class="title"></span>

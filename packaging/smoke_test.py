@@ -84,6 +84,37 @@ def main(exe: str) -> None:
                 except subprocess.TimeoutExpired:
                     proc.kill()
             log.close()
+
+        # `mcsm start` (what double-clicking runs): the server list, with nothing started.
+        home = tmp / "home"
+        hub_env = {**fresh_env, "MCSM_HOME": str(home)}
+        log = open(tmp / "start.log", "w")
+        proc = subprocess.Popen([exe, "start", "--no-browser", "--web-port", str(PORT)], env=hub_env, cwd=tmp,
+                                stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 60
+            while True:
+                try:
+                    status, body = fetch("/api/auth")
+                    break
+                except OSError:
+                    if proc.poll() is not None or time.time() > deadline:
+                        raise SystemExit("mcsm start never came up:\n" + (tmp / "start.log").read_text())
+                    time.sleep(0.5)
+            assert status == 200 and '"default": true' in body, body
+            print("mcsm start serves the control panel (password PASSWORD)")
+            run(exe, "stop", env=hub_env, cwd=tmp)
+            proc.wait(timeout=60)
+            print(f"mcsm start stopped cleanly (exit {proc.returncode})")
+            assert not (home / "mcsm.toml").exists(), "mcsm start should not create a server by itself"
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            log.close()
     print("smoke test passed")
 
 

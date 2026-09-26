@@ -24,10 +24,17 @@ function h(tag, attrs = {}, ...children) {
 
 class Unauthorized extends Error {}
 
+// With several servers, a server's calls go to /api/servers/<id>/...; these are about mcsm itself.
+const GLOBAL_API = /^\/api\/(login|logout|auth|notice|licenses|self-update|hub|servers)(\/|\?|$)/;
+let server = null;            // the server being looked at (null on the server list)
+const scoped = (path) => server && path.startsWith("/api/") && !GLOBAL_API.test(path)
+  ? `/api/servers/${server}/${path.slice(5)}` : path;
+const link = (view) => `#s/${server}/${view}`;
+
 async function api(path, { method = "GET", body, raw } = {}) {
   const headers = { "X-MCSM": "1" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, {
+  const res = await fetch(scoped(path), {
     method, headers, credentials: "same-origin",
     body: raw !== undefined ? raw : body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -82,7 +89,8 @@ function fill(el, ...children) {
 function card(title, ...children) { return h("div", { class: "card" }, title ? h("h3", {}, title) : null, ...children); }
 
 // -------------------------------------------------------------------- state
-let status = null;
+let status = null;            // the current server's status
+let hubInfo = null;           // mcsm itself: servers, sign-in, notice, updates
 let lastJobSeen = null;
 let current = null;           // current view
 let timers = [];
@@ -104,13 +112,55 @@ async function showLogin() {
   input.setAttribute("inputmode", pin ? "numeric" : "text");
   input.setAttribute("autocomplete", pin ? "off" : "current-password");
   $("#login-fields").classList.toggle("hidden", !!(a && a.mode === "none"));
+  const reset = h("button", { type: "button", class: "link-btn", onclick: async () => {
+    if (!confirm("Go back to the default password, PASSWORD? Anyone signed in elsewhere is signed out, and you'll choose a new one after signing in.")) return;
+    try {
+      await api("/api/auth/reset-local", { method: "POST", body: {} });
+      toast("The password is PASSWORD again");
+      showLogin();
+    } catch (err) { $("#login-error").textContent = err.message; }
+  } }, "Reset it to PASSWORD");
   $("#login-hint").replaceChildren(...(
     !a ? [] :
-    a.mode === "none" ? ["This control panel has no password, so it only opens on the server's own computer. To use it from here, set a PIN or password there (Settings → Sign-in)."] :
+    a.mode === "none" ? ["This control panel has no password, so it only opens on the server's own computer. To use it from here, set a PIN or password there (mcsm settings → Sign-in)."] :
     a.managed ? ["The password is set in mcsm.toml under ", h("code", {}, "[web] password"), "."] :
-    a.default ? ["First time? The password is ", h("strong", {}, "PASSWORD"), ". You'll choose your own next."] :
-    ["Forgot it? Run ", h("code", {}, "mcsm web-password --reset"), " on the server to go back to PASSWORD."]));
+    a.default ? ["First time? The password is ", h("strong", {}, "PASSWORD"), " (in capitals). You'll choose your own next."] :
+    a.local ? ["Forgot it? ", reset, " (this works on the server's own computer)."] :
+    ["Forgot it? On the server's own computer, open this page and choose \"Reset it to PASSWORD\", or run ",
+      h("code", {}, "mcsm web-password --reset"), "."]));
   input.focus();
+}
+
+// A show/hide "eye" for password inputs.
+function eyeToggle(input, button) {
+  button.addEventListener("click", () => {
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    button.setAttribute("aria-pressed", String(show));
+    button.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    button.title = show ? "Hide password" : "Show password";
+    button.querySelector(".eye-open").classList.toggle("hidden", show);
+    button.querySelector(".eye-shut").classList.toggle("hidden", !show);
+    input.focus();
+  });
+}
+eyeToggle($("#login-password"), $("#login-eye"));
+function pwField(input) {
+  const svg = (cls, d) => {
+    const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("aria-hidden", "true"); s.setAttribute("class", cls);
+    for (const part of d) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", part.circle ? "circle" : "path");
+      for (const [k, v] of Object.entries(part.circle || { d: part })) el.setAttribute(k, v);
+      s.append(el);
+    }
+    return s;
+  };
+  const btn = h("button", { type: "button", class: "eye", "aria-label": "Show password", "aria-pressed": "false", title: "Show password" },
+    svg("eye-open", ["M1.5 12S5.5 4.5 12 4.5 22.5 12 22.5 12 18.5 19.5 12 19.5 1.5 12 1.5 12Z", { circle: { cx: 12, cy: 12, r: 3.2 } }]),
+    svg("eye-shut hidden", ["M3 3l18 18M10.6 5.1A10.8 10.8 0 0 1 12 4.5C18.5 4.5 22.5 12 22.5 12a18 18 0 0 1-3.3 4.3M6.6 6.6C3.4 8.6 1.5 12 1.5 12S5.5 19.5 12 19.5a10 10 0 0 0 5.4-1.6M9.9 9.9a3.2 3.2 0 0 0 4.2 4.2"]));
+  eyeToggle(input, btn);
+  return h("div", { class: "pw-field" }, input, btn);
 }
 
 $("#login-form").addEventListener("submit", async (e) => {
@@ -169,7 +219,7 @@ async function showSecurity(firstTime = false) {
   let local = false;
   try { local = !!(await (await fetch("/api/auth", { credentials: "same-origin" })).json()).local; } catch (_) {}
   if ($("#security")) return;
-  let mode = status && status.auth && !status.auth.default ? status.auth.mode : "password";
+  let mode = hubInfo && hubInfo.auth && !hubInfo.auth.default ? hubInfo.auth.mode : "password";
   if (mode === "none" && !local) mode = "pin";
   const close = () => { const m = $("#security"); if (m) m.remove(); };
   const box = h("div", { class: "modal compact" });
@@ -199,7 +249,7 @@ async function showSecurity(firstTime = false) {
       h("form", { class: "mt", onsubmit: save },
         mode === "none"
           ? h("p", { class: "muted" }, "Anyone using this computer can open the panel. Other devices won't be able to use it at all until you set a password or PIN again.")
-          : h("div", { class: "grid" }, h("label", {}, `New ${kind}`, secret), h("label", {}, `Type it again`, again)),
+          : h("div", { class: "grid" }, h("label", {}, `New ${kind}`, pwField(secret)), h("label", {}, `Type it again`, pwField(again))),
         h("p", { class: "error" }, error || ""),
         h("div", { class: "row" },
           h("button", { class: "btn primary", type: "submit" }, "Save"),
@@ -240,25 +290,44 @@ function offerSelfUpdate(u, force = false) {
 
 // ------------------------------------------------------------------- status
 async function refreshStatus() {
-  try { status = await api("/api/status"); } catch (e) {
+  try { hubInfo = await api("/api/hub"); } catch (e) {
     if (!(e instanceof Unauthorized)) { $("#state-pill").textContent = "reconnecting"; $("#state-pill").className = "pill"; }
     return;
   }
-  const s = status;
+  const hb = hubInfo;
+  $("#version").textContent = "v" + hb.version;
+  $("#logout").classList.toggle("hidden", hb.auth.mode === "none");
+  if (!hb.notice_accepted) { showNotice(); return; }
+  offerSelfUpdate(hb.self_update);
+  if (hb.auth.default && !hb.auth.managed && !promptDismissed()) showSecurity(true);
+  if (hb.single && !server && hb.servers.length === 1) { location.hash = `#s/${hb.servers[0].id}/dashboard`; return; }
+  renderNav();
+  if (!server) {
+    if (current && current.onHub) current.onHub(hb);
+    return;
+  }
+  const want = server;
+  let s;
+  try { s = await api("/api/status"); } catch (e) {
+    if (e instanceof Unauthorized) return;
+    if (/no server with that id/.test(e.message)) { toast(e.message, true); location.hash = "#servers"; }
+    return;
+  }
+  if (want !== server) return;  // switched servers meanwhile
+  status = s;
   const pill = $("#state-pill");
   pill.textContent = s.state;
   pill.className = "pill " + s.state;
-  $("#server-title").textContent = s.minecraft
-    ? `Minecraft ${s.minecraft} · ${s.loader}${s.loader_version ? " " + s.loader_version : ""}`
-    : "No server installed yet";
-  $("#version").textContent = "v" + s.version;
+  $("#server-title").textContent = (s.motd || s.id) + (s.minecraft
+    ? ` · Minecraft ${s.minecraft} · ${s.loader}` : " · not installed yet");
   const busy = !!s.job;
   $("#job").classList.toggle("hidden", !busy);
   $("#job-name").textContent = busy ? s.job.name + "…" : "";
-  $("#btn-start").disabled = busy || s.state !== "stopped";
+  $("#btn-start").disabled = busy || s.state !== "stopped" || s.setup_pending;
   $("#btn-stop").disabled = busy || s.state === "stopped";
   $("#btn-restart").disabled = busy || s.state !== "running";
-  $("#nav-update-dot").classList.toggle("hidden", !(s.update && !s.update.up_to_date && s.update.target));
+  const dot = $("#nav-update-dot");
+  if (dot) dot.classList.toggle("hidden", !(s.update && !s.update.up_to_date && s.update.target));
 
   if (s.last_job && s.last_job.finished !== lastJobSeen) {
     if (lastJobSeen !== null) toast(`${s.last_job.name}: ${s.last_job.message}`, !s.last_job.ok);
@@ -268,14 +337,8 @@ async function refreshStatus() {
     lastJobSeen = s.last_job ? s.last_job.finished : 0;
   }
   document.body.classList.toggle("setup-mode", !!s.setup_pending);
-  if (s.notice_accepted && s.setup_pending && currentName !== "setup") { location.hash = "#setup"; return; }
-  if (!s.setup_pending && currentName === "setup") { location.hash = "#dashboard"; return; }
-  $("#logout").classList.toggle("hidden", !!(s.auth && s.auth.mode === "none"));
-  if (!s.notice_accepted) showNotice();
-  else {
-    offerSelfUpdate(s.self_update);
-    if (s.auth && s.auth.default && !s.auth.managed && !promptDismissed()) showSecurity(true);
-  }
+  if (s.setup_pending && currentName !== "setup") { location.hash = link("setup"); return; }
+  if (!s.setup_pending && currentName === "setup" && !s.job) { location.hash = link("dashboard"); return; }
   if (current && current.onStatus) current.onStatus(s);
 }
 
@@ -348,7 +411,7 @@ function playerHead(name, size = 32) {
     if (img.height >= 64) ctx.drawImage(img, 40, 8, 8, 8, 0, 0, size, size);  // hat layer
   });
   img.addEventListener("error", () => { skinFails.add(name); tile(); });
-  img.src = `/api/players/skin?name=${encodeURIComponent(name)}`;
+  img.src = scoped(`/api/players/skin?name=${encodeURIComponent(name)}`);
   return c;
 }
 
@@ -432,7 +495,7 @@ views.dashboard = () => {
           : h("button", { class: "btn small", onclick: () => run("op", selected) }, "Make op"),
         h("button", { class: "btn small", onclick: () => run("kick", selected) }, "Kick"),
         h("button", { class: "btn small danger", onclick: () => run("ban", selected) }, "Ban"),
-        h("a", { class: "btn small ghost", href: "#players" }, "More…")) : null);
+        h("a", { class: "btn small ghost", href: link("players") }, "More…")) : null);
   };
   const loadPlayers = async () => {
     const r = await api("/api/players").catch(() => null);
@@ -465,7 +528,7 @@ views.dashboard = () => {
       u ? h("p", { class: "muted small" }, `Checked ${ago(u.checked_at)} · strategy ${s.strategy} · auto-upgrade ${s.auto_upgrade ? "on" : "off"}`) : null,
       h("div", { class: "row" },
         h("button", { class: "btn", onclick: () => act(() => api("/api/updates/check", { method: "POST", body: {} }), "Checking for updates…") }, "Check now"),
-        h("a", { href: "#updates", class: "btn ghost" }, "Details →")),
+        h("a", { href: link("updates"), class: "btn ghost" }, "Details →")),
     );
   };
 
@@ -808,11 +871,12 @@ views.settings = () => {
       h("h3", { class: "mt-l" }, "Server"),
       h("div", { class: "grid" },
         h("label", {}, "Memory (e.g. 6G)", txt("memory")),
+        h("label", {}, "Port players connect to", txt("port", { type: "number", min: 1024, max: 65535 })),
         h("label", {}, "Backups to keep", txt("backups_keep", { type: "number", min: 1 })),
         h("label", {}, "Discord webhook URL", txt("discord_webhook", { type: "url", placeholder: "https://discord.com/api/webhooks/…" }))),
       h("div", { class: "grid mt-s" }, chk("restart_on_crash", "Restart after crashes")),
       h("div", { class: "row mt" }, h("button", { class: "btn primary", type: "submit" }, "Save settings"),
-        h("span", { class: "muted small" }, "Memory changes apply at the next restart.")),
+        h("span", { class: "muted small" }, "Memory and port changes apply at the next restart.")),
     );
     form.onsubmit = (e) => {
       e.preventDefault();
@@ -821,16 +885,86 @@ views.settings = () => {
         warn_minutes: f.warn_minutes.value.split(",").map((x) => x.trim()).filter(Boolean).map(Number),
         auto_upgrade: f.auto_upgrade.checked, wait_for_empty: f.wait_for_empty.checked, verify_boot: f.verify_boot.checked,
         memory: f.memory.value.trim(), backups_keep: Number(f.backups_keep.value), discord_webhook: f.discord_webhook.value.trim(),
+        port: Number(f.port.value),
         restart_on_crash: f.restart_on_crash.checked,
       };
       act(() => api("/api/settings", { method: "POST", body }), "Settings saved").then(load);
     };
   };
+  fill($("#main"), h("h2", { class: "view-title" }, "Server settings"), form);
+  load();
+  return {};
+};
+
+// The home page: every server, each started and stopped by hand.
+views.servers = () => {
+  const list = h("div", { class: "server-list" });
+  const busy = new Set();
+  const control = async (s, action) => {
+    if (action === "stop" && s.players && !confirm(`Stop ${s.name}? ${s.players} player(s) will be disconnected.`)) return;
+    busy.add(s.id);
+    await act(() => api(`/api/servers/${s.id}/server/${action}`, { method: "POST" }),
+      action === "start" ? `Starting ${s.name}…` : `Stopping ${s.name}…`);
+    busy.delete(s.id);
+  };
+  const render = (hb) => {
+    if (!hb) return;
+    const label = (s) => s.state === "unavailable" ? "unavailable" : s.setup_pending ? "not set up" : s.state;
+    fill(list,
+      hb.servers.map((s) => h("div", { class: "card server-card" },
+        h("div", { class: "row" },
+          h("span", { class: "pill " + (s.setup_pending ? "pending" : s.state) }, label(s)),
+          h("strong", { class: "grow server-name" }, s.name)),
+        h("div", { class: "muted" }, s.problem || (s.minecraft ? `Minecraft ${s.minecraft} · ${s.loader}` : `${s.loader} · not installed yet`)),
+        s.state === "unavailable" || s.setup_pending ? null
+          : h("div", { class: "muted small" }, `${s.players} / ${s.max_players} players · port ${s.port}`, s.update ? " · update ready" : ""),
+        s.job ? h("div", { class: "row small" }, h("span", { class: "spinner" }), `${s.job.name}…`) : null,
+        s.state === "unavailable" ? null : h("div", { class: "row mt-s" },
+          s.setup_pending ? h("a", { class: "btn primary", href: `#s/${s.id}/setup` }, s.job ? "See progress" : "Finish setup")
+            : s.state === "stopped"
+              ? h("button", { class: "btn primary", disabled: !!s.job || busy.has(s.id), onclick: () => control(s, "start") }, "Start")
+              : h("button", { class: "btn danger", disabled: busy.has(s.id), onclick: () => control(s, "stop") }, "Stop"),
+          s.setup_pending ? null : h("a", { class: "btn", href: `#s/${s.id}/dashboard` }, "Open"),
+          s.setup_pending && !s.job && !hb.single ? h("button", { class: "btn ghost", onclick: async () => {
+            if (!confirm(`Remove "${s.name}" from the list? It was never installed, so there's no world to lose; its files are kept in mcsm's trash folder.`)) return;
+            await act(() => api("/api/hub/remove", { method: "POST", body: { id: s.id } }), `Removed ${s.name}`);
+          } }, "Remove") : null),
+        h("div", { class: "muted small folder" }, s.folder))),
+      hb.single ? null : h("a", { class: "card server-card new", href: "#new" },
+        h("strong", {}, "+ New server"), h("span", { class: "muted small" }, "Pick a server type, Minecraft version and mods")));
+  };
+  fill($("#main"),
+    h("p", { class: "muted" }, "Servers only run when you start them here, and stop when you press Stop or close mcsm."),
+    list);
+  render(hubInfo);
+  return { onHub: render };
+};
+
+// mcsm itself: sign-in, network access, and what mcsm is.
+views.mcsm = () => {
+  const security = h("div", { class: "mb" });
+  const network = h("div", { class: "mb" });
+  const renderSecurity = (hb) => {
+    const a = (hb && hb.auth) || {};
+    const label = { password: "Password", pin: "PIN", none: "No password (this computer only)" }[a.mode] || "…";
+    fill(security, card("Sign-in",
+      h("div", { class: "row" },
+        h("span", { class: "grow" }, a.managed ? "Password set in mcsm.toml ([web] password)" : a.default ? "Default password (PASSWORD) — please change it" : label),
+        a.managed ? null : h("button", { class: "btn", onclick: () => showSecurity(false) }, "Change"))));
+    if (!hb || hb.single) { fill(network); return; }
+    const box = h("input", { type: "checkbox", checked: hb.network_access, onchange: async (e) => {
+      const r = await act(() => api("/api/hub/network", { method: "POST", body: { enabled: e.target.checked } }));
+      if (r) toast(r.restart_needed ? "Saved. Close and reopen mcsm for this to take effect." : "Saved");
+    } });
+    fill(network, card("Network access",
+      h("label", { class: "row" }, box, h("span", {}, "Let other devices on my network (like my phone) open this control panel")),
+      h("p", { class: "muted small" }, `Servers are kept in ${hb.home}. This applies the next time mcsm starts.`)));
+  };
   const about = h("div", { class: "mt" });
   const loadAbout = async () => {
     const [n, lic] = await Promise.all([api("/api/notice").catch(() => null), api("/api/licenses").catch(() => null)]);
     if (!n || !lic) return;
-    const s = status || {};
+    const s = hubInfo || {};
     const row = (x) => h("tr", {}, h("td", {}, x.name), h("td", {}, x.license), h("td", { class: "muted" }, x.use),
       h("td", {}, h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" }, "↗")));
     const table = (title, rows) => [h("h3", { class: "mt-l" }, title), h("table", {},
@@ -860,20 +994,10 @@ views.settings = () => {
           x.url.startsWith("http") ? h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" }, "terms ↗") : h("span", { class: "muted small" }, x.url)))))),
     );
   };
-  const security = h("div", { class: "mb" });
-  const renderSecurity = () => {
-    const a = (status && status.auth) || {};
-    const label = { password: "Password", pin: "PIN", none: "No password (this computer only)" }[a.mode] || "…";
-    fill(security, card("Sign-in",
-      h("div", { class: "row" },
-        h("span", { class: "grow" }, a.managed ? "Password set in mcsm.toml ([web] password)" : a.default ? "Default password (PASSWORD) — please change it" : label),
-        a.managed ? null : h("button", { class: "btn", onclick: () => showSecurity(false) }, "Change"))));
-  };
-  renderSecurity();
-  fill($("#main"), h("h2", { class: "view-title" }, "Settings"), security, form, about);
-  load();
+  fill($("#main"), security, network, about);
+  renderSecurity(hubInfo);
   loadAbout();
-  return { onStatus: renderSecurity };
+  return { onHub: renderSecurity };
 };
 
 // ------------------------------------------------------------------- setup
@@ -886,6 +1010,7 @@ views.setup = () => {
   const main = h("div", { class: "setup" });
   let opts = null;
   const st = setupState;
+  const isNew = !server;  // #new: a brand-new server; #s/<id>/setup: finish one that exists
 
   const field = (label, input, hint) => h("label", {}, label, input, hint ? h("span", { class: "muted small" }, hint) : null);
 
@@ -914,7 +1039,7 @@ views.setup = () => {
     const search = async () => {
       const term = q.value.trim();
       if (!term) { fill(results); return; }
-      const r = await api(`/api/mods/search?loader=${encodeURIComponent(st.loader)}&q=${encodeURIComponent(term)}`).catch((e) => { toast(e.message, true); return null; });
+      const r = await api(`${isNew ? "/api/hub" : "/api"}/mods/search?loader=${encodeURIComponent(st.loader)}&q=${encodeURIComponent(term)}`).catch((e) => { toast(e.message, true); return null; });
       if (!r) return;
       fill(results, r.results.length ? r.results.slice(0, 8).map((m) => h("div", { class: "mod" },
         m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
@@ -948,13 +1073,22 @@ views.setup = () => {
       const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
         network_access: st.network_access, accept_eula: true };
+      if (isNew) {
+        const r = await act(() => api("/api/hub/create", { method: "POST", body }));
+        if (r) {
+          Object.assign(setupState, { mods: new Map(), motd: "A Minecraft server", accept_eula: false, prefilled: false });
+          location.hash = `#s/${r.id}/setup`;
+        }
+        return;
+      }
       const r = await act(() => api("/api/setup", { method: "POST", body }));
       if (r) { st.submitted = true; renderProgress(); }
     };
 
     fill(main,
-      h("h2", { class: "view-title" }, "Set up your server"),
-      h("p", { class: "muted" }, "Choose what kind of server you want. mcsm downloads everything it needs (Minecraft, the mod loader, mods and Java), starts it, and keeps it up to date from then on."),
+      h("h2", { class: "view-title" }, isNew ? "Create a new server" : "Set up your server"),
+      h("p", { class: "muted" }, "Choose what kind of server you want. mcsm downloads everything it needs (Minecraft, the mod loader, mods and Java) and keeps it up to date from then on. " +
+        (opts.network_option ? "" : "It won't start until you press Start.")),
       error ? h("div", { class: "notice bad" }, h("strong", {}, "Setup didn't finish: "), error, h("div", { class: "small mt-s" }, "Change your choices below and try again.")) : null,
       h("form", { onsubmit: submit },
         card("1. Server type", loaderCards),
@@ -970,7 +1104,7 @@ views.setup = () => {
             field("Game mode", sel("gamemode", opts.gamemodes)),
             field("Memory", mem, opts.total_ram_gb ? `This computer has ${opts.total_ram_gb} GB.` : null),
             field("Port", inp("port", { type: "number", min: 1024, max: 65535 }), "25565 is Minecraft's usual port.")),
-          h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")))),
+          opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null)),
         h("div", { class: "mt" }, card("Almost done",
           h("label", { class: "row" }, eula, h("span", {}, "I accept the ",
             h("a", { href: "https://aka.ms/MinecraftEULA", target: "_blank", rel: "noopener noreferrer" }, "Minecraft EULA ↗"),
@@ -985,7 +1119,7 @@ views.setup = () => {
     fill(main,
       h("h2", { class: "view-title" }, "Creating your server…"),
       h("div", { class: "notice" }, h("div", { class: "row" }, h("span", { class: "spinner" }),
-        h("span", { class: "grow" }, "Downloading Java, the mod loader, Minecraft and your mods, then starting the server for the first time. This usually takes a few minutes."))),
+        h("span", { class: "grow" }, "Downloading Java, the mod loader, Minecraft and your mods, then checking that the server starts. This usually takes a few minutes."))),
       card("What's happening", events));
     every(1500, async () => {
       const r = await api(`/api/events?since=${seq}`).catch(() => null);
@@ -996,7 +1130,7 @@ views.setup = () => {
   };
 
   (async () => {
-    opts = await api("/api/setup").catch((e) => { toast(e.message, true); return null; });
+    opts = await api(isNew ? "/api/hub/setup" : "/api/setup").catch((e) => { toast(e.message, true); return null; });
     if (!opts) return;
     if (!st.prefilled && opts.current) {  // an existing mcsm.toml: start from its choices
       st.prefilled = true;
@@ -1007,11 +1141,11 @@ views.setup = () => {
       if (c.memory_gb) st.memory_gb = c.memory_gb;
     }
     if (st.memory_gb === null) st.memory_gb = opts.memory_gb;
+    if (isNew && opts.port) st.port = opts.port;  // a port no other server here uses
     if (st.network_access === null) st.network_access = opts.network_access;
     if (opts.versions_error) toast(opts.versions_error, true);
-    const s = status || {};
-    if (s.job && s.job.name === "set up server") renderProgress();
-    else renderForm();
+    const s = status || (server ? await api("/api/status").catch(() => ({})) : {});
+    if (s.job && s.job.name === "set up server") { st.submitted = true; renderProgress(); } else renderForm();
   })();
 
   $("#main").replaceChildren(main);
@@ -1019,27 +1153,67 @@ views.setup = () => {
     onJobDone: () => {
       const last = status && status.last_job;
       if (!last || last.name !== "set up server") return;
-      if (last.ok) location.hash = "#dashboard";  // the job's own toast says it's ready
+      if (last.ok) location.hash = link("dashboard");  // the job's own toast says it's ready
       else { st.submitted = false; clearTimers(); every(2000, refreshStatus); renderForm(last.message); }
     },
   };
 };
 
 // ------------------------------------------------------------------- router
+const SERVER_VIEWS = [["dashboard", "Dashboard"], ["console", "Console"], ["players", "Players"], ["updates", "Updates"],
+  ["mods", "Mods"], ["backups", "Backups"], ["java", "Java"], ["settings", "Settings"]];
 let currentName = null;
+
+function renderNav() {
+  const hb = hubInfo || {};
+  const a = (href, label, active, extra) => h("a", { href, class: active ? "active" : null }, label, extra || null);
+  const me = server && hb.servers ? hb.servers.find((x) => x.id === server) : null;
+  const pending = me ? me.setup_pending : false;
+  fill($("#nav"),
+    server ? [
+      hb.single ? null : a("#servers", "← All servers", false),
+      h("div", { class: "nav-server" }, me ? me.name : server),
+      pending ? a(link("setup"), "Setup", currentName === "setup")
+        : SERVER_VIEWS.map(([v, label]) => a(link(v), label, currentName === v,
+            v === "updates" ? h("span", { id: "nav-update-dot", class: "dot" + (me && me.update ? "" : " hidden") }) : null)),
+    ] : [
+      a("#servers", "Servers", currentName === "servers"),
+      hb.single ? null : a("#new", "New server", currentName === "new"),
+    ],
+    h("div", { class: "nav-sep" }),
+    a("#mcsm", "mcsm settings", currentName === "mcsm"));
+  const inServer = !!server;
+  $(".server-id").classList.toggle("hidden", !inServer);
+  $(".actions").classList.toggle("hidden", !inServer);
+  $("#page-title").classList.toggle("hidden", inServer);
+  $("#page-title").textContent = { servers: "Your servers", new: "New server", mcsm: "mcsm settings" }[currentName] || "";
+  if (!inServer) $("#job").classList.add("hidden");
+}
+
 function route() {
-  const name = (location.hash || "#dashboard").slice(1);
-  const view = views[name] ? name : "dashboard";
+  const hash = (location.hash || "#servers").slice(1);
+  const m = hash.match(/^s\/([a-z0-9][a-z0-9-]*)(?:\/(\w+))?$/);
+  const before = server;
+  let view;
+  if (m) {
+    server = m[1];
+    view = m[2] === "setup" || SERVER_VIEWS.some(([v]) => v === m[2]) ? m[2] : "dashboard";
+  } else {
+    server = null;
+    view = ["servers", "new", "mcsm"].includes(hash) ? hash : "servers";
+  }
+  if (server !== before) { status = null; lastJobSeen = null; }
   currentName = view;
   clearTimers();
+  document.body.classList.remove("setup-mode");
+  renderNav();
   every(2000, refreshStatus);
-  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
-  current = views[view]();
+  current = views[view === "new" ? "setup" : view]();
 }
 window.addEventListener("hashchange", () => { if (!$("#app").classList.contains("hidden")) route(); });
 
 async function start() {
-  try { await api("/api/status"); } catch (_) { return; }
+  try { hubInfo = await api("/api/hub"); } catch (_) { return; }
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
   route();
