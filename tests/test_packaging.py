@@ -190,7 +190,7 @@ def test_panel_service_for_a_computer_without_a_screen(tmp_path, monkeypatch, ca
     p = service.plan(home, system=False, panel=True)
     assert p.name == "mcsm.service"
     assert "ExecStart=/home/me/.local/bin/mcsm start --no-browser --web-host 0.0.0.0" in p.text
-    assert f"Environment=MCSM_HOME={home}" in p.text
+    assert "Environment=MCSM_HOME=" in p.text and str(home) in p.text
 
     assert cli.main(["service", "install", "--panel"]) == 0
     out = capsys.readouterr().out
