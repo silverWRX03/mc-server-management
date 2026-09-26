@@ -272,7 +272,6 @@ details.advanced[open] > summary { margin-bottom: 8px; }
 .source-buttons .btn { display: grid; gap: 2px; justify-items: start; text-align: left; padding: 12px 14px; }
 .notice.pack { display: flex; align-items: center; gap: 12px; }
 .notice.pack img { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; }
-.choice:disabled { opacity: .45; cursor: not-allowed; }
 
 /* the mod browser window: filters and results on the left, the mod's page on the right */
 body.browse-mode .sidebar, body.browse-mode .topbar { display: none; }
@@ -309,3 +308,18 @@ body.browse-mode main { padding: 0; overflow: hidden; }
   body.browse-mode main { overflow: auto; }
   .browse-right { padding: 16px; }
 }
+
+/* the friend's page (mcsm join) */
+body.join-page { overflow: auto; }
+.join { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; display: grid; gap: 16px; }
+.join h1 { margin: 0; font-size: 24px; }
+.join h2 { margin: 0 0 12px; font-size: 16px; }
+.join-head { display: flex; align-items: center; gap: 16px; }
+.join-head img, .join-head .noicon { width: 64px; height: 64px; border-radius: 10px; image-rendering: pixelated; flex: none; }
+.join-head .noicon { background: var(--panel-2); border: 1px solid var(--border); }
+.launchers { display: grid; gap: 8px; }
+.choice.launcher { display: flex; gap: 12px; align-items: flex-start; text-align: left; cursor: pointer; }
+.choice.launcher input { margin-top: 3px; }
+.choice.launcher.missing { opacity: .8; }
+.block { display: block; }
+.log { max-height: 260px; overflow: auto; background: var(--panel-2); padding: 10px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }

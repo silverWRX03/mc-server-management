@@ -974,7 +974,7 @@ views.friends = () => {
       e.target.checked ? "Friend download switched on" : "Friend download switched off").then(search) });
     const intro = card("Let friends set up their Minecraft",
       h("p", {}, "Share a link. Your friends download a small file that adds a ", h("strong", {}, (status && status.motd) || "server"),
-        " installation to their Minecraft Launcher with the right Minecraft version, mod loader and mods, and puts this server in their multiplayer list. They sign in with their own Minecraft account as usual."),
+        " instance to their launcher (Minecraft Launcher, Prism Launcher, Modrinth App or CurseForge: they choose) with the right Minecraft version, mod loader and mods, and puts this server in their multiplayer list. They sign in with their own Minecraft account as usual."),
       h("label", { class: "row mt-s" }, toggle, h("span", {}, "Make a download for friends")));
     if (!d.enabled) { fill(body, intro); return; }
     const s = d.share || {};
