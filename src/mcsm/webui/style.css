@@ -544,3 +544,8 @@ main > * { animation: rise .25s ease-out; }
 #tester-toast .bar, .tester-step .bar { background: var(--border); }
 .early-opt { margin: 6px 0 2px; color: var(--muted); }
 .hidden-note { margin: 4px 8px 8px; }
+
+/* Discord dialog */
+.modal.discord { max-width: 620px; }
+.modal.discord textarea { width: 100%; resize: vertical; font: inherit; }
+ol.steps { padding-left: 20px; line-height: 1.6; }

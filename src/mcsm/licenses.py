@@ -41,6 +41,7 @@ DOWNLOADED = [
     ("Quilt Loader and installer", "the quilt loader", "Apache-2.0", "https://github.com/QuiltMC/quilt-loader"),
     ("NeoForge", "the neoforge loader", "LGPL-2.1", "https://github.com/neoforged/NeoForge"),
     ("Minecraft Forge", "the forge loader", "LGPL-2.1", "https://github.com/MinecraftForge/MinecraftForge"),
+    ("Paper", "the paper server", "GPL-3.0 (with MIT parts)", "https://github.com/PaperMC/Paper"),
     ("Eclipse Temurin (OpenJDK)", "the Java runtime, when mcsm manages Java", "GPL-2.0 with Classpath Exception",
      "https://adoptium.net/about/"),
     ("Mods", "whatever you add; each is downloaded from its author's page", "each mod's own license",
@@ -55,9 +56,11 @@ SERVICES = [
     ("Modrinth API", "https://modrinth.com/legal/terms"),
     ("CurseForge API (only with your API key)", "https://support.curseforge.com/en/support/solutions/articles/9000207405"),
     ("Fabric / Quilt / NeoForge / Forge metadata and maven servers", "see each project above"),
+    ("PaperMC API (Paper servers)", "https://papermc.io/"),
     ("Adoptium API", "https://adoptium.net/"),
     ("GitHub API (mcsm's own releases)", "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service"),
-    ("Discord webhooks (only if you set one)", "https://discord.com/terms"),
+    ("Discord webhooks and bot API (only if you set them up)", "https://discord.com/terms"),
+    ("Public IP lookups (ipify, ifconfig.co; only when you ask)", "https://www.ipify.org/"),
 ]
 
 

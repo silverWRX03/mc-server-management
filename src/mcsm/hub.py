@@ -237,6 +237,37 @@ class Hub:
             except Exception as e:
                 log.warning("couldn't reload a server's settings: %s", e)
 
+    # ---------------------------------------------------------- Discord
+    def discord(self):
+        """The Discord bot for posting invites, or None if none is set up."""
+        from .discord import Discord
+        token = str(self._hub_file().get("discord", {}).get("token") or "")
+        return Discord(self.http, token) if token else None
+
+    def discord_settings(self) -> dict:
+        d = self._hub_file().get("discord", {})
+        return {"set": bool(d.get("token")), "bot": d.get("bot"), "guild": d.get("guild", ""), "channel": d.get("channel", "")}
+
+    def save_discord_token(self, token: str) -> dict | None:
+        """Check a bot token with Discord and keep it (empty removes it). Returns the bot."""
+        from .discord import Discord, check_token
+        data = self._hub_file()
+        if not token.strip():
+            data.pop("discord", None)
+            self._save_hub_file(data)
+            return None
+        token = check_token(token)
+        bot = Discord(self.http, token).me()
+        data["discord"] = {"token": token, "bot": bot}
+        self._save_hub_file(data)
+        return bot
+
+    def remember_discord_channel(self, guild: str, channel: str) -> None:
+        data = self._hub_file()
+        if "discord" in data:
+            data["discord"].update(guild=guild, channel=channel)
+            self._save_hub_file(data)
+
     # ---------------------------------------------------------- sharing
     def share_settings(self) -> dict:
         """Friends' downloads: the share server's port, and the address friends use (blank = the

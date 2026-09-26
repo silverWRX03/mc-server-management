@@ -583,6 +583,10 @@ class HubApi:
         r[("GET", "/api/hub/curseforge")] = lambda q, b: {"set": bool(self.curseforge_key_now())}
         r[("POST", "/api/hub/curseforge")] = self.save_curseforge
         r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
+        r[("GET", "/api/hub/discord")] = self.discord_info
+        r[("POST", "/api/hub/discord")] = self.save_discord
+        r[("GET", "/api/hub/discord/guilds")] = lambda q, b: {"guilds": self._discord().guilds()}
+        r[("GET", "/api/hub/discord/channels")] = lambda q, b: {"channels": self._discord().channels(q.get("guild", ""))}
         r[("POST", "/api/hub/mods/check")] = self.check_mods
         r[("GET", "/api/hub/mods/check")] = self.check_status
         r[("POST", "/api/hub/trial")] = self.start_trial
@@ -692,6 +696,27 @@ class HubApi:
             raise ApiError(404, "that test isn't running any more")
         t.cancel.set()
         return {"ok": True}
+
+    # --------------------------------------------------------- Discord
+    def _discord(self):
+        if self.hub.is_single:
+            raise ApiError(400, "posting to Discord needs `mcsm start` (the server list)")
+        bot = self.hub.discord()
+        if bot is None:
+            raise ApiError(400, "set up the Discord bot first")
+        return bot
+
+    def discord_info(self, q, b) -> dict:
+        from .discord import DEVELOPER_PORTAL, Discord
+        s = self.hub.discord_settings() if not self.hub.is_single else {"set": False, "bot": None}
+        return {**s, "portal": DEVELOPER_PORTAL,
+                "invite_url": Discord.invite_url(s["bot"]["id"]) if s.get("bot") else None}
+
+    def save_discord(self, q, b) -> dict:
+        if self.hub.is_single:
+            raise ApiError(400, "posting to Discord needs `mcsm start` (the server list)")
+        bot = self.hub.save_discord_token(str(b.get("token", "")))
+        return self.discord_info(q, b) | {"ok": True, "bot": bot}
 
     def use_public_ip(self, q, b) -> dict:
         """Find this network's public address and use it for friends' invite links."""
@@ -869,6 +894,7 @@ class Api:
         get("/api/client", self.client)
         post("/api/client", self.save_client)
         post("/api/client/new-link", self.new_client_link)
+        post("/api/client/discord", self.post_to_discord)
         get("/api/client/search", self.client_search)
         self.routes = r
         self.sampler = stats.Sampler()
@@ -1223,6 +1249,35 @@ class Api:
         if share["address"]:
             out["internet"] = Invite(share["address"].strip("[]"), share["port"], c.token).url
         return out
+
+    def post_to_discord(self, q, b) -> dict:
+        """Post this server's invite to a Discord channel (the links come from here, not the page)."""
+        from .discord import SNOWFLAKE, invite_message
+        from .properties import read_properties
+        hub = self.web.hub
+        if hub.is_single:
+            raise ApiError(400, "posting to Discord needs `mcsm start` (the server list)")
+        bot = hub.discord()
+        if bot is None:
+            raise ApiError(400, "set up the Discord bot first")
+        if not self.m.config.client.enabled:
+            raise ApiError(400, "turn on the friends' download first")
+        guild, channel = str(b.get("guild", "")), str(b.get("channel", ""))
+        if not (SNOWFLAKE.fullmatch(guild) and SNOWFLAKE.fullmatch(channel)):
+            raise ApiError(400, "pick a Discord server and channel")
+        if channel not in {c["id"] for c in bot.channels(guild)}:
+            raise ApiError(400, "that channel isn't in that Discord server")
+        wanted = [x for x in (b.get("links") or ["internet"]) if x in ("internet", "local")]
+        links = {k: v for k, v in self._invite_links().items() if k in wanted and v}
+        if not links:
+            raise ApiError(400, "there's no invite link to post yet"
+                           + ("; set your internet address (or use your public IP) first" if "internet" in wanted else ""))
+        name = read_properties(self.m.server_dir / "server.properties").get("motd") or self.d.server_id
+        text, embed = invite_message(str(b.get("message", "")), name, self.m.lock.minecraft or "", links)
+        r = bot.post(channel, text, embed)
+        hub.remember_discord_channel(guild, channel)
+        log.info("posted the friends' invite to Discord")
+        return {"ok": True, **r}
 
     def _invite_link(self) -> str | None:
         links = self._invite_links()

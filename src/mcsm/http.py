@@ -117,9 +117,11 @@ class HttpClient:
         raise HttpError(req.full_url, status, f"request failed: {last}")
 
     def get_json(self, url: str, params: dict[str, Any] | None = None,
-                 headers: dict[str, str] | None = None) -> Any:
+                 headers: dict[str, str] | None = None, cache: bool = True) -> Any:
+        """GET JSON. Answers are reused for a few minutes unless ``cache`` is False (use that
+        when the answer depends on who asks, e.g. a token in ``headers``)."""
         full = with_query(url, params)
-        hit = self._cache.get(full)
+        hit = self._cache.get(full) if cache else None
         if hit and time.monotonic() - hit[0] < self.cache_ttl:
             return hit[1]
         req = urllib.request.Request(full, headers={"User-Agent": USER_AGENT, "Accept": "application/json",
@@ -133,7 +135,8 @@ class HttpClient:
                 if attempt + 1 >= self.retries:
                     raise HttpError(full, None, f"request failed: {e}") from e
                 time.sleep(2**attempt)
-        self._cache[full] = (time.monotonic(), data)
+        if cache:
+            self._cache[full] = (time.monotonic(), data)
         return data
 
     def post_json(self, url: str, body: Any, headers: dict[str, str] | None = None) -> Any:

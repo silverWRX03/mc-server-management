@@ -45,7 +45,7 @@ class FakeHttp:
         self.posts: dict[str, object] = {}
         self.downloads: list[str] = []
 
-    def get_json(self, url, params=None, headers=None):
+    def get_json(self, url, params=None, headers=None, cache=True):
         full = url + ("?" + urllib.parse.urlencode(params) if params else "")
         for key in (full, url):
             if key in self.json:

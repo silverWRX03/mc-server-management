@@ -1221,6 +1221,7 @@ views.friends = () => {
           : h("div", { class: "invite" }, h("strong", {}, "Internet link"),
             h("div", { class: "muted small" }, "For friends elsewhere, mcsm needs your public address. It can find it for you.")),
         h("div", { class: "row mt-s" }, findIp,
+          links.internet || links.local ? h("button", { class: "btn", onclick: () => openDiscord(links) }, "💬 Post to Discord") : null,
           h("button", { class: "btn ghost", onclick: () => {
             if (confirm("Make a new link? The old one stops working (friends who already set up keep playing, but can't update until they get the new link).")) {
               act(() => api("/api/client/new-link", { method: "POST", body: {} }), "New link made").then((r) => { if (r) { data = r; render(); } });
@@ -1644,6 +1645,99 @@ function propsEditor(schema, values) {
 // Only the settings that differ from `base`, so untouched ones keep Minecraft's own defaults.
 function changedProps(values, base) {
   return Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== base[k]));
+}
+
+// ------------------------------------------------------------------ Discord
+// Posting the invite to a channel, through the user's own bot (a webhook only reaches one
+// channel). The first time, it walks through making the bot and adding it to a server.
+function openDiscord(links) {
+  if ($("#discord")) return;
+  const body = h("div", {});
+  const close = () => $("#discord").remove();
+  document.body.append(h("div", { class: "modal-backdrop", id: "discord", role: "dialog", "aria-modal": "true", "aria-labelledby": "discord-title" },
+    h("div", { class: "modal discord" },
+      h("div", { class: "row" }, h("h2", { id: "discord-title", class: "grow" }, "Post the invite to Discord"),
+        h("button", { class: "btn ghost small", onclick: close }, "Close")),
+      body)));
+  const ext = (href, text) => h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text);
+
+  const askToken = (info) => {
+    const input = h("input", { type: "password", autocomplete: "off", placeholder: "Paste the bot token", "aria-label": "Bot token", class: "grow" });
+    const save = h("button", { class: "btn primary", onclick: async () => {
+      save.disabled = true;
+      try {
+        const r = await api("/api/hub/discord", { method: "POST", body: { token: input.value } });
+        toast(`Connected as ${r.bot.name}`);
+        load();
+      } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, true); save.disabled = false; }
+    } }, "Connect");
+    fill(body,
+      h("p", {}, "mcsm posts through a Discord bot that belongs to you. Setting one up takes a couple of minutes, once:"),
+      h("ol", { class: "steps" },
+        h("li", {}, "Open the ", ext(info.portal, "Discord Developer Portal ↗"), " and press ", h("strong", {}, "New Application"), ". Name it (e.g. “Minecraft server”)."),
+        h("li", {}, "Open the ", h("strong", {}, "Bot"), " tab, press ", h("strong", {}, "Reset Token"), ", then ", h("strong", {}, "Copy"), "."),
+        h("li", {}, "Paste the token here. mcsm checks it with Discord and keeps it in mcsm settings; it never leaves this computer otherwise.")),
+      h("div", { class: "row" }, input, save),
+      h("p", { class: "muted small" }, "The bot only needs to see channels and send messages. mcsm never reads messages, and its posts can't ping @everyone."));
+    input.focus();
+  };
+
+  const pick = async (info) => {
+    let guilds;
+    try { guilds = (await api("/api/hub/discord/guilds")).guilds; }
+    catch (e) { fill(body, h("div", { class: "notice bad" }, e.message), h("button", { class: "btn mt-s", onclick: () => askToken(info) }, "Use another bot token")); return; }
+    const addBot = h("p", { class: "small" }, ext(info.invite_url, `Add ${info.bot.name} to a Discord server ↗`),
+      " (you need “Manage Server” there), then ", h("button", { class: "link-btn", onclick: load }, "refresh the list"), ".");
+    if (!guilds.length) {
+      fill(body, h("div", { class: "notice" }, h("strong", {}, `${info.bot.name} isn't in any Discord server yet. `), "Add it to the one you want to post in:"), addBot);
+      return;
+    }
+    const guildSel = h("select", { "aria-label": "Discord server" }, guilds.map((g) => h("option", { value: g.id }, g.name)));
+    const chanSel = h("select", { "aria-label": "Channel" });
+    const loadChannels = async () => {
+      fill(chanSel, h("option", { value: "" }, "Loading…"));
+      const r = await api(`/api/hub/discord/channels?guild=${guildSel.value}`).catch((e) => { toast(e.message, true); return null; });
+      const chans = r ? r.channels : [];
+      fill(chanSel, chans.length ? chans.map((c) => h("option", { value: c.id }, (c.category ? `${c.category} / ` : "") + "#" + c.name + (c.kind === "announcements" ? " (announcements)" : "")))
+        : h("option", { value: "" }, "No text channels the bot can see"));
+      if (chans.some((c) => c.id === info.channel)) chanSel.value = info.channel;
+    };
+    guildSel.addEventListener("change", loadChannels);
+    if (guilds.some((g) => g.id === info.guild)) guildSel.value = info.guild;
+    const name = (hubInfo && hubInfo.servers && (hubInfo.servers.find((x) => x.id === server) || {}).name) || "our Minecraft server";
+    const message = h("textarea", { rows: 3, maxlength: 1800, "aria-label": "Message" },
+      `${name} is up! Open the link, run the download, and it sets up Minecraft with everything you need to join.`);
+    const useInternet = h("input", { type: "checkbox", checked: !!links.internet, disabled: !links.internet });
+    const useLocal = h("input", { type: "checkbox", checked: !links.internet && !!links.local, disabled: !links.local });
+    const post = h("button", { class: "btn primary", onclick: async () => {
+      const chosen = [useInternet.checked ? "internet" : null, useLocal.checked ? "local" : null].filter(Boolean);
+      if (!chanSel.value) { toast("Pick a channel", true); return; }
+      if (!chosen.length) { toast("Pick at least one link to post", true); return; }
+      post.disabled = true;
+      try {
+        await api("/api/client/discord", { method: "POST", body: { guild: guildSel.value, channel: chanSel.value, message: message.value, links: chosen } });
+        toast(`Posted to #${chanSel.selectedOptions[0].textContent.split("#").pop().replace(/ \(.*$/, "")}`);
+        close();
+      } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, true); post.disabled = false; }
+    } }, "Post");
+    fill(body,
+      h("div", { class: "grid" }, h("label", {}, "Discord server", guildSel), h("label", {}, "Channel", chanSel)),
+      h("label", { class: "mt-s" }, "Message", message),
+      h("div", { class: "mt-s" },
+        h("label", { class: "row" }, useInternet, h("span", {}, "Internet link", links.internet ? "" : " (use your public IP on the Friends page first)")),
+        h("label", { class: "row" }, useLocal, h("span", {}, "Local link (only works on this computer's network)"))),
+      h("div", { class: "row mt" }, post, h("span", { class: "muted small grow" }, `Posting as ${info.bot.name}.`)),
+      addBot);
+    loadChannels();
+  };
+
+  const load = async () => {
+    fill(body, h("p", { class: "muted" }, "Loading…"));
+    const info = await api("/api/hub/discord").catch((e) => { fill(body, h("div", { class: "notice bad" }, e.message)); return null; });
+    if (!info) return;
+    if (info.set) pick(info); else askToken(info);
+  };
+  load();
 }
 
 // ------------------------------------------------------------ try before you buy
@@ -2203,7 +2297,22 @@ views.mcsm = () => {
       r.set ? h("p", { class: "small ok-text" }, "✓ A key is saved.") : null));
   };
   renderCf();
-  fill($("#main"), security, network, sharing, cf, about);
+  // The Discord bot that posts invites (set up from a server's Friends page)
+  const dc = h("div", { class: "mb" });
+  const renderDc = async () => {
+    if (hubInfo && hubInfo.single) return;
+    const r = await api("/api/hub/discord").catch(() => null);
+    if (!r) return;
+    fill(dc, card("Discord",
+      h("p", { class: "muted small" }, "Post your friends' invite to a Discord channel from a server's Friends page (“Post to Discord”)."),
+      r.set ? h("div", { class: "row" }, h("span", { class: "grow small ok-text" }, `✓ Connected as ${r.bot ? r.bot.name : "your bot"}.`),
+        r.invite_url ? h("a", { class: "btn small", href: r.invite_url, target: "_blank", rel: "noopener noreferrer" }, "Add it to another Discord server ↗") : null,
+        h("button", { class: "btn ghost small", onclick: () => confirm("Disconnect the Discord bot? (It stays in your Discord servers until you remove it there.)") &&
+          act(() => api("/api/hub/discord", { method: "POST", body: { token: "" } }), "Discord bot disconnected").then(renderDc) }, "Disconnect"))
+        : h("p", { class: "small" }, "Not set up. Use “Post to Discord” on a server's Friends page to connect a bot.")));
+  };
+  renderDc();
+  fill($("#main"), security, network, sharing, cf, dc, about);
   renderSecurity(hubInfo);
   renderSharing(hubInfo);
   loadAbout();
