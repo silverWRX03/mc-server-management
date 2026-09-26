@@ -240,6 +240,24 @@ def test_friends_page_and_download(tmp_path, http, modrinth, fake_template, monk
                 urllib.request.urlopen(bad)
             assert e.value.code == 404
 
+        # Your own files for players come from the share server, and only from there.
+        from mcsm.clientpack import client_dir
+        client_dir(configmod.load(root)).mkdir()
+        (client_dir(configmod.load(root)) / "My Tweaks-1.0.jar").write_bytes(b"homemade")
+        assert c.get("/api/servers/survival/client")[1]["local_mods"] == ["My Tweaks-1.0.jar"]
+        with urllib.request.urlopen(base + "/pack.json") as r:
+            local = next(m for m in json.loads(r.read())["mods"] if m.get("local"))
+        assert local["url"] == f"{base}/mods/My%20Tweaks-1.0.jar"
+        with urllib.request.urlopen(local["url"]) as r:
+            assert r.read() == b"homemade"
+        fetched = join.Joiner(join.Invite("127.0.0.1", share_port, token), mc_dir=tmp_path / "y").fetch_pack()
+        assert any(m.get("local") for m in fetched["mods"])
+        with pytest.raises(join.JoinError):  # someone else's address for "your own" file: refused
+            join.validate_pack({**fetched, "mods": [{**local, "url": "http://evil.example/x.jar"}]}, base)
+        assert c.post("/api/servers/survival/client/local/remove", {"name": "My Tweaks-1.0.jar"})[0] == 200
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(local["url"])
+
         # Client-only mods and a new link, from the Friends page.
         modrinth.project("MAP", "minimap", "Mini Map", server_side="unsupported")
         modrinth.version("MAP", "2.0", ["1.21.1"])
@@ -267,3 +285,31 @@ def test_join_command_line(monkeypatch, capsys, launcher, http):
     assert cli.main(["join", f"http://mc.example.com:8766/join/{code}", "--yes"]) == 0
     assert got[0] == join.Invite("mc.example.com", 8766, code)
     assert cli.main(["join", "not an invite", "--yes"]) == 2
+
+
+def test_client_side_companions_of_server_mods_are_included(make_config, http, modrinth):
+    """A server mod that needs a client-only mod: the server skips it, players get it."""
+    modrinth.project("VOX", "voicechat-server", "Voice Server")
+    modrinth.version("VOX", "1.0", ["1.21.1"], deps=["VCC"])
+    modrinth.project("VCC", "voicechat-client", "Voice Client", server_side="unsupported")
+    modrinth.version("VCC", "1.0", ["1.21.1"])
+    cfg = make_config([ModSpec("modrinth", "voicechat-server")])
+    m = manager(cfg, http, ["1.21.1"])
+    assert update(m).ok
+    assert [x.name for x in m.lock.mods] == ["Voice Server"]
+    p = PackBuilder(m).build("mc.example.com")
+    extra = next(x for x in p["mods"] if x["name"] == "Voice Client")
+    assert extra["side"] == "client" and extra["needed_by"] == "Voice Server"
+
+
+def test_player_mod_search_leaves_out_server_only_mods(http):
+    from mcsm.browse import Browser, BrowseError
+    from mcsm.mods.modrinth import API
+    seen = []
+    http.json[f"{API}/search"] = {"total_hits": 0, "hits": []}
+    orig = http.get_json
+    http.get_json = lambda url, params=None, headers=None, cache=True: seen.append(params) or orig(url, params, headers)
+    Browser(http).search("modrinth", "mod", "map", loader="fabric", side="client")
+    assert ["client_side:required", "client_side:optional"] in json.loads(seen[-1]["facets"])
+    with pytest.raises(BrowseError):
+        Browser(http, "key").search("curseforge", "mod", "map", loader="fabric", side="client")

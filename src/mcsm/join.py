@@ -149,8 +149,10 @@ def _write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
-def validate_pack(pack: object) -> dict:
-    """Refuse anything unexpected in a pack before acting on it."""
+def validate_pack(pack: object, base: str | None = None) -> dict:
+    """Check a pack before using it. ``base`` is the invite link it came from: the server's
+    own files for players are downloaded from there (and only from there). Anything
+    unexpected is refused before it's acted on."""
     if not isinstance(pack, dict) or pack.get("format") != FORMAT:
         raise JoinError("the server sent something this version of mcsm doesn't understand; "
                         "download the invite again")
@@ -166,10 +168,15 @@ def validate_pack(pack: object) -> dict:
         raise JoinError("the server's mod loader version is missing")
     if not isinstance(pack.get("address"), str) or not re.fullmatch(r"[A-Za-z0-9.:\[\]-]{1,260}", pack["address"]):
         raise JoinError("the server's address is missing")
+    own = f"{base}/mods/" if base else None
+    if not own:  # no invite (a server folder on this computer): its own files can't be fetched
+        pack["mods"] = [m for m in pack.get("mods", []) if not (isinstance(m, dict) and m.get("local"))]
     for m in pack.get("mods", []):
         if not isinstance(m, dict) or not re.fullmatch(r"[^/\\:*?\"<>|]{1,200}\.jar", str(m.get("filename", ""))) \
                 or str(m["filename"]).startswith("."):
             raise JoinError("the server's mod list has a bad file name in it")
+        if m.get("local") and own and str(m.get("url", "")).startswith(own) and m.get("sha1"):
+            continue  # one of the server owner's own files, from the server itself
         if not allowed_url(str(m.get("url", ""))):
             raise JoinError(f"{m.get('name')}: mcsm only downloads mods from Modrinth or CurseForge")
         if not (m.get("sha512") or m.get("sha1")):
@@ -196,7 +203,7 @@ class Joiner:
                 raise JoinError("the server doesn't recognise this invite any more; ask for a new one") from e
             raise JoinError(f"couldn't reach the server at {self.invite.host}:{self.invite.port} ({e}). "
                             "Is mcsm running there, and is the share port forwarded?") from e
-        return validate_pack(pack)
+        return validate_pack(pack, self.invite.url)
 
     def profiles(self) -> list[Path]:
         found = [self.mc / f for f in PROFILE_FILES if (self.mc / f).exists()]

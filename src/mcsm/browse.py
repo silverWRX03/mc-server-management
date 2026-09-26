@@ -40,7 +40,7 @@ class Browser:
     # ------------------------------------------------------------ search
     def search(self, source: str = "modrinth", kind: str = "mod", query: str = "", loader: str | None = None,
                version: str | None = None, category: str | None = None, sort: str = "relevance",
-               offset: int = 0, early: bool = False) -> dict:
+               offset: int = 0, early: bool = False, side: str = "server") -> dict:
         """One page of results. For mods with a loader and a Minecraft version, only ones that
         really have a build for both (``early``: including ones with only alpha/beta builds)."""
         if kind not in ("mod", "modpack"):
@@ -49,7 +49,11 @@ class Browser:
             raise BrowseError("unknown sort order")
         offset = max(0, min(int(offset), 10_000))
         plugins = loader == "paper"
+        if side not in ("server", "client"):
+            raise BrowseError("unknown side")
         if source == "curseforge":
+            if side == "client":
+                raise BrowseError("mods for players come from Modrinth; switch the source to Modrinth")
             if plugins:
                 raise BrowseError("Paper plugins come from Modrinth; switch the source to Modrinth")
             if kind == "modpack":
@@ -57,7 +61,7 @@ class Browser:
             return self._cf_search(query, loader, version, category, sort, offset, early)
         if source != "modrinth":
             raise BrowseError("unknown source")
-        facets = [[f"project_type:{kind}"], ["server_side:required", "server_side:optional"]]
+        facets = [[f"project_type:{kind}"], [f"{side}_side:required", f"{side}_side:optional"]]
         if plugins and kind == "mod":
             facets = [["categories:paper", "categories:spigot", "categories:bukkit"]]
         elif loader and kind == "mod":

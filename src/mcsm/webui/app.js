@@ -1157,30 +1157,35 @@ views.settings = () => {
 // A download friends run to set up their Minecraft for this server (mods and all).
 views.friends = () => {
   const body = h("div");
-  const results = h("div");
-  const q = h("input", { type: "search", placeholder: "Search Modrinth for mods players can add, e.g. minimap, JEI, Sodium" });
   let data = null;
-  let timer;
   const save = async (changes, message) => {
     const r = await act(() => api("/api/client", { method: "POST", body: changes }), message);
     if (r) { data = r; render(); }
   };
-  const search = async () => {
-    if (!data || !data.enabled) return;
-    const term = q.value.trim();
-    const r = await api(`/api/client/search?${term ? "q=" + encodeURIComponent(term) : "top=1"}`).catch((e) => { toast(e.message, true); return null; });
-    if (!r || q.value.trim() !== term) return;
-    fill(results, term ? null : h("h3", { class: "mt-s" }, "Popular mods for players"),
-      r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
-        m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
-        h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
-        (data.pack && data.pack.mods.some((x) => x.project === "modrinth:" + m.id)) && !data.mods.includes(m.slug)
-          ? h("span", { class: "tag" }, "included")
-        : data.mods.includes(m.slug) || data.mods.includes(m.id) ? h("span", { class: "tag ok" }, "added")
-          : h("button", { class: "btn small primary", onclick: () => save({ mods: [...data.mods, m.slug] }, `${m.name} added for players`).then(search) }, "Add"),
-      )) : [h("p", { class: "empty" }, "No player mods found.")]);
+  const reload = async () => { const r = await api("/api/client").catch(() => null); if (r) { data = r; render(); } };
+  // Your own mod files for players (e.g. ones that aren't on Modrinth).
+  const picker = h("input", { type: "file", multiple: true, accept: ".jar", class: "hidden" });
+  picker.addEventListener("change", async () => {
+    for (const f of [...picker.files]) {
+      const r = await api(`/api/client/local?filename=${encodeURIComponent(f.name)}`, { method: "POST", raw: f })
+        .catch((e) => { toast(`${f.name}: ${e.message}`, true); return null; });
+      if (r) toast(`${f.name} added for players`);
+    }
+    picker.value = "";
+    reload();
+  });
+  // Mods the server's mods need on players' computers are added by themselves; say so once.
+  const announceCompanions = (d) => {
+    const key = `mcsm-companions-${server}`;
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem(key) || "[]"); } catch (_) { /* private mode */ }
+    const fresh = ((d.pack && d.pack.mods) || []).filter((m) => m.needed_by && !seen.includes(m.project));
+    if (!fresh.length) return;
+    const byMod = new Map();
+    for (const m of fresh) byMod.set(m.needed_by, [...(byMod.get(m.needed_by) || []), m.name]);
+    for (const [by, names] of byMod) toast(`Added ${names.join(", ")} for players, because ${by} needs ${names.length === 1 ? "it" : "them"} on their computers.`);
+    try { localStorage.setItem(key, JSON.stringify([...seen, ...fresh.map((m) => m.project)])); } catch (_) { /* private mode */ }
   };
-  q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
 
   const render = () => {
     const d = data;
@@ -1189,7 +1194,7 @@ views.friends = () => {
       return;
     }
     const toggle = h("input", { type: "checkbox", checked: d.enabled, onchange: (e) => save({ enabled: e.target.checked },
-      e.target.checked ? "Friend download switched on" : "Friend download switched off").then(search) });
+      e.target.checked ? "Friend download switched on" : "Friend download switched off") });
     const intro = card("Let friends set up their Minecraft",
       h("p", {}, "Share a link. Your friends download a small file that adds a ", h("strong", {}, (status && status.motd) || "server"),
         " instance to their launcher (Minecraft Launcher, Prism Launcher, Modrinth App or CurseForge: they choose) with the right Minecraft version, mod loader and mods, and puts this server in their multiplayer list. They sign in with their own Minecraft account as usual."),
@@ -1212,6 +1217,7 @@ views.friends = () => {
       if (r) { toast(`Your public address is ${r.ip}`); data = await api("/api/client"); render(); }
     } }, links.internet ? "Check my public IP again" : "🌐 Use my public IP");
     const pack = d.pack;
+    const companions = ((pack && pack.mods) || []).filter((m) => m.needed_by);
     const sideTag = (m) => h("span", { class: "tag" }, m.side === "client" ? "players only" : "server + players");
     fill(body,
       intro,
@@ -1248,17 +1254,28 @@ views.friends = () => {
         h("label", { class: "mt" }, "Memory for friends' Minecraft",
           (() => { const sel = h("select", { onchange: (e) => save({ memory_gb: Number(e.target.value) }, "Saved") },
             [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32].map((g) => h("option", { value: String(g) }, `${g} GB`))); sel.value = String(d.memory_gb); return sel; })()))),
-      d.loader === "vanilla" || d.loader === "paper" ? null : h("div", { class: "mt" }, card("Add mods just for players",
-        h("p", { class: "muted small" }, "Client-side mods like minimaps, recipe viewers or performance mods. The server's own mods that players need are included automatically."),
-        h("h3", { class: "mt-s" }, "Your players' mods"),
-        d.mods.length ? h("ul", { class: "list" }, d.mods.map((x) => h("li", {}, h("strong", { class: "grow" }, x),
-          h("button", { class: "btn small danger", onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`).then(search) }, "Remove"))))
-          : h("p", { class: "empty" }, "None yet. Add some below, or leave it: players get the server's mods either way."),
+      d.loader === "vanilla" || d.loader === "paper" ? null : h("div", { class: "mt" }, card("Mods for players",
+        h("p", { class: "muted small" }, "Client-side mods like minimaps, recipe viewers or performance mods. The server's own mods that players need are included automatically, and so are the client-side mods they need."),
+        h("div", { class: "source-buttons" },
+          h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: server, side: "client", loader: d.loader, version: d.minecraft || "" }) },
+            "🔎 Set up now", h("span", { class: "small muted" }, "Browse mods that run on players' computers")),
+          h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
+            h("span", { class: "small muted" }, ".jar files on this computer, for players")),
+          picker),
+        h("h3", { class: "mt" }, "Your players' mods"),
+        d.mods.length || d.local_mods.length || companions.length ? h("ul", { class: "list" },
+          d.mods.map((x) => h("li", {}, h("strong", { class: "grow" }, x),
+            h("button", { class: "btn small danger", onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`) }, "Remove"))),
+          d.local_mods.map((x) => h("li", {}, h("div", { class: "grow" }, h("strong", {}, x), h("span", { class: "tag" }, "local file")),
+            h("button", { class: "btn small danger", onclick: () => confirm(`Remove ${x} from the players' download?`) &&
+              act(() => api("/api/client/local/remove", { method: "POST", body: { name: x } }), `${x} removed`).then(reload) }, "Remove"))),
+          companions.map((m) => h("li", { class: "dep" }, h("div", { class: "grow" }, "↳ ", h("strong", {}, m.name),
+            h("span", { class: "tag" }, `added automatically: ${m.needed_by} needs it`)))))
+          : h("p", { class: "empty" }, "None yet. Leave it empty if you like: players get the server's mods either way."),
         h("div", { class: "row mt-s" }, testButton({ check: ["/api/client/check", {}], trial: null }),
-          h("span", { class: "muted small" }, "Checks the server's mods and these together.")),
-        h("h3", { class: "mt" }, "Find mods"), q, results)),
+          h("span", { class: "muted small" }, "Checks the server's mods and these together.")))),
     );
-    if (!results.childElementCount) search();
+    announceCompanions(d);
   };
   // Reached from a new server's setup: it's still installing (see the bar at the bottom).
   const installing = dock && dock.sid === server && !dock.done;
@@ -1268,7 +1285,7 @@ views.friends = () => {
       h("div", { class: "row mt-s" }, h("a", { class: "btn small", href: `#s/${server}/setup` }, "Back to the progress"))) : null,
     body);
   api("/api/client").then((r) => { data = r; render(); }).catch((e) => { if (!(e instanceof Unauthorized)) toast(e.message, true); });
-  return {};
+  return { refresh: reload };
 };
 
 // ---------------------------------------------------------- rich text (mod pages)
@@ -1422,11 +1439,12 @@ function browserPanel(params, host) {
   const target = params.get("target") || "setup";
   const loader = params.get("loader") || "";
   const noun = loader === "paper" ? "plugin" : kind;  // Paper runs plugins (from Modrinth)
+  const forPlayers = params.get("side") === "client";  // the Friends page: mods for players' computers
   const base = target === "setup" ? "/api/hub/browse" : `/api/servers/${encodeURIComponent(target)}/browse`;
   const st = { q: "", source: "modrinth", sort: "relevance", category: "", version: params.get("version") || "",
     offset: 0, total: 0, results: [], selected: new Map(), active: null, early: false, hidden: 0, earlyHidden: 0 };
   const earlyBox = h("input", { type: "checkbox", onchange: (e) => { st.early = e.target.checked; search(); } });
-  const earlyRow = kind === "mod" ? h("label", { class: "row small early-opt", title: EARLY_WARNING }, earlyBox,
+  const earlyRow = kind === "mod" && !forPlayers ? h("label", { class: "row small early-opt", title: EARLY_WARNING }, earlyBox,
     h("span", {}, "Also show mods with only alpha/beta builds (less stable)")) : null;
   const list = h("div", { class: "browse-results" });
   const details = h("div", { class: "browse-right" }, h("p", { class: "empty" }, `Pick a ${noun} on the left to read about it here.`));
@@ -1436,7 +1454,7 @@ function browserPanel(params, host) {
   const sort = h("select", { "aria-label": "Sort by" }, [["relevance", "Best match"], ["downloads", "Most downloaded"],
     ["follows", "Most followed"], ["newest", "Newest"], ["updated", "Recently updated"]].map(([v, l]) => h("option", { value: v }, l)));
   const source = h("select", { "aria-label": "Source" }, h("option", { value: "modrinth" }, "Modrinth"),
-    kind === "mod" && noun !== "plugin" ? h("option", { value: "curseforge" }, "CurseForge") : null);
+    kind === "mod" && noun !== "plugin" && !forPlayers ? h("option", { value: "curseforge" }, "CurseForge") : null);
   let cfKey = null;  // whether a CurseForge API key is set (asked once)
   const category = h("select", { "aria-label": "Category" }, h("option", { value: "" }, "All categories"));
   const version = h("input", { value: st.version, placeholder: "Any version", "aria-label": "Minecraft version", class: "narrow" });
@@ -1445,7 +1463,7 @@ function browserPanel(params, host) {
   const fmtNum = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
   // What a ticked mod brings along (the page adds those too).
   const needs = async (m) => {
-    if (m.source !== "modrinth" || m.deps) return;
+    if (m.source !== "modrinth" || m.deps || forPlayers) return;
     const reqBase = target === "setup" ? "/api/hub/mods/requires" : `/api/servers/${encodeURIComponent(target)}/mods/requires`;
     const p = new URLSearchParams({ id: m.id });
     if (m.channel && m.channel !== "release") p.set("channel", m.channel);
@@ -1499,6 +1517,7 @@ function browserPanel(params, host) {
     const p = new URLSearchParams({ type: kind, q: st.q, source: st.source, sort: st.sort, offset: String(st.offset) });
     if (st.category) p.set("category", st.category);
     if (st.early) p.set("early", "1");
+    if (forPlayers) p.set("side", "client");
     p.set("version", st.version);
     if (loader) p.set("loader", loader);
     if (!more) fill(list, h("p", { class: "empty" }, "Searching…"));
@@ -1579,6 +1598,14 @@ function browserPanel(params, host) {
     const mods = [...st.selected.values()].map((m) => ({ source: m.source, id: m.id, slug: m.slug, name: m.name,
       channel: m.channel && m.channel !== "release" ? m.channel : null }));
     if (!confirmEarly(mods)) return;
+    if (forPlayers) {  // extras in the friends' download (their dependencies come along there)
+      const cur = await api(`/api/servers/${encodeURIComponent(target)}/client`).catch(() => null);
+      if (!cur) return;
+      const r = await act(() => api(`/api/servers/${encodeURIComponent(target)}/client`, { method: "POST",
+        body: { mods: [...new Set([...cur.mods, ...mods.map((m) => m.slug || m.id)])] } }), `Added ${mods.map((m) => m.name).join(", ")} for players`);
+      if (r && host) host.changed();
+      return;
+    }
     if (target === "setup") {
       if (host) { host.addMods(mods); return; }
       for (const m of mods) setupAddMod(setupModKey(m), m.name, m.channel);
@@ -1604,7 +1631,7 @@ function browserPanel(params, host) {
   const el = h("div", { class: "browse" },
     h("div", { class: "browse-left" },
       h("div", { class: "browse-filters" },
-        h("div", { class: "row" }, h("strong", { class: "grow" }, { modpack: "Modpacks", plugin: "Plugins", mod: "Mods" }[noun]),
+        h("div", { class: "row" }, h("strong", { class: "grow" }, forPlayers ? "Mods for players" : { modpack: "Modpacks", plugin: "Plugins", mod: "Mods" }[noun]),
           loader ? h("span", { class: "tag" }, loader) : null,
           host ? h("button", { class: "btn ghost small", onclick: () => host.close() }, "Close") : h("a", { class: "btn ghost small", href: target === "setup" ? "#new" : `#s/${target}/mods` }, "Back")),
         q,

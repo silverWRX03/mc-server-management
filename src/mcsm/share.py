@@ -5,7 +5,8 @@ Minecraft port) and serves only, per server with a friend download switched on:
 
 * ``/join/<secret>``: a page with download buttons;
 * ``/join/<secret>/pack.json``: what the friend's Minecraft needs (clientpack.py);
-* ``/join/<secret>/download/<file>``: mcsm itself, named so it knows where to connect.
+* ``/join/<secret>/download/<file>``: mcsm itself, named so it knows where to connect;
+* ``/join/<secret>/mods/<file>``: your own mod files for players (the server's client-mods folder).
 
 There is no sign-in and nothing to change here; the secret in the link keeps servers
 from being found by guessing. The control panel stays on its own, private port.
@@ -23,7 +24,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from . import __version__, selfupdate
 from .clientpack import PackBuilder
@@ -147,7 +148,8 @@ class ShareHandler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
-        m = re.fullmatch(r"/join/([A-Za-z0-9_-]{16,64})(/pack\.json|/download/([a-z0-9-]+))?/?", self.path.split("?")[0])
+        m = re.fullmatch(r"/join/([A-Za-z0-9_-]{16,64})(/pack\.json|/download/([a-z0-9-]+)|/mods/([^/]{1,400}))?/?",
+                         self.path.split("?")[0])
         if not m:
             return self._text(404, "Nothing here. Ask the server's owner for an invite link.")
         token = m.group(1)
@@ -160,9 +162,26 @@ class ShareHandler(BaseHTTPRequestHandler):
         except Exception as e:
             log.warning("couldn't build the friend download for %s: %s", sid, e)
             return self._text(503, f"The server isn't ready for players yet ({e}). Try again later.")
-        if m.group(2) == "/pack.json":
-            return self._send(200, json.dumps(pack).encode(), "application/json")
         invite = Invite(host, port, token)
+        if m.group(2) == "/pack.json":
+            # Your own files come from here: point them at this address, as the friend reached it.
+            mods = [{**x, "url": f"{invite.url}/mods/{quote(x['filename'])}"} if x.get("local") else x
+                    for x in pack.get("mods", [])]
+            return self._send(200, json.dumps({**pack, "mods": mods}).encode(), "application/json")
+        if m.group(4):
+            from .clientpack import JAR_NAME, local_jars
+            name = unquote(m.group(4))
+            jar = next((p for p in local_jars(d.m.config) if p.name == name), None) if JAR_NAME.fullmatch(name) else None
+            if jar is None:
+                return self._text(404, "No such file.")
+            self.send_response(200)
+            for k, v in {**HEADERS, "Content-Type": "application/java-archive", "Content-Length": str(jar.stat().st_size)}.items():
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                with open(jar, "rb") as fh:
+                    shutil.copyfileobj(fh, self.wfile, 1 << 16)
+            return None
         if m.group(3):
             asset = ASSETS.get(m.group(3))
             if not asset:

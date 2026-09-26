@@ -70,7 +70,7 @@ SECURITY_HEADERS = {
 # Reachable before the first-run notice has been accepted.
 NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses", "/api/auth/change", "/api/hub"}
 # Routes whose request body is a file, streamed to disk rather than parsed as JSON.
-RAW_UPLOADS = {"/api/hub/stage", "/api/mods/local"}
+RAW_UPLOADS = {"/api/hub/stage", "/api/mods/local", "/api/client/local"}
 SERVER_PATH = re.compile(r"^/api/servers/([a-z0-9][a-z0-9-]{0,63})(/.*)$")
 
 
@@ -535,7 +535,8 @@ def browse_search(browser, q: dict, manager=None) -> dict:
     try:
         return browser.search(q.get("source", "modrinth"), kind, q.get("q", "").strip()[:100], loader or None,
                               version or None, q.get("category") or None, q.get("sort", "relevance"),
-                              int(q.get("offset", 0) or 0), early=q.get("early") == "1")
+                              int(q.get("offset", 0) or 0), early=q.get("early") == "1",
+                              side="client" if q.get("side") == "client" else "server")
     except BrowseError as e:
         raise ApiError(400, str(e)) from None
 
@@ -901,6 +902,8 @@ class Api:
         post("/api/client", self.save_client)
         post("/api/client/new-link", self.new_client_link)
         post("/api/client/discord", self.post_to_discord)
+        post("/api/client/local", self.upload_client_jar)
+        post("/api/client/local/remove", self.remove_client_jar)
         get("/api/client/search", self.client_search)
         self.routes = r
         self.sampler = stats.Sampler()
@@ -1256,6 +1259,30 @@ class Api:
             out["internet"] = Invite(share["address"].strip("[]"), share["port"], c.token).url
         return out
 
+    def upload_client_jar(self, q, handler) -> dict:
+        """One of your own mod files for players (e.g. a mod that isn't on Modrinth)."""
+        from .clientpack import JAR_NAME, client_dir
+        from .hub import receive
+        if handler.headers.get("X-MCSM") != "1":
+            raise ApiError(403, "missing X-MCSM header")
+        name = q.get("filename", "")
+        if not JAR_NAME.fullmatch(name):
+            raise ApiError(400, "only .jar files can be added for players")
+        folder = client_dir(self.m.config)
+        folder.mkdir(parents=True, exist_ok=True)
+        receive(handler, folder / name, MAX_UPLOAD)
+        log.info("added %s for players", name)
+        return {"ok": True, "name": name}
+
+    def remove_client_jar(self, q, b) -> dict:
+        from .clientpack import local_jars
+        jar = next((p for p in local_jars(self.m.config) if p.name == str(b.get("name", ""))), None)
+        if jar is None:
+            raise ApiError(404, "no such file")
+        jar.unlink()
+        log.info("removed %s for players", jar.name)
+        return {"ok": True}
+
     def post_to_discord(self, q, b) -> dict:
         """Post this server's invite to a Discord channel (the links come from here, not the page)."""
         from .discord import SNOWFLAKE, invite_message
@@ -1290,6 +1317,7 @@ class Api:
         return links.get("internet") or links.get("local")
 
     def client(self, q, b) -> dict:
+        from .clientpack import local_jars
         c = self.m.config.client
         hub = self.web.hub
         preview, error = None, None
@@ -1309,7 +1337,8 @@ class Api:
             "links": self._invite_links() if c.enabled else {},
             "share": hub.share_status() if not hub.is_single else None,
             "pack": preview, "pack_error": error,
-            "loader": self.m.config.server.loader,
+            "loader": self.m.config.server.loader, "minecraft": self.m.lock.minecraft or "",
+            "local_mods": [p.name for p in local_jars(self.m.config)],
         }
 
     def save_client(self, q, b) -> dict:
