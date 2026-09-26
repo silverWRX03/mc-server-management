@@ -1,5 +1,7 @@
 # mcsm: a forever Minecraft server
 
+<img src="docs/icon.png" alt="mcsm" width="128" align="right">
+
 `mcsm` runs your modded Minecraft server and **keeps it on the newest Minecraft
 release once your mods support it**. It watches for new releases and checks
 whether your loader and every mod you depend on (plus their dependencies) have

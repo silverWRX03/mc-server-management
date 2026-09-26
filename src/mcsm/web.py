@@ -55,7 +55,8 @@ MAX_ARCHIVE = 64 << 30
 LOCAL_ONLY = {"/api/open", "/api/hub/open"}  # they act on this computer's screen  # a whole server (worlds and all), for importing
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-          "/style.css": ("style.css", "text/css; charset=utf-8")}
+          "/style.css": ("style.css", "text/css; charset=utf-8"),
+          "/icon.png": ("icon.png", "image/png")}
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' https: data:; style-src 'self'; "
                                "script-src 'self'; connect-src 'self'; frame-ancestors 'none'",

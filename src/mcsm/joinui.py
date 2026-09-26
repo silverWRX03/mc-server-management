@@ -34,7 +34,7 @@ HEADERS = {
     "Cache-Control": "no-store",
 }
 STATIC = {"": ("join.html", "text/html; charset=utf-8"), "join.js": ("join.js", "text/javascript; charset=utf-8"),
-          "style.css": ("style.css", "text/css; charset=utf-8")}
+          "style.css": ("style.css", "text/css; charset=utf-8"), "icon.png": ("icon.png", "image/png")}
 IDLE_SECONDS = 180  # the page pings while it's open; stop a while after it's closed
 
 
