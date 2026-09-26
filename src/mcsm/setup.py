@@ -99,6 +99,7 @@ class SetupSpec:
     network_access: bool = False   # let other devices on the network open the control panel
     accept_eula: bool = False
     properties: dict[str, str] = field(default_factory=dict)  # advanced server.properties settings
+    friends: bool = False          # make a download that sets up friends' Minecraft for this server
 
     @classmethod
     def from_dict(cls, d: dict) -> SetupSpec:
@@ -139,6 +140,7 @@ class SetupSpec:
             network_access=bool(d.get("network_access", False)),
             accept_eula=d.get("accept_eula") is True,
             properties=serverprops.validate(d.get("properties")),
+            friends=d.get("friends") is True,
         )
         if spec.loader not in configmod.LOADERS:
             raise ConfigError(f"unknown server type {spec.loader!r}")
@@ -171,6 +173,10 @@ def configure(root: Path, spec: SetupSpec) -> configmod.Config:
         configmod.set_value(path, "web", "host", '"0.0.0.0"')
     if web_password:
         configmod.set_value(path, "web", "password", json.dumps(web_password))
+    if spec.friends:
+        from .clientpack import new_token
+        configmod.set_value(path, "client", "enabled", "true")
+        configmod.set_value(path, "client", "token", json.dumps(new_token()))
     for slug in spec.mods:
         configmod.append_mod(path, ModSpec("modrinth", slug, required=True))
     for slug in spec.optional_mods:

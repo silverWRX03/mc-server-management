@@ -12,15 +12,16 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-NOTICE_VERSION = 1
+NOTICE_VERSION = 2
 TITLE = "Before you start: what mcsm does and doesn't do"
 POINTS = [
     "mcsm runs your Minecraft server on this computer and keeps it and its mods up to date.",
     "It connects to the internet to download Minecraft, mod loaders, mods, Java and its own updates "
     "(from Mojang, Modrinth, CurseForge, Fabric, Quilt, NeoForge, Forge, Adoptium and GitHub).",
     "It does not collect usage data. There is no analytics, tracking, advertising or account.",
-    "Your worlds, settings and backups stay on this computer. Nothing is uploaded, "
-    "except messages to Discord if you set up a webhook.",
+    "Your worlds, settings and backups stay on this computer. Nothing is uploaded, except messages to "
+    "Discord if you set up a webhook. If you switch on a friend download, anyone with its link can see the "
+    "server's name, address, Minecraft version and mod list.",
     "It changes files in your server folder: it replaces the mods and loader files it installed, "
     "and makes a backup first.",
     "Moving a world to a newer Minecraft version can't be undone. Restoring a backup is the only way back.",

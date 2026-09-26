@@ -84,6 +84,8 @@ class Hub:
         self.self_update: dict | None = None
         self.open_browser = False
         self.ui = None
+        self.share = None           # the share server for friends' downloads, while one is switched on
+        self.share_error: str | None = None
         self._lock = threading.RLock()
         self._web = self._load_web()
 
@@ -99,6 +101,8 @@ class Hub:
         hub.stop_requested = daemon.stop_requested
         hub._lock = threading.RLock()
         hub.ui = None
+        hub.share = None
+        hub.share_error = None
         return hub
 
     # --------------------------------------------------------- settings
@@ -156,6 +160,43 @@ class Hub:
         data = self._hub_file()
         data.setdefault("web", {}).update(changes)
         self._save_hub_file(data)
+
+    # ---------------------------------------------------------- sharing
+    def share_settings(self) -> dict:
+        """Friends' downloads: the share server's port, and the address friends use (blank = the
+        address they opened the invite with)."""
+        from .share import DEFAULT_PORT
+        s = self._hub_file().get("share", {}) if not self.is_single else {}
+        return {"port": int(s.get("port", DEFAULT_PORT)), "address": str(s.get("address", ""))}
+
+    def save_share(self, port: int, address: str) -> None:
+        data = self._hub_file()
+        data["share"] = {"port": port, "address": address}
+        self._save_hub_file(data)
+        self.update_share(restart=True)
+
+    def update_share(self, restart: bool = False) -> None:
+        """Run the share server while any server has its friend download switched on."""
+        if self.is_single:
+            return
+        from .share import ShareServer
+        wanted = any(d.m.config.client.enabled for d in list(self.daemons.values()))
+        port = self.share_settings()["port"]
+        if self.share and (not wanted or restart or self.share.port != port):
+            self.share.stop()
+            self.share = None
+        if wanted and self.share is None:
+            server = ShareServer(self, port)
+            try:
+                server.start()
+                self.share, self.share_error = server, None
+            except OSError as e:
+                self.share_error = f"port {port} is busy ({e.strerror or e}); pick another in mcsm settings"
+                log.warning("couldn't start sharing: %s", self.share_error)
+
+    def share_status(self) -> dict:
+        from .cli import lan_ip
+        return {**self.share_settings(), "running": bool(self.share), "error": self.share_error, "lan_ip": lan_ip()}
 
     # ---------------------------------------------------------- servers
     def _extra_roots(self) -> list[Path]:
@@ -436,6 +477,7 @@ class Hub:
                 if now >= next_scan:
                     next_scan = now + SCAN_EVERY
                     self.scan()
+                    self.update_share()
                 if now >= next_self_check:
                     next_self_check = now + SELF_CHECK_INTERVAL
                     self.run_job("mcsm update check", self.check_self_update)
@@ -444,6 +486,8 @@ class Hub:
         finally:
             if ui:
                 ui.stop()
+            if self.share:
+                self.share.stop()
             self._stop_all()
             hub_pid_path(self.home).unlink(missing_ok=True)
 

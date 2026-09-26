@@ -123,6 +123,30 @@ def main() -> int:
             if after["minecraft"] == before:
                 print("(already on the newest compatible version)")
 
+        step("set up a player's Minecraft for this server (mcsm join)")
+        dot_mc = work / "dot-minecraft"  # stands in for the Minecraft Launcher's folder
+        dot_mc.mkdir()
+        (dot_mc / "launcher_profiles.json").write_text('{"profiles": {}}')
+        run(exe, "join", "--from-server", str(root), "--minecraft-dir", str(dot_mc), "--yes", "--no-launcher",
+            env=env, timeout=1800)
+        profiles = json.loads((dot_mc / "launcher_profiles.json").read_text())["profiles"]
+        profile = next((p for key, p in profiles.items() if key.startswith("mcsm-")), None)
+        if not profile:
+            raise Failed("no launcher installation was added")
+        version = json.loads((dot_mc / "versions" / profile["lastVersionId"] / f"{profile['lastVersionId']}.json").read_text())
+        parent = version["inheritsFrom"]
+        final = json.loads((root / "mcsm.lock.json").read_text())
+        if parent != final["minecraft"] and not (dot_mc / "versions" / parent / f"{parent}.json").is_file():
+            raise Failed(f"the {final['loader']} version {parent} wasn't installed for the launcher")
+        game = Path(profile["gameDir"])
+        jars = sorted(p.name for p in (game / "mods").glob("*.jar"))
+        if final["mods"] and not jars:
+            raise Failed("no mods were downloaded for the player")
+        if not (game / "servers.dat").is_file():
+            raise Failed("the server wasn't added to the multiplayer list")
+        print(f"launcher installation \"{profile['name']}\" -> {profile['lastVersionId']} (inherits {parent}), "
+              f"{len(jars)} mod(s): {', '.join(jars) or 'none'}")
+
         step("run the server with the web UI")
         log = open(work / "run.log", "w", encoding="utf-8")
         daemon = subprocess.Popen([exe, "-C", str(root), "run", "--web", "--web-port", str(PORT)], env=env,

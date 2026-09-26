@@ -118,11 +118,14 @@ class ModrinthFixture:
         self.http = http
         self.versions: dict[str, list[dict]] = {}
 
-    def project(self, pid: str, slug: str | None = None, title: str | None = None, server_side="required"):
+    def project(self, pid: str, slug: str | None = None, title: str | None = None, server_side="required",
+                client_side="required"):
         slug = slug or pid.lower()
-        body = {"id": pid, "slug": slug, "title": title or pid, "server_side": server_side}
+        body = {"id": pid, "slug": slug, "title": title or pid, "server_side": server_side, "client_side": client_side}
         self.http.json[f"{MODRINTH}/project/{pid}"] = body
         self.http.json[f"{MODRINTH}/project/{slug}"] = body
+        projects = [p for p in self.http.json.get(f"{MODRINTH}/projects", []) if p["id"] != pid]
+        self.http.json[f"{MODRINTH}/projects"] = projects + [body]  # the batch lookup
         self.versions[pid] = []
         self._publish(pid)
 
@@ -132,7 +135,7 @@ class ModrinthFixture:
         vid = f"{pid}-{number}"
         filename = filename or f"{pid}-{number}.jar"
         content = content if content is not None else f"{pid} {number}".encode()
-        url = f"https://cdn.test/{vid}/{filename}"
+        url = f"https://cdn.modrinth.com/data/{pid}/versions/{vid}/{filename}"
         self.http.files[url] = content
         n = len(self.versions[pid])
         self.versions[pid].append({
@@ -218,3 +221,15 @@ def make_config(tmp_path, fake_java):
         (server / "eula.txt").write_text("eula=true\n")
         return configmod.load(root)
     return make
+
+
+@pytest.fixture
+def fake_template(monkeypatch, fake_java):
+    """configure() writes a fresh mcsm.toml; point it at the fake java with short timeouts."""
+    real = configmod.render_template
+
+    def render(loader, minecraft):
+        text = real(loader, minecraft).replace('default = "java"', f"default = {json.dumps(str(fake_java))}")
+        return text.replace("warn_minutes = [10, 5, 1]", "warn_minutes = []") \
+                   .replace('startup_timeout = "10m"', 'startup_timeout = "30s"')
+    monkeypatch.setattr(configmod, "render_template", render)

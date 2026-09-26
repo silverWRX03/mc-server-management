@@ -914,6 +914,96 @@ views.settings = () => {
   return { onStatus: renderDanger };
 };
 
+// ------------------------------------------------------------------ friends
+// A download friends run to set up their Minecraft for this server (mods and all).
+views.friends = () => {
+  const body = h("div");
+  const results = h("div");
+  const q = h("input", { type: "search", placeholder: "Search Modrinth for mods players can add, e.g. minimap, JEI, Sodium" });
+  let data = null;
+  let timer;
+  const save = async (changes, message) => {
+    const r = await act(() => api("/api/client", { method: "POST", body: changes }), message);
+    if (r) { data = r; render(); }
+  };
+  const search = async () => {
+    if (!data || !data.enabled) return;
+    const term = q.value.trim();
+    const r = await api(`/api/client/search?${term ? "q=" + encodeURIComponent(term) : "top=1"}`).catch((e) => { toast(e.message, true); return null; });
+    if (!r || q.value.trim() !== term) return;
+    fill(results, term ? null : h("h3", { class: "mt-s" }, "Popular mods for players"),
+      r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
+        m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
+        h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
+        (data.pack && data.pack.mods.some((x) => x.project === "modrinth:" + m.id)) && !data.mods.includes(m.slug)
+          ? h("span", { class: "tag" }, "included")
+        : data.mods.includes(m.slug) || data.mods.includes(m.id) ? h("span", { class: "tag ok" }, "added")
+          : h("button", { class: "btn small primary", onclick: () => save({ mods: [...data.mods, m.slug] }, `${m.name} added for players`).then(search) }, "Add"),
+      )) : [h("p", { class: "empty" }, "No player mods found.")]);
+  };
+  q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
+
+  const render = () => {
+    const d = data;
+    if (!d.available) {
+      fill(body, card(null, h("p", {}, "Friend downloads are part of mcsm's server list. Start mcsm by double-clicking it (or `mcsm start`) to use them.")));
+      return;
+    }
+    const toggle = h("input", { type: "checkbox", checked: d.enabled, onchange: (e) => save({ enabled: e.target.checked },
+      e.target.checked ? "Friend download switched on" : "Friend download switched off").then(search) });
+    const intro = card("Let friends set up their Minecraft",
+      h("p", {}, "Share a link. Your friends download a small file that adds a ", h("strong", {}, (status && status.motd) || "server"),
+        " installation to their Minecraft Launcher with the right Minecraft version, mod loader and mods, and puts this server in their multiplayer list. They sign in with their own Minecraft account as usual."),
+      h("label", { class: "row mt-s" }, toggle, h("span", {}, "Make a download for friends")));
+    if (!d.enabled) { fill(body, intro); return; }
+    const s = d.share || {};
+    const link = h("input", { readonly: true, value: d.link || "", class: "grow mono", "aria-label": "Invite link" });
+    const copy = h("button", { class: "btn primary", onclick: async () => {
+      try { await navigator.clipboard.writeText(link.value); toast("Invite link copied"); }
+      catch (_) { link.select(); document.execCommand("copy"); toast("Invite link copied"); }
+    } }, "Copy");
+    const pack = d.pack;
+    const sideTag = (m) => h("span", { class: "tag" }, m.side === "client" ? "players only" : "server + players");
+    fill(body,
+      intro,
+      h("div", { class: "mt" }, card("Invite link",
+        h("div", { class: "row" }, link, copy,
+          h("button", { class: "btn ghost", onclick: () => {
+            if (confirm("Make a new link? The old one stops working (friends who already set up keep playing, but can't update until they get the new link).")) {
+              act(() => api("/api/client/new-link", { method: "POST", body: {} }), "New link made").then((r) => { if (r) { data = r; render(); } });
+            }
+          } }, "New link")),
+        s.error ? h("div", { class: "notice bad mt-s" }, s.error)
+          : h("p", { class: "muted small" }, s.running ? `Sharing on port ${s.port}.` : "Sharing starts in a few seconds."),
+        h("p", { class: "muted small" },
+          s.address ? `Friends connect to ${s.address}. ` : `The link uses this computer's address on your network (${s.lan_ip || "unknown"}), which works for friends on the same Wi-Fi. `,
+          "For friends elsewhere, forward TCP ports ", h("strong", {}, String(s.port)), " (the download) and your Minecraft port on your router, and set your public address under ",
+          h("a", { href: "#mcsm" }, "mcsm settings → Sharing"), "."))),
+      h("div", { class: "mt" }, card("What friends get",
+        d.pack_error ? h("div", { class: "notice warn" }, d.pack_error)
+          : !pack ? h("p", { class: "empty" }, "Install the server first; the list appears once it's set up.")
+          : [h("p", {}, `Minecraft ${pack.minecraft} with ${pack.loader === "vanilla" ? "no mod loader" : pack.loader + " " + pack.loader_version}, ${pack.mods.length} mod(s), ${pack.memory_gb} GB of memory.`),
+             pack.mods.length ? h("ul", { class: "list" }, pack.mods.map((m) => h("li", {}, h("span", { class: "grow" }, m.name), sideTag(m)))) : null,
+             pack.manual.length ? h("div", { class: "notice warn mt-s" }, "Players have to download these themselves (their authors block automatic downloads): ",
+               pack.manual.map((m) => m.name).join(", ")) : null,
+             pack.skipped.length ? h("div", { class: "notice warn mt-s" }, pack.skipped.map((x) => `${x.name}: ${x.reason}`).join("; ")) : null],
+        d.mods.length ? h("div", { class: "mt-s" }, h("strong", {}, "Mods you added for players: "),
+          d.mods.map((x) => h("span", { class: "tag" }, x, " ", h("button", { class: "link-btn", "aria-label": `Remove ${x}`,
+            onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`) }, "✕")))) : null,
+        h("label", { class: "mt" }, "Memory for friends' Minecraft",
+          (() => { const sel = h("select", { onchange: (e) => save({ memory_gb: Number(e.target.value) }, "Saved") },
+            [2, 3, 4, 6, 8, 10, 12].map((g) => h("option", { value: String(g) }, `${g} GB`))); sel.value = String(d.memory_gb); return sel; })()))),
+      d.loader === "vanilla" ? null : h("div", { class: "mt" }, card("Add mods just for players",
+        h("p", { class: "muted small" }, "Client-side mods like minimaps, recipe viewers or performance mods. The server's own mods that players need are included automatically."),
+        q, results)),
+    );
+    if (!results.childElementCount) search();
+  };
+  fill($("#main"), h("h2", { class: "view-title" }, "Friends"), body);
+  api("/api/client").then((r) => { data = r; render(); }).catch((e) => { if (!(e instanceof Unauthorized)) toast(e.message, true); });
+  return {};
+};
+
 // ------------------------------------------------------------ advanced settings
 // Every other server.properties setting, grouped; edits `values` (key -> string) in place.
 function propsEditor(schema, values) {
@@ -1027,6 +1117,27 @@ views.servers = () => {
 views.mcsm = () => {
   const security = h("div", { class: "mb" });
   const network = h("div", { class: "mb" });
+  const sharing = h("div", { class: "mb" });
+  let sharingDrawn = false;
+  const renderSharing = (hb) => {
+    if (!hb || hb.single || !hb.share) { fill(sharing); return; }
+    if (sharingDrawn) return;  // don't wipe what's being typed on every refresh
+    sharingDrawn = true;
+    const s = hb.share;
+    const address = h("input", { value: s.address, placeholder: s.lan_ip ? `automatic (${s.lan_ip} on your network)` : "automatic" });
+    const port = h("input", { type: "number", min: 1024, max: 65535, value: s.port });
+    fill(sharing, card("Sharing with friends",
+      h("p", { class: "muted small" }, "Used by servers whose friend download is switched on (see each server's Friends page)."),
+      h("div", { class: "grid" },
+        h("label", {}, "Your public address (host name or IP)", address,
+          h("span", { class: "muted small" }, "What friends outside your home network use to reach you. Leave empty to use the address in the link they opened.")),
+        h("label", {}, "Download port", port, h("span", { class: "muted small" }, "Forward this TCP port on your router, too."))),
+      h("div", { class: "row mt-s" }, h("button", { class: "btn primary", onclick: async () => {
+        const r = await act(() => api("/api/hub/share", { method: "POST", body: { address: address.value.trim(), port: Number(port.value) } }), "Saved");
+        if (r && r.share.error) toast(r.share.error, true);
+      } }, "Save"),
+      h("span", { class: "muted small" }, s.running ? `Sharing is on (port ${s.port}).` : s.error || "Sharing is off: no server has a friend download switched on."))));
+  };
   const renderSecurity = (hb) => {
     const a = (hb && hb.auth) || {};
     const label = { password: "Password", pin: "PIN", none: "No password (this computer only)" }[a.mode] || "…";
@@ -1077,15 +1188,16 @@ views.mcsm = () => {
           x.url.startsWith("http") ? h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" }, "terms ↗") : h("span", { class: "muted small" }, x.url)))))),
     );
   };
-  fill($("#main"), security, network, about);
+  fill($("#main"), security, network, sharing, about);
   renderSecurity(hubInfo);
+  renderSharing(hubInfo);
   loadAbout();
-  return { onHub: renderSecurity };
+  return { onHub: (hb) => { renderSecurity(hb); renderSharing(hb); } };
 };
 
 // ------------------------------------------------------------------- setup
 // Kept outside the view so choices survive re-renders and a failed attempt.
-const setupState = { loader: null, minecraft: "latest", mods: new Map(), motd: "A Minecraft server", properties: null, advancedOpen: false,
+const setupState = { friends: false, loader: null, minecraft: "latest", mods: new Map(), motd: "A Minecraft server", properties: null, advancedOpen: false,
   max_players: 20, difficulty: "normal", gamemode: "survival", port: 25565, memory_gb: null,
   network_access: null, accept_eula: false, submitted: false, prefilled: false };
 
@@ -1175,11 +1287,12 @@ views.setup = () => {
       const optional = [...st.mods].filter(([, m]) => !m.required).map(([slug]) => slug);
       const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
-        network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults) };
+        network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults),
+        friends: !!st.friends };
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));
         if (r) {
-          Object.assign(setupState, { loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
+          Object.assign(setupState, { friends: false, loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
             prefilled: false, properties: null, advancedOpen: false });
           location.hash = `#s/${r.id}/setup`;
         }
@@ -1212,6 +1325,11 @@ views.setup = () => {
             field("Port", inp("port", { type: "number", min: 1024, max: 65535 }), "25565 is Minecraft's usual port.")),
           opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null)),
         h("div", { class: "mt" }, advanced),
+        opts.network_option ? null : h("div", { class: "mt" }, card("Friends (optional)",
+          h("label", { class: "row check-row" },
+            h("input", { type: "checkbox", checked: st.friends, onchange: (e) => { st.friends = e.target.checked; } }),
+            h("span", {}, "Make a download for my friends: it sets up their Minecraft with this server's version and mods, and adds the server to their list")),
+          h("p", { class: "muted small" }, "You get a link to share on the server's Friends page. You can switch this on or off later."))),
         h("div", { class: "mt" }, card("Almost done",
           h("label", { class: "row" }, eula, h("span", {}, "I accept the ",
             h("a", { href: "https://aka.ms/MinecraftEULA", target: "_blank", rel: "noopener noreferrer" }, "Minecraft EULA ↗"),
@@ -1270,7 +1388,7 @@ views.setup = () => {
 
 // ------------------------------------------------------------------- router
 const SERVER_VIEWS = [["dashboard", "Dashboard"], ["console", "Console"], ["players", "Players"], ["updates", "Updates"],
-  ["mods", "Mods"], ["backups", "Backups"], ["java", "Java"], ["settings", "Settings"]];
+  ["mods", "Mods"], ["friends", "Friends"], ["backups", "Backups"], ["java", "Java"], ["settings", "Settings"]];
 let currentName = null;
 
 function renderNav() {

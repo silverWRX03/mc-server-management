@@ -13,18 +13,6 @@ from test_web import Client, wait_for
 
 
 @pytest.fixture
-def fake_template(monkeypatch, fake_java):
-    """configure() writes a fresh mcsm.toml; point it at the fake java with short timeouts."""
-    real = configmod.render_template
-
-    def render(loader, minecraft):
-        text = real(loader, minecraft).replace('default = "java"', f"default = {json.dumps(str(fake_java))}")
-        return text.replace("warn_minutes = [10, 5, 1]", "warn_minutes = []") \
-                   .replace('startup_timeout = "10m"', 'startup_timeout = "30s"')
-    monkeypatch.setattr(configmod, "render_template", render)
-
-
-@pytest.fixture
 def hub_env(tmp_path, http, modrinth, fake_template):
     modrinth.project("FAPI", "fabric-api", "Fabric API")
     modrinth.version("FAPI", "0.1", ["1.21.1"])

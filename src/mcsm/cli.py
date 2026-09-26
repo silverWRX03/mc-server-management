@@ -473,6 +473,36 @@ def cmd_web_password(args) -> int:
     return 0
 
 
+def cmd_join(args) -> int:
+    """Set up this computer's Minecraft to play on a friend's mcsm server."""
+    from . import join
+    mc_dir = args.minecraft_dir.resolve() if args.minecraft_dir else None
+    if args.from_server:
+        # A server on this computer: build its pack directly (e.g. to play on it yourself).
+        from .clientpack import PackBuilder
+        m = Manager(configmod.load(args.from_server.resolve()), echo=False)
+        port = read_properties(m.server_dir / "server.properties").get("server-port", "25565")
+        pack = PackBuilder(m).build("localhost" if port == "25565" else f"localhost:{port}")
+        return join.run_interactive(None, confirm=not args.yes and interactive(), open_launcher=not args.no_launcher,
+                                    pack=pack, mc_dir=mc_dir)
+    if args.invite:
+        text = args.invite
+    elif invite := join.invite_from_name(sys.executable if selfupdate.frozen() else sys.argv[0]):
+        text = invite.url
+    elif interactive():
+        text = input("Paste the invite link from the server's owner: ")
+    else:
+        print("usage: mcsm join <invite link>")
+        return 2
+    try:
+        invite = join.parse_invite(text)
+    except join.JoinError as e:
+        print(f"error: {e}")
+        return 2
+    return join.run_interactive(invite, confirm=not args.yes and interactive(), open_launcher=not args.no_launcher,
+                                mc_dir=mc_dir)
+
+
 def cmd_stop(args) -> int:
     from .hub import hub_stop_path, running_hub
     home = default_home()
@@ -741,7 +771,7 @@ def cmd_restore(args) -> int:
 
 
 # ------------------------------------------------------------------- main
-NOTICE_EXEMPT = {"notice", "licenses", "stop", "status", "web-password"}  # never blocked by the notice
+NOTICE_EXEMPT = {"notice", "licenses", "stop", "status", "web-password", "join"}  # never blocked by the notice
 
 
 def interactive() -> bool:
@@ -810,6 +840,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--web-host", help='web UI address; "0.0.0.0" to allow other devices on your network')
     s.add_argument("--web-port", type=int, help="web UI port (default 8765)")
     s.set_defaults(fn=cmd_start)
+
+    s = sub.add_parser("join", help="set up this computer's Minecraft to play on a friend's mcsm server")
+    s.add_argument("invite", nargs="?", help="the invite link (http://.../join/...)")
+    s.add_argument("-y", "--yes", action="store_true", help="don't ask before setting things up")
+    s.add_argument("--no-launcher", action="store_true", help="don't open the Minecraft Launcher afterwards")
+    s.add_argument("--from-server", type=Path, metavar="DIR",
+                   help="set up for a server on this computer (its folder), instead of an invite")
+    s.add_argument("--minecraft-dir", type=Path, metavar="DIR", help="the Minecraft Launcher's folder, if not the usual one")
+    s.set_defaults(fn=cmd_join)
 
     s = sub.add_parser("setup", help="set up a new server by answering questions in the terminal")
     s.set_defaults(fn=cmd_setup)
@@ -952,12 +991,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.fn is None:  # no command, e.g. the executable was double-clicked
-        args = parser.parse_args([*argv, "start"])
+        from .join import invite_from_name
+        # A download from a server's invite page is named after it: set up Minecraft to join.
+        joining = selfupdate.frozen() and invite_from_name(sys.executable) is not None
+        args = parser.parse_args([*argv, "join" if joining else "start"])
     selfupdate.cleanup_after_update()
     try:
         return _main(args)
     finally:
-        if selfupdate.frozen() and os.name == "nt" and args.command == "start" and not argv and interactive():
+        if selfupdate.frozen() and os.name == "nt" and args.command in ("start", "join") and not argv \
+                and interactive():
             # Double-clicked on Windows: keep the console open so messages can be read.
             try:
                 input("\nPress Enter to close this window...")
