@@ -1729,6 +1729,136 @@ function changedProps(values, base) {
   return Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== base[k]));
 }
 
+// ------------------------------------------------------------ remote access
+// Using mcsm from other devices: a strong password (never a PIN), then phones paired by
+// scanning a QR code. A paired phone gets its own key and only the everyday controls.
+function strongPassword(p) {
+  return p.length >= 12 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[^A-Za-z0-9\s]/.test(p);
+}
+function passwordChecklist(input) {
+  const rules = [["12 or more characters", (p) => p.length >= 12], ["an uppercase letter", (p) => /[A-Z]/.test(p)],
+    ["a lowercase letter", (p) => /[a-z]/.test(p)], ["a special character (like ! ? # %)", (p) => /[^A-Za-z0-9\s]/.test(p)]];
+  const list = h("ul", { class: "rules small" });
+  const update = () => fill(list, rules.map(([text, ok]) => h("li", { class: ok(input.value) ? "ok-text" : "muted" }, (ok(input.value) ? "✓ " : "• ") + text)));
+  input.addEventListener("input", update);
+  update();
+  return list;
+}
+function openRemoteAccess() {
+  if ($("#remote")) return;
+  const body = h("div", {});
+  let timer = null;
+  const close = () => { clearInterval(timer); $("#remote").remove(); };
+  document.body.append(h("div", { class: "modal-backdrop", id: "remote", role: "dialog", "aria-modal": "true", "aria-labelledby": "remote-title" },
+    h("div", { class: "modal remote" },
+      h("div", { class: "row" }, h("h2", { id: "remote-title", class: "grow" }, "Remote access & phones"), h("button", { class: "btn ghost small", onclick: close }, "Close")),
+      body)));
+  const step = (n, title, ...kids) => h("section", { class: "remote-step" }, h("h3", {}, `${n}. ${title}`), ...kids);
+  const load = async () => {
+    const r = await api("/api/hub/remote").catch((e) => { fill(body, h("div", { class: "notice bad" }, e.message)); return null; });
+    if (!r) return;
+    if (!r.available) { fill(body, h("p", {}, "Remote access is part of mcsm's server list. Start mcsm by double-clicking it (or `mcsm start`).")); return; }
+    // 1. a strong password
+    let pw;
+    if (r.strong) pw = h("p", { class: "ok-text" }, "✓ Your password is strong enough for remote access.");
+    else {
+      const p1 = h("input", { type: "password", autocomplete: "new-password", "aria-label": "New password" });
+      const p2 = h("input", { type: "password", autocomplete: "new-password", "aria-label": "Repeat it" });
+      const save = h("button", { class: "btn primary", onclick: async () => {
+        if (!strongPassword(p1.value)) { toast(`The password needs ${r.rules}.`, true); return; }
+        if (p1.value !== p2.value) { toast("The two passwords don't match", true); return; }
+        const ok = await act(() => api("/api/auth/change", { method: "POST", body: { mode: "password", secret: p1.value } }), "Password changed");
+        if (ok) load();
+      } }, "Set password");
+      pw = [h("p", { class: "small" }, r.mode === "pin" ? "PINs can't be used for remote access: they're too easy to guess. Choose a password:"
+          : "Choose a strong password (PINs aren't allowed for remote access):"),
+        h("div", { class: "grid" }, h("label", {}, "New password", p1), h("label", {}, "Repeat it", p2)), passwordChecklist(p1),
+        h("div", { class: "row" }, save)];
+    }
+    // 2. other devices
+    const toggle = h("input", { type: "checkbox", checked: r.network_access, disabled: !r.strong && !r.network_access, onchange: async (e) => {
+      const ok = await act(() => api("/api/hub/network", { method: "POST", body: { enabled: e.target.checked } }));
+      if (ok) toast(ok.restart_needed ? "Saved. Close and reopen mcsm (Quit, then start it again) for this to take effect." : "Saved");
+      load();
+    } });
+    const restartNote = r.configured !== r.running_on_network ? h("div", { class: "notice warn small mt-s" }, "Close and reopen mcsm (Quit, then start it again) for this to take effect.") : null;
+    // 3. away from home
+    const away = [
+      h("p", { class: "small" }, "On your home Wi-Fi, a phone reaches this computer directly. To use it away from home, use a private network app instead of opening ports:"),
+      h("ol", { class: "steps small" },
+        h("li", {}, "Install ", h("a", { href: "https://tailscale.com/download", target: "_blank", rel: "noopener noreferrer" }, "Tailscale ↗"), " (free for personal use) on this computer and on your phone."),
+        h("li", {}, "Sign in to the same account on both."),
+        h("li", {}, "Reopen this window: a Tailscale address appears under “Pair a phone”.")),
+      h("div", { class: "notice warn small" }, h("strong", {}, "Don't forward the control panel's port on your router. "),
+        "That puts it on the open internet, where bots try passwords all day. Tailscale keeps it private and encrypted.")];
+    // HTTPS (optional)
+    const cert = h("input", { value: r.tls_cert || "", placeholder: "Certificate file (.crt / .pem)", "aria-label": "Certificate file" });
+    const key = h("input", { value: r.tls_key || "", placeholder: "Key file (.key / .pem)", "aria-label": "Key file" });
+    const https = h("details", { class: "mt-s" }, h("summary", {}, `HTTPS (encryption) ${r.tls ? "· on" : "· optional"}`),
+      h("p", { class: "small muted" }, "Tailscale already encrypts everything between your devices. To also serve the panel over HTTPS, " +
+        "give mcsm a certificate: with Tailscale, run `tailscale cert <this computer's name>` and enter the two files it makes."),
+      h("div", { class: "grid" }, cert, key),
+      h("div", { class: "row mt-s" }, h("button", { class: "btn", onclick: () => act(() => api("/api/hub/remote/tls", { method: "POST", body: { cert: cert.value, key: key.value } }),
+        "Saved. Close and reopen mcsm to switch to HTTPS.").then(load) }, "Save")));
+    // 4. pair a phone
+    const pairBox = h("div", { class: "pair-box" });
+    const addr = h("select", { "aria-label": "Address the phone uses" }, r.addresses.map((a) => h("option", { value: a.host }, a.label)));
+    const pair = h("button", { class: "btn primary", disabled: !r.strong || !r.running_on_network || !r.addresses.length, onclick: async () => {
+      const p = await api("/api/hub/devices/pair", { method: "POST", body: { host: addr.value } }).catch((e) => { toast(e.message, true); return null; });
+      if (!p) return;
+      let left = p.expires_in;
+      const clock = h("span", { class: "muted small" });
+      const tick = () => { left -= 1; clock.textContent = left > 0 ? `This code works once, for ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} more.` : "This code has expired; make a new one."; if (left <= 0) { clearInterval(timer); pairBox.querySelector("img").classList.add("expired"); } };
+      clearInterval(timer);
+      timer = setInterval(tick, 1000);
+      tick();
+      fill(pairBox, h("img", { class: "qr", alt: "QR code for pairing a phone", src: "data:image/svg+xml;base64," + btoa(p.qr) }),
+        h("p", { class: "small" }, "Scan it with the phone's camera, open the link, and give the phone a name. Then use ", h("strong", {}, "Add to Home screen"), " in the phone's browser for an app icon."),
+        clock);
+    } }, "Show a pairing QR code");
+    const devices = r.devices.length ? h("ul", { class: "list" }, r.devices.map((d) => h("li", {},
+      h("div", { class: "grow" }, h("strong", {}, d.name), h("div", { class: "muted small" }, `paired ${new Date(d.created * 1000).toLocaleDateString()} · last used ${ago(d.last_seen)}${d.last_ip ? " from " + d.last_ip : ""}`)),
+      h("button", { class: "btn small danger", onclick: () => confirm(`Sign out ${d.name}? It will need to be paired again.`) &&
+        act(() => api("/api/hub/devices/remove", { method: "POST", body: { id: d.id } }), `${d.name} signed out`).then(load) }, "Sign out"))))
+      : h("p", { class: "empty" }, "No phones paired yet.");
+    fill(body,
+      step(1, "A strong password", pw),
+      step(2, "Let other devices connect", h("label", { class: "row" }, toggle, h("span", {}, "Allow access to this control panel from other devices (phones, other computers)")),
+        !r.strong ? h("p", { class: "small muted" }, "Set a strong password first.") : null, restartNote),
+      step(3, "Away from home", ...away, https),
+      step(4, "Pair a phone",
+        h("p", { class: "small" }, "A paired phone signs in by itself and can start, stop and restart servers, make backups, run updates and manage players. " +
+          "It can't change settings, mods or files, or use the console. Changing your password signs all phones out."),
+        r.addresses.length ? h("div", { class: "row" }, addr, pair) : h("p", { class: "small muted" }, "No network address found for this computer."),
+        !r.running_on_network ? h("p", { class: "small muted" }, "Pairing works once access from other devices is on and mcsm has been reopened.") : null,
+        pairBox),
+      step(5, "Paired phones", devices,
+        r.devices.length > 1 ? h("button", { class: "btn ghost small", onclick: () => confirm("Sign out every paired phone?") &&
+          act(() => api("/api/hub/devices/remove", { method: "POST", body: { id: "all" } }), "All phones signed out").then(load) }, "Sign out all") : null));
+  };
+  load();
+}
+// The page a phone opens from the QR code: name it, and it's paired.
+function showPairing(code) {
+  $("#app").classList.add("hidden");
+  const name = h("input", { value: /Android/i.test(navigator.userAgent) ? "Android phone" : /iPhone|iPad/i.test(navigator.userAgent) ? "iPhone" : "My phone",
+    maxlength: 40, "aria-label": "Name for this phone" });
+  const go = h("button", { class: "btn primary", onclick: async () => {
+    go.disabled = true;
+    try {
+      await api("/api/pair", { method: "POST", body: { code, name: name.value } });
+      history.replaceState(null, "", location.pathname);
+      toast("Paired. This phone now signs in by itself.");
+      start();
+    } catch (e) { toast(e.message, true); go.disabled = false; }
+  } }, "Pair this phone");
+  const box = h("div", { class: "login-card" }, h("div", { class: "brand big" }, h("span", { class: "logo" }), "mcsm"),
+    h("p", {}, "Pair this phone with your Minecraft server manager?"),
+    h("label", {}, "Name it (so you can tell phones apart)", name), go,
+    h("p", { class: "muted small" }, "Only pair your own phone. You can sign it out any time in mcsm settings on the computer."));
+  document.body.append(h("div", { class: "login", id: "pairing" }, box));
+}
+
 // ------------------------------------------------------------------ Discord
 // Posting the invite to a channel, through the user's own bot (a webhook only reaches one
 // channel). The first time, it walks through making the bot and adding it to a server.
@@ -2320,13 +2450,12 @@ views.mcsm = () => {
         h("span", { class: "grow" }, a.managed ? "Password set in mcsm.toml ([web] password)" : a.default ? "Default password (PASSWORD) — please change it" : label),
         a.managed ? null : h("button", { class: "btn", onclick: () => showSecurity(false) }, "Change"))));
     if (!hb || hb.single) { fill(network); return; }
-    const box = h("input", { type: "checkbox", checked: hb.network_access, onchange: async (e) => {
-      const r = await act(() => api("/api/hub/network", { method: "POST", body: { enabled: e.target.checked } }));
-      if (r) toast(r.restart_needed ? "Saved. Close and reopen mcsm for this to take effect." : "Saved");
-    } });
-    fill(network, card("Network access",
-      h("label", { class: "row" }, box, h("span", {}, "Let other devices on my network (like my phone) open this control panel")),
-      h("p", { class: "muted small" }, `Servers are kept in ${hb.home}. This applies the next time mcsm starts.`)));
+    fill(network, card("Remote access & phones",
+      h("p", { class: "muted small" }, hb.network_access
+        ? "Other devices can open this control panel (with your strong password), and paired phones get the everyday controls."
+        : "Only this computer can open the control panel. Turn on remote access to use it from a phone or another computer."),
+      h("div", { class: "row" }, h("button", { class: "btn", onclick: openRemoteAccess }, "🔒 Remote access & phones…")),
+      h("p", { class: "muted small" }, `Servers are kept in ${hb.home}.`)));
   };
   const about = h("div", { class: "mt" });
   const loadAbout = async () => {
@@ -2797,7 +2926,10 @@ views.setup = () => {
             field("Memory", mem, [ram ? (st.memory_gb > ram - 2 ? `This computer has ${ram} GB. Leave some for Windows and other programs, or the server may crash.` : `This computer has ${ram} GB.`) : "",
               st.aikar && st.memory_gb > AIKAR_ABOVE_GB ? " Aikar's flags: on (smoother garbage collection)." : ""].join("") || null),
             portField()),
-          opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null)),
+          opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null,
+          opts.network_option ? null : h("div", { class: "row mt" },
+            h("button", { type: "button", class: "btn", onclick: openRemoteAccess }, "🔒 Remote access…"),
+            h("span", { class: "muted small" }, "Manage your servers from your phone or another computer (needs a strong password).")))),
         h("div", { class: "mt" }, advanced),
         opts.network_option ? null : h("div", { class: "mt" }, card("Friends (optional)",
           h("label", { class: "row check-row" },
@@ -2898,6 +3030,7 @@ views.setup = () => {
 };
 
 // ------------------------------------------------------------------- router
+const PHONE_VIEWS = ["dashboard", "players", "updates", "backups"];  // what a paired phone can use
 const SERVER_VIEWS = [["dashboard", "Dashboard"], ["console", "Console"], ["players", "Players"], ["updates", "Updates"],
   ["mods", "Mods"], ["friends", "Friends"], ["backups", "Backups"], ["java", "Java"], ["settings", "Settings"]];
 let currentName = null;
@@ -2912,14 +3045,15 @@ function renderNav() {
       hb.single ? null : a("#servers", "← All servers", false),
       h("div", { class: "nav-server" }, me ? me.name : server),
       pending ? a(link("setup"), "Setup", currentName === "setup")
-        : SERVER_VIEWS.map(([v, label]) => a(link(v), label, currentName === v,
+        : SERVER_VIEWS.filter(([v]) => !hb.device || PHONE_VIEWS.includes(v)).map(([v, label]) => a(link(v), label, currentName === v,
             v === "updates" ? h("span", { id: "nav-update-dot", class: "dot" + (me && me.update ? "" : " hidden") }) : null)),
     ] : [
       a("#servers", "Servers", currentName === "servers"),
-      hb.single ? null : a("#new", "New server", currentName === "new"),
+      hb.single || hb.device ? null : a("#new", "New server", currentName === "new"),
     ],
     h("div", { class: "nav-sep" }),
-    a("#mcsm", "mcsm settings", currentName === "mcsm"));
+    hb.device ? h("div", { class: "nav-server small", title: "A paired phone has the everyday controls only" }, `📱 ${hb.device} (limited)`)
+      : a("#mcsm", "mcsm settings", currentName === "mcsm"));
   const inServer = !!server;
   $(".server-id").classList.toggle("hidden", !inServer);
   $(".actions").classList.toggle("hidden", !inServer);
@@ -2959,6 +3093,8 @@ function route() {
 window.addEventListener("hashchange", () => { if (!$("#app").classList.contains("hidden")) route(); });
 
 async function start() {
+  if (/^#pair=/.test(location.hash)) { showPairing(location.hash.slice(6)); return; }
+  if ($("#pairing")) $("#pairing").remove();
   try { hubInfo = await api("/api/hub"); } catch (_) { return; }
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");

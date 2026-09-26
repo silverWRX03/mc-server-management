@@ -73,11 +73,20 @@ No account or usage data is sent to any of them. Their terms apply to your use.
 |---|---|---|
 | Mojang version manifest and profile API | Minecraft versions; player UUIDs when editing ops/bans offline | [Minecraft terms](https://www.minecraft.net/en-us/terms) |
 | Modrinth API | mod versions, search, identifying imported jars | [Modrinth terms](https://modrinth.com/legal/terms) |
-| CurseForge API | CurseForge mods, only with your own API key | [CurseForge API terms](https://support.curseforge.com/en/support/solutions/articles/9000207405) |
+| CurseForge API | CurseForge mods (with mcsm's built-in key in release builds, or your own) | [CurseForge API terms](https://support.curseforge.com/en/support/solutions/articles/9000207405) |
 | Fabric, Quilt, NeoForge and Forge metadata and maven servers | loader versions and installers | see each project |
+| PaperMC API (Fill) | Paper server builds | [papermc.io](https://papermc.io/) |
 | Adoptium API | Java downloads | [adoptium.net](https://adoptium.net/) |
 | GitHub API | checking for new mcsm releases | [GitHub terms](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) |
-| Discord webhooks | notifications, only if you configure one | [Discord terms](https://discord.com/terms) |
+| Discord webhooks and bot API | notifications and posting invites, only if you set them up | [Discord terms](https://discord.com/terms) |
+| ipify, ifconfig.co | your public IP address, only when you press "Use my public IP" | [ipify.org](https://www.ipify.org/) |
+| Tailscale (the app on your computer) | its address, for phone pairing, if you have it installed | [tailscale.com](https://tailscale.com/terms) |
+
+## Written for mcsm
+
+- `src/mcsm/qr.py`, the QR code encoder used for phone pairing, was written for mcsm from the
+  QR Code specification (ISO/IEC 18004), following the approach explained by Project Nayuki's
+  QR Code generator (MIT License, https://www.nayuki.io/page/qr-code-generator-library).
 
 ## AI assistance
 

@@ -74,6 +74,8 @@ class WebConfig:
     port: int = 8765
     password: str = ""   # empty = chosen in the web UI (starts as PASSWORD); set here to lock it
     allowed_hosts: list[str] = field(default_factory=list)  # extra host names, e.g. behind a proxy
+    tls_cert: str = ""   # HTTPS: a certificate and its key (PEM files), e.g. from `tailscale cert`
+    tls_key: str = ""
 
 
 @dataclass
@@ -248,6 +250,8 @@ def parse(root: Path, data: dict) -> Config:
             port=int(data.get("web", {}).get("port", 8765)),
             password=str(data.get("web", {}).get("password", "")),
             allowed_hosts=[str(x).lower() for x in data.get("web", {}).get("allowed_hosts", [])],
+            tls_cert=str(data.get("web", {}).get("tls_cert", "")),
+            tls_key=str(data.get("web", {}).get("tls_key", "")),
         ),
         discord_webhook=data.get("notify", {}).get("discord_webhook", ""),
         curseforge_api_key=(data.get("curseforge", {}).get("api_key", "")

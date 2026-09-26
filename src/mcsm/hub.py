@@ -192,6 +192,8 @@ class Hub:
             web.port = int(saved.get("port", web.port))
             web.password = str(saved.get("password", web.password))
             web.allowed_hosts = [str(x).lower() for x in saved.get("allowed_hosts", web.allowed_hosts)]
+            web.tls_cert = str(saved.get("tls_cert", web.tls_cert))
+            web.tls_key = str(saved.get("tls_key", web.tls_key))
         web.enabled = True
         return web
 
@@ -200,6 +202,9 @@ class Hub:
         data = self._hub_file()
         data.setdefault("web", {}).update(changes)
         self._save_hub_file(data)
+        for key, value in changes.items():  # what's configured now (the running panel keeps its address)
+            if hasattr(self.web, key):
+                setattr(self.web, key, value)
 
     # ------------------------------------------------------- CurseForge
     def curseforge_key(self) -> str:

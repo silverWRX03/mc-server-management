@@ -50,6 +50,18 @@ log = logging.getLogger(__name__)
 
 SESSION_COOKIE = "mcsm_session"
 SESSION_TTL = 7 * 86400
+DEVICE_COOKIE = "mcsm_device"
+# What a paired phone may do: look at things, and the everyday controls. Not uploads, config
+# files, the console, settings, Java, mods, exports or the sign-in itself.
+DEVICE_POSTS = {"/api/server/start", "/api/server/stop", "/api/server/restart", "/api/backups/create",
+                "/api/updates/check", "/api/updates/apply", "/api/players/action", "/api/logout"}
+DEVICE_HIDDEN_GETS = {"/api/configs/file", "/api/export/download", "/api/settings", "/api/hub/curseforge",
+                      "/api/hub/discord", "/api/hub/discord/guilds", "/api/hub/discord/channels",
+                      "/api/hub/remote", "/api/hub/saves"}
+
+
+def device_allowed(method: str, path: str) -> bool:
+    return path in DEVICE_POSTS if method == "POST" else path not in DEVICE_HIDDEN_GETS
 MAX_JSON = 1 << 20
 MAX_UPLOAD = 512 << 20
 MAX_ARCHIVE = 64 << 30
@@ -57,7 +69,8 @@ LOCAL_ONLY = {"/api/open", "/api/hub/open"}  # they act on this computer's scree
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
-          "/icon.png": ("icon.png", "image/png")}
+          "/icon.png": ("icon.png", "image/png"),
+          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json")}
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' https: data:; style-src 'self'; "
                                "script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
@@ -117,6 +130,7 @@ class WebUI:
         self.store = webauth.AuthStore(hub)   # the hub has the state_dir and [web] settings
         self.sessions: dict[str, float] = {}
         self.failures: dict[str, list[float]] = {}
+        self.devices = webauth.Devices(hub.state_dir)
         self.lock = threading.Lock()
         self.httpd: ThreadingHTTPServer | None = None
         self._apis: dict[str, Api] = {}
@@ -144,9 +158,15 @@ class WebUI:
         return self.api_for(only[0])
 
     @property
+    def tls(self) -> bool:
+        """HTTPS, with a certificate the user provides (encrypts sign-ins over a network)."""
+        cfg = self.hub.web
+        return bool(cfg.tls_cert and cfg.tls_key and Path(cfg.tls_cert).is_file() and Path(cfg.tls_key).is_file())
+
+    @property
     def url(self) -> str:
         host = "localhost" if self.host in ("127.0.0.1", "0.0.0.0", "::") else self.host
-        return f"http://{host}:{self.httpd.server_address[1] if self.httpd else self.port}/"
+        return f"{'https' if self.tls else 'http'}://{host}:{self.httpd.server_address[1] if self.httpd else self.port}/"
 
     def start(self) -> None:
         ui = self
@@ -155,6 +175,16 @@ class WebUI:
             web = ui
         self.httpd = _Server((self.host, self.port), Handler)
         self.httpd.daemon_threads = True
+        if self.tls:
+            import ssl
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            try:
+                context.load_cert_chain(self.hub.web.tls_cert, self.hub.web.tls_key)
+                self.httpd.socket = context.wrap_socket(self.httpd.socket, server_side=True)
+            except (OSError, ssl.SSLError) as e:
+                log.error("couldn't use the HTTPS certificate (%s); the control panel stays on plain HTTP", e)
+                self.hub.web.tls_cert = ""
         threading.Thread(target=self.httpd.serve_forever, daemon=True, name="web").start()
         log.info("web UI at %s - password: %s", self.url, webauth.describe(self.auth))
 
@@ -164,9 +194,12 @@ class WebUI:
             self.httpd.server_close()
 
     # ------------------------------------------------------------ sessions
-    def login(self, password: str, client: str) -> str:
+    def login(self, password: str, client: str, local: bool = True) -> str:
         now = time.time()
         auth = self.auth
+        if not local and not auth.remote_ready:
+            raise ApiError(403, "signing in from another device needs a strong password "
+                                f"({webauth.STRONG_RULES}); set one in mcsm settings on the server's own computer")
         with self.lock:
             recent = [t for t in self.failures.get(client, []) if now - t < 300]
             if len(recent) >= 5:
@@ -186,18 +219,30 @@ class WebUI:
         return token
 
     def change(self, mode: str, secret: str, local: bool) -> str:
-        """Change how the panel is protected; signs out everyone else and returns a new session."""
+        """Change how the panel is protected; signs out everyone else (paired phones too) and
+        returns a new session."""
         if mode == "none" and not local:
             raise ApiError(400, "\"No password\" only works on the server's own computer; "
                                 "turn it on from there (or pick a PIN)")
+        if self.remote_on() and not (mode == "password" and webauth.strong_password(secret)):
+            raise ApiError(400, "remote access is on, so the password must be strong: " + webauth.STRONG_RULES
+                           + ". PINs can't be used then")
         self.store.set(mode, secret)
+        removed = self.devices.remove(None)
+        if removed:
+            log.info("signed out %d paired phone(s) because the password changed", removed)
         log.info("web UI sign-in changed to %s", {"none": "no password"}.get(mode, mode))
         with self.lock:
             self.sessions.clear()
             return self._new_session(time.time())
 
+    def remote_on(self) -> bool:
+        """Other devices can reach the panel (network access is on)."""
+        return self.hub.web.host not in ("127.0.0.1", "localhost", "::1")
+
     def reset_to_default(self) -> None:
         self.store.reset()
+        self.devices.remove(None)
         log.info("web UI password reset to the default from this computer")
         with self.lock:
             self.sessions.clear()
@@ -240,6 +285,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         headers = {"Cache-Control": "no-store", **SECURITY_HEADERS, **(headers or {})}
+        if self.web.tls:
+            headers["Strict-Transport-Security"] = "max-age=31536000"
         for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
@@ -279,8 +326,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise ApiError(400, "expected a JSON object")
         return data
 
-    def _cookie(self, token: str) -> str:
-        return f"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
+    def _cookie(self, token: str, name: str = SESSION_COOKIE, ttl: int = SESSION_TTL) -> str:
+        secure = "; Secure" if self.web.tls else ""
+        return f"{name}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}{secure}"
+
+    def _cookie_value(self, name: str) -> str | None:
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        return cookie[name].value if name in cookie else None
+
+    def _pair(self):
+        """A phone that scanned the pairing QR code: swap the one-time code for its own key."""
+        now = time.time()
+        client = self.client_address[0]
+        if not self.web.auth.remote_ready:
+            raise ApiError(403, "set a strong password on the server's computer before pairing a phone")
+        with self.web.lock:
+            recent = [t for t in self.web.failures.get("pair:" + client, []) if now - t < 300]
+            if len(recent) >= 5:
+                raise ApiError(429, "too many attempts; wait a few minutes")
+        b = self._body()
+        try:
+            token, device = self.web.devices.pair(str(b.get("code", "")), str(b.get("name", "")), client, now)
+        except ConfigError as e:
+            with self.web.lock:
+                self.web.failures["pair:" + client] = recent + [now]
+            raise ApiError(400, str(e)) from None
+        log.info("paired a phone: %s (from %s)", device["name"], client)
+        return self._json(200, {"ok": True, "name": device["name"]},
+                          {"Set-Cookie": self._cookie(token, DEVICE_COOKIE, webauth.DEVICE_DAYS * 86400)})
 
     def _local(self) -> bool:
         """A browser on this computer, talking to us directly (not through a proxy)."""
@@ -321,8 +394,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             if path == "/api/auth" and method == "GET":
                 return self._json(200, {**self.web.auth.info(), "local": local})
             if path == "/api/login" and method == "POST":
-                token = self.web.login(str(self._body().get("password", "")), self.client_address[0])
+                token = self.web.login(str(self._body().get("password", "")), self.client_address[0], local)
                 return self._json(200, {"ok": True}, {"Set-Cookie": self._cookie(token)})
+            if path == "/api/pair" and method == "POST":
+                return self._pair()
             if path == "/api/auth/reset-local" and method == "POST":
                 # Forgot the password? Whoever sits at the server's own computer can go back to
                 # the default (the same as `mcsm web-password --reset`); never over the network.
@@ -330,8 +405,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raise ApiError(403, "this only works in a browser on the server's own computer")
                 self.web.reset_to_default()
                 return self._json(200, {"ok": True, **self.web.auth.info()})
+            device = None
             if not self.web.valid(self._token(), local):
-                raise ApiError(401, "login required")
+                device = self.web.devices.find(self._cookie_value(DEVICE_COOKIE), time.time())
+                if device is None or not self.web.auth.remote_ready:
+                    raise ApiError(401, "login required")
+                self.web.devices.seen(device["id"], self.client_address[0], time.time())
+                if path == "/api/logout":  # a phone signing out forgets its key
+                    self.web.devices.remove(device["id"])
+                    log.info("paired phone %s signed out", device["name"])
+                    return self._json(200, {"ok": True}, {"Set-Cookie": f"{DEVICE_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict"})
+                if path == "/api/auth/change":
+                    raise ApiError(403, "a paired phone can't change the password; use the server's computer")
             if path == "/api/auth/change" and method == "POST":
                 b = self._body()
                 token = self.web.change(str(b.get("mode", "")), str(b.get("secret", "")), local)
@@ -345,13 +430,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(403, "opening folders only works in a browser on the server's own computer")
             handler = self.web.hub_api.routes.get((method, path))
             if handler is not None:
+                if device and not device_allowed(method, path):
+                    raise ApiError(403, "a paired phone can't do that; use the server's computer")
                 if path not in NOTICE_EXEMPT and not notice.accepted(self.web.hub.root):
                     raise ApiError(428, "accept the notice first")
                 if path in RAW_UPLOADS:
                     return self._json(200, handler(q, self))
                 result = handler(q, self._body() if method == "POST" else {})
-                if path == "/api/hub":
-                    result = {**result, "local": local}  # whether "Open folder" buttons can work
+                if path == "/api/hub":  # whether "Open folder" buttons can work; who's signed in
+                    result = {**result, "local": local, "device": device["name"] if device else None}
                 return self._json(200, result)
             if m := SERVER_PATH.match(path):
                 sid, path = m.group(1), "/api" + m.group(2)
@@ -363,8 +450,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(428, "accept the notice first")
             if path in LOCAL_ONLY and not local:
                 raise ApiError(403, "opening folders only works in a browser on the server's own computer")
+            if device and not device_allowed(method, path):
+                raise ApiError(403, "a paired phone can't do that; use the server's computer")
             api = self.web.api_for(sid)
             set_current_server(api.d.server_id)  # so this server's activity feed shows what happens
+            if device and method == "POST":
+                log.info("paired phone %s: %s", device["name"], path.removeprefix("/api/"))
             handler = api.routes.get((method, path))
             if handler is None:
                 raise ApiError(404, "not found")
@@ -442,6 +533,27 @@ def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_l
     # Only mods with a build for this loader *and* version (the search can't tell).
     return keep_buildable(provider.best_channels([r["id"] for r in results], loaders, version), results,
                           early=q.get("early") == "1")
+
+
+def tailscale_ip() -> str | None:
+    """This computer's Tailscale address, if Tailscale is installed and connected."""
+    import shutil
+    import subprocess
+    from .desktop import NO_WINDOW
+    exe = shutil.which("tailscale") or next((p for p in (r"C:\Program Files\Tailscale\tailscale.exe",
+                                                         "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+                                              if os.path.exists(p)), None)
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "ip", "-4"], capture_output=True, text=True, timeout=4, **NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    ip = out.strip().splitlines()[0].strip() if out.strip() else ""
+    try:
+        return ip if ipaddress.ip_address(ip) in ipaddress.ip_network("100.64.0.0/10") else None
+    except ValueError:
+        return None
 
 
 def early_channel(b: dict, mod: str) -> str | None:
@@ -584,6 +696,10 @@ class HubApi:
         r[("GET", "/api/hub/curseforge")] = self.curseforge_info
         r[("POST", "/api/hub/curseforge")] = self.save_curseforge
         r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
+        r[("GET", "/api/hub/remote")] = self.remote_info
+        r[("POST", "/api/hub/remote/tls")] = self.save_tls
+        r[("POST", "/api/hub/devices/pair")] = self.pair_device
+        r[("POST", "/api/hub/devices/remove")] = self.remove_device
         r[("GET", "/api/hub/discord")] = self.discord_info
         r[("POST", "/api/hub/discord")] = self.save_discord
         r[("GET", "/api/hub/discord/guilds")] = lambda q, b: {"guilds": self._discord().guilds()}
@@ -697,6 +813,79 @@ class HubApi:
             raise ApiError(404, "that test isn't running any more")
         t.cancel.set()
         return {"ok": True}
+
+    # ---------------------------------------------------- remote access
+    def _addresses(self) -> list[dict]:
+        """Addresses a phone might reach this computer at: the home network, a Tailscale
+        network (private and encrypted, works away from home), and an address you set."""
+        from .cli import lan_ip
+        out = []
+        lan = lan_ip()
+        if lan:
+            out.append({"label": f"Home network ({lan})", "host": lan, "kind": "lan"})
+        ts = tailscale_ip()
+        if ts:
+            out.append({"label": f"Tailscale ({ts}), works away from home", "host": ts, "kind": "tailscale"})
+        custom = (self.hub.share_settings().get("address") or "").strip("[]")
+        if custom and custom not in {a["host"] for a in out}:
+            out.append({"label": f"Your address ({custom})", "host": custom, "kind": "custom"})
+        return out
+
+    def remote_info(self, q, b) -> dict:
+        auth = self.web.auth
+        return {"available": not self.hub.is_single, "network_access": self.web.remote_on(),
+                "configured": self.hub.web.host not in ("127.0.0.1", "localhost", "::1"),
+                "running_on_network": self.web.host not in ("127.0.0.1", "localhost", "::1"),
+                "strong": auth.remote_ready, "mode": auth.mode, "rules": webauth.STRONG_RULES,
+                "port": self.web.httpd.server_address[1] if self.web.httpd else self.web.port,
+                "tls": self.web.tls, "tls_cert": self.hub.web.tls_cert, "tls_key": self.hub.web.tls_key,
+                "addresses": self._addresses(), "devices": self.web.devices.list()}
+
+    def save_tls(self, q, b) -> dict:
+        if self.hub.is_single:
+            raise ApiError(400, "set [web] tls_cert and tls_key in mcsm.toml for `mcsm run`")
+        cert, key = str(b.get("cert", "")).strip(), str(b.get("key", "")).strip()
+        if bool(cert) != bool(key):
+            raise ApiError(400, "give both the certificate file and its key file (or neither)")
+        if cert:
+            import ssl
+            for p in (cert, key):
+                if not Path(p).is_file():
+                    raise ApiError(400, f"{p} doesn't exist")
+            try:
+                ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
+            except (OSError, ssl.SSLError) as e:
+                raise ApiError(400, f"that certificate and key don't work together ({e})") from None
+        self.hub.save_web(tls_cert=cert, tls_key=key)
+        log.info("HTTPS for the control panel %s (applies when mcsm restarts)", "set up" if cert else "turned off")
+        return {"ok": True, "restart_needed": True}
+
+    def pair_device(self, q, b) -> dict:
+        """A one-time code, as a QR code, for a phone to scan (five minutes, once)."""
+        from . import qr
+        if self.hub.is_single:
+            raise ApiError(400, "phone pairing needs `mcsm start` (the server list)")
+        if not self.web.auth.remote_ready:
+            raise ApiError(400, "first set a strong password (" + webauth.STRONG_RULES + ")")
+        if not self.web.remote_on() or self.web.host in ("127.0.0.1", "localhost", "::1"):
+            raise ApiError(400, "turn on access from other devices first (and restart mcsm), so the phone can reach this computer")
+        host = str(b.get("host", ""))
+        if host not in {a["host"] for a in self._addresses()}:
+            raise ApiError(400, "pick one of the addresses listed")
+        code = self.web.devices.new_code(time.time())
+        port = self.web.httpd.server_address[1] if self.web.httpd else self.web.port
+        shown = f"[{host}]" if ":" in host else host
+        url = f"{'https' if self.web.tls else 'http'}://{shown}:{port}/#pair={code}"
+        log.info("made a phone pairing code (valid for five minutes)")
+        return {"url": url, "qr": qr.svg(url), "expires_in": webauth.PAIR_SECONDS}
+
+    def remove_device(self, q, b) -> dict:
+        which = b.get("id")
+        n = self.web.devices.remove(None if which == "all" else str(which or ""))
+        if not n:
+            raise ApiError(404, "no such phone")
+        log.info("removed %d paired phone(s)", n)
+        return {"ok": True, "devices": self.web.devices.list()}
 
     # --------------------------------------------------------- Discord
     def _discord(self):
@@ -815,6 +1004,9 @@ class HubApi:
         if self.hub.is_single:
             raise ApiError(400, "set [web] host in mcsm.toml for `mcsm run`")
         enabled = b.get("enabled") is True
+        if enabled and not self.web.auth.remote_ready:
+            raise ApiError(400, "first set a strong password (" + webauth.STRONG_RULES + "); "
+                                "PINs and \"no password\" can't be used for access from other devices")
         self.hub.save_web(host="0.0.0.0" if enabled else "127.0.0.1")
         log.info("network access to the control panel turned %s (applies when mcsm restarts)", "on" if enabled else "off")
         return {"ok": True, "restart_needed": enabled != (self.web.host in ("0.0.0.0", "::"))}
