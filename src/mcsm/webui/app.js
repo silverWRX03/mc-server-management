@@ -1590,6 +1590,7 @@ function browserPanel(params, host) {
 
 // ------------------------------------------------------------ advanced settings
 // Every other server.properties setting, grouped; edits `values` (key -> string) in place.
+const WORLD_CARD_PROPS = ["level-seed", "level-type", "generate-structures", "hardcore"];
 function propsEditor(schema, values) {
   const pretty = (c) => c.replace(/^minecraft:/, "").replace(/_/g, " ").replace(/^./, (x) => x.toUpperCase());
   const field = (p) => {
@@ -2473,7 +2474,8 @@ views.setup = () => {
     const advanced = h("details", { class: "card advanced", open: st.advancedOpen },
       h("summary", {}, "Advanced settings (optional)"),
       h("p", { class: "muted small" }, "The rest of Minecraft's server settings: PvP, spawn protection, view distance and more. The defaults suit most servers, and you can change these later in the server's Settings."),
-      propsEditor(opts.properties_schema, st.properties));
+      // The World card above covers the seed, type, structures and hardcore.
+      propsEditor(opts.properties_schema.filter((p) => !WORLD_CARD_PROPS.includes(p.key)), st.properties));
     advanced.addEventListener("toggle", () => { st.advancedOpen = advanced.open; });
 
     fill(main, intro,
