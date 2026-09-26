@@ -64,7 +64,7 @@ def test_mod_lists_only_show_mods_for_the_chosen_version(hub_env):
     hub.http.json[f"{API}/search"] = {"hits": []}
     seen, orig = [], hub.http.get_json
     hub.http.get_json = lambda url, params=None, headers=None: seen.append(params) or orig(url, params, headers)
-    facets = lambda: json.loads(seen[-1]["facets"])  # noqa: E731
+    facets = lambda: json.loads([p for p in seen if p and "facets" in p][-1]["facets"])  # noqa: E731
     assert c.get("/api/hub/mods/search?loader=fabric&version=1.20.1&top=1")[0] == 200
     assert ["versions:1.20.1"] in facets()
     assert c.get("/api/servers/alpha/mods/search?q=x")[0] == 200

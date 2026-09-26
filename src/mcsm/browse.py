@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from .http import HttpClient, HttpError
 from .mods import curseforge as cf
 from .mods.base import ModError
-from .mods.modrinth import API as MODRINTH
+from .mods.base import CHANNEL_RANK
+from .mods.modrinth import API as MODRINTH, ModrinthProvider, keep_buildable
 
 SORTS = ("relevance", "downloads", "follows", "newest", "updated")
 CF_SORT = {"relevance": None, "downloads": 6, "follows": 2, "newest": 11, "updated": 3}
@@ -38,7 +40,9 @@ class Browser:
     # ------------------------------------------------------------ search
     def search(self, source: str = "modrinth", kind: str = "mod", query: str = "", loader: str | None = None,
                version: str | None = None, category: str | None = None, sort: str = "relevance",
-               offset: int = 0) -> dict:
+               offset: int = 0, early: bool = False) -> dict:
+        """One page of results. For mods with a loader and a Minecraft version, only ones that
+        really have a build for both (``early``: including ones with only alpha/beta builds)."""
         if kind not in ("mod", "modpack"):
             raise BrowseError("unknown kind")
         if sort not in SORTS:
@@ -50,7 +54,7 @@ class Browser:
                 raise BrowseError("Paper plugins come from Modrinth; switch the source to Modrinth")
             if kind == "modpack":
                 raise BrowseError("CurseForge modpacks aren't supported yet; search Modrinth")
-            return self._cf_search(query, loader, version, category, sort, offset)
+            return self._cf_search(query, loader, version, category, sort, offset, early)
         if source != "modrinth":
             raise BrowseError("unknown source")
         facets = [[f"project_type:{kind}"], ["server_side:required", "server_side:optional"]]
@@ -75,14 +79,34 @@ class Browser:
             "versions": h.get("versions", [])[-6:], "kind": kind,
             "url": f"https://modrinth.com/{'plugin' if plugins else kind}/{h.get('slug') or h['project_id']}",
         } for h in data.get("hits", [])]
-        return {"results": hits, "total": data.get("total_hits", len(hits)), "offset": offset, "page": PAGE}
+        page = {"total": data.get("total_hits", len(hits)), "offset": offset, "page": PAGE}
+        if kind == "mod" and loader and version and hits:
+            from .loaders import LOADERS
+            loaders = LOADERS[loader].mod_loaders if loader in LOADERS else (loader,)
+            channels = ModrinthProvider(self.http).best_channels([h["id"] for h in hits], loaders, version)
+            return {**keep_buildable(channels, hits, early), **page}
+        return {"results": hits, "hidden": 0, "early_hidden": 0, **page}
 
     def _cf(self, path: str, params: dict | None = None):
         if not self.cf_key:
             raise BrowseError("searching CurseForge needs a CurseForge API key (Settings)")
         return self.http.get_json(f"{cf.API}{path}", params=params, headers={"x-api-key": self.cf_key})["data"]
 
-    def _cf_search(self, query, loader, version, category, sort, offset) -> dict:
+    def _cf_channels(self, ids: list[str], loader: str, version: str) -> dict[str, str | None]:
+        """Like ModrinthProvider.best_channels, from each CurseForge project's files."""
+        def one(mod_id: str) -> str | None:
+            try:
+                files = self._cf(f"/mods/{mod_id}/files", {"gameVersion": version, "modLoaderType": cf.LOADER_TYPES[loader],
+                                                          "pageSize": 50})
+            except HttpError:
+                return "release"
+            kinds = {cf.RELEASE_TYPES.get(f.get("releaseType"), "alpha") for f in files
+                     if version in f.get("gameVersions", [])}
+            return min(kinds, key=lambda k: CHANNEL_RANK[k]) if kinds else None
+        with ThreadPoolExecutor(max_workers=min(6, len(ids))) as pool:
+            return dict(zip(ids, pool.map(one, ids)))
+
+    def _cf_search(self, query, loader, version, category, sort, offset, early=False) -> dict:
         params = {"gameId": cf.MINECRAFT_GAME_ID, "classId": cf.MODS_CLASS_ID, "searchFilter": query,
                   "index": offset, "pageSize": PAGE, "sortOrder": "desc"}
         if CF_SORT[sort]:
@@ -102,8 +126,10 @@ class Browser:
             "categories": [c.get("name", "") for c in m.get("categories", [])][:4], "versions": [],
             "kind": "mod", "url": (m.get("links") or {}).get("websiteUrl") or f"{cf.WEBSITE}/{m.get('slug', '')}",
         } for m in self._cf("/mods/search", params)]
-        return {"results": hits, "total": offset + len(hits) + (PAGE if len(hits) == PAGE else 0),
-                "offset": offset, "page": PAGE}
+        page = {"total": offset + len(hits) + (PAGE if len(hits) == PAGE else 0), "offset": offset, "page": PAGE}
+        if loader in cf.LOADER_TYPES and version and hits:
+            return {**keep_buildable(self._cf_channels([h["id"] for h in hits], loader, version), hits, early), **page}
+        return {"results": hits, "hidden": 0, "early_hidden": 0, **page}
 
     # ----------------------------------------------------------- details
     def project(self, source: str, project_id: str) -> dict:

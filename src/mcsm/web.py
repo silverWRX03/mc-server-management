@@ -40,7 +40,8 @@ from .minecraft import Mojang
 from .http import HttpError, sha1_file
 from .java import JavaError
 from .mods import ModError
-from .mods.modrinth import ModrinthProvider
+from .mods.modrinth import ModrinthProvider, keep_buildable
+from .planner import lowest
 from .players import PlayerError, Players
 from .properties import read_properties, write_properties
 from .skins import SkinError, Skins
@@ -432,11 +433,22 @@ def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_l
     version = q.get("version", default_version) or None  # only mods with a build for it
     if version and not re.fullmatch(r"[A-Za-z0-9.+-]{1,32}", version):
         raise ApiError(400, "bad Minecraft version")
-    results = provider.search(query, LOADERS[loader_name].mod_loaders, limit=20,
-                              index="relevance" if query else "downloads", minecraft=version)
+    loaders = LOADERS[loader_name].mod_loaders
+    results = provider.search(query, loaders, limit=20, index="relevance" if query else "downloads", minecraft=version)
     for r in results:
         r["listed"] = r["id"] in listed or r["slug"] in listed
-    return {"results": results}
+    if not version:
+        return {"results": results, "hidden": 0, "early_hidden": 0}
+    # Only mods with a build for this loader *and* version (the search can't tell).
+    return keep_buildable(provider.best_channels([r["id"] for r in results], loaders, version), results,
+                          early=q.get("early") == "1")
+
+
+def early_channel(b: dict, mod: str) -> str | None:
+    """The early channel a mod was picked with (``"channels": {mod: "beta"}``), if any."""
+    channels = b.get("channels")
+    value = channels.get(mod) if isinstance(channels, dict) else None
+    return value if value in ("beta", "alpha") else None
 
 
 def run_check(hub, b: dict, work) -> dict:
@@ -506,7 +518,9 @@ def requirements_query(provider: ModrinthProvider, q: dict, manager=None) -> dic
     version = q.get("version")
     if version is None and manager is not None:
         version = manager.lock.minecraft
-    return mod_requirements(provider, mod_id, LOADERS[loader].mod_loaders, version or None)
+    channel = manager.config.updates.mod_channel if manager else "release"
+    return mod_requirements(provider, mod_id, LOADERS[loader].mod_loaders, version or None,
+                            channel=lowest(channel, q.get("channel") if q.get("channel") in ("beta", "alpha") else None))
 
 
 def browse_search(browser, q: dict, manager=None) -> dict:
@@ -521,7 +535,7 @@ def browse_search(browser, q: dict, manager=None) -> dict:
     try:
         return browser.search(q.get("source", "modrinth"), kind, q.get("q", "").strip()[:100], loader or None,
                               version or None, q.get("category") or None, q.get("sort", "relevance"),
-                              int(q.get("offset", 0) or 0))
+                              int(q.get("offset", 0) or 0), early=q.get("early") == "1")
     except BrowseError as e:
         raise ApiError(400, str(e)) from None
 
@@ -619,8 +633,9 @@ class HubApi:
         mods = [str(x) for x in (b.get("mods") or []) if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", str(x))]
         minecraft = str(b.get("minecraft") or "") or None
         provider = ModrinthProvider(self.hub.http)
+        channels = {m: early_channel(b, m) for m in mods if early_channel(b, m)}
         return run_check(self.hub, b, lambda progress: trial.check(provider, LOADERS[loader].mod_loaders, minecraft, mods,
-                                                                    progress=progress))
+                                                                    progress=progress, channels=channels))
 
     def check_status(self, q, b) -> dict:
         job = self.hub.checks.get(q.get("id", ""))
@@ -642,7 +657,7 @@ class HubApi:
             cfg = d.m.config
             loader = cfg.server.loader
             minecraft = d.m.lock.minecraft or cfg.server.minecraft
-            mods = [ModSpec(s.source, s.id) for s in cfg.mods]
+            mods = [ModSpec(s.source, s.id, channel=s.channel) for s in cfg.mods]
             java_from = cfg.state_dir / "java"
         else:
             loader = str(b.get("loader", ""))
@@ -655,7 +670,7 @@ class HubApi:
                 source, _, mod_id = str(item).partition(":") if ":" in str(item) else ("modrinth", "", str(item))
                 if source not in configmod.MOD_SOURCES or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", mod_id):
                     raise ApiError(400, f"{item!r} isn't a mod id")
-                mods.append(ModSpec(source, mod_id))
+                mods.append(ModSpec(source, mod_id, channel=early_channel(b, str(item))))
             java_from = next((dd.m.config.state_dir / "java" for dd in self.hub.daemons.values()
                               if (dd.m.config.state_dir / "java").is_dir()), None)
         if loader not in configmod.LOADERS or loader == "vanilla" and mods:
@@ -994,11 +1009,14 @@ class Api:
         if not loaders:
             return {"ok": True, "mods": [], "conflicts": [], "problems": [], "minecraft": self.m.lock.minecraft}
         mods = [s.id for s in self.m.config.mods if s.source == "modrinth"]
+        channels = {s.id: s.channel for s in self.m.config.mods if s.channel}
         if client:
             mods += list(self.m.config.client.mods)
         minecraft = self.m.lock.minecraft or (None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft)
         provider = self._modrinth()
-        return run_check(self.web.hub, b, lambda progress: trial.check(provider, loaders, minecraft, mods, progress=progress))
+        channel = self.m.config.updates.mod_channel
+        return run_check(self.web.hub, b, lambda progress: trial.check(provider, loaders, minecraft, mods, channel=channel,
+                                                                        progress=progress, channels=channels))
 
     def _configured_with_deps(self) -> list[dict]:
         """The mods in mcsm.toml, each with the dependencies installed for it (several mods can share one)."""
@@ -1025,7 +1043,7 @@ class Api:
                         seen.add(dk)
                         deps.append({"key": dk, "name": installed[dk].name})
                         todo.append(dk)
-            out.append({"source": spec.source, "id": spec.id, "required": spec.required, "key": key,
+            out.append({"source": spec.source, "id": spec.id, "required": spec.required, "key": key, "channel": spec.channel,
                         "name": installed[key].name if key in installed else spec.id, "deps": deps})
         return out
 
@@ -1047,11 +1065,13 @@ class Api:
             raise ApiError(400, f"{project.name} is client-side only")
         if any(s.source == source and s.id in (mod_id, project.id, project.slug) for s in self.m.config.mods):
             raise ApiError(409, f"{project.name} is already listed")
+        early = b.get("channel") if b.get("channel") in ("beta", "alpha") else None  # picked with only early builds
         deps = []
         if source == "modrinth" and self.m.loader.mod_loaders:
             # Only mods that work on this server's Minecraft, and say what comes along with them.
             try:
-                req = mod_requirements(self._modrinth(), project.id, self.m.loader.mod_loaders, self.m.lock.minecraft)
+                req = mod_requirements(self._modrinth(), project.id, self.m.loader.mod_loaders, self.m.lock.minecraft,
+                                       channel=lowest(self.m.config.updates.mod_channel, early))
             except (ModError, HttpError) as e:
                 log.debug("couldn't check %s's requirements: %s", project.name, e)
                 req = None
@@ -1060,7 +1080,7 @@ class Api:
                     raise ApiError(400, f"can't add {project.name}: " + (req["reason"] or "no compatible build"))
                 deps = [d["name"] for d in req["deps"]]
         configmod.append_mod(self.m.config.path, ModSpec(source, project.slug or project.id,
-                                                         required=bool(b.get("required", True))))
+                                                         required=bool(b.get("required", True)), channel=early))
         self.m.reload_config()
         log.info("added %s%s", project.name, f" (with {', '.join(deps)})" if deps else "")
         return {"ok": True, "name": project.name, "deps": deps}
@@ -1080,7 +1100,8 @@ class Api:
                 continue
             try:
                 added.append(self.add_mod(q, {"source": item.get("source", "modrinth"), "id": item.get("id"),
-                                              "required": b.get("required", True) is not False})["name"])
+                                              "required": b.get("required", True) is not False,
+                                              "channel": item.get("channel")})["name"])
             except (ApiError, ModError, ConfigError) as e:
                 skipped.append({"name": item.get("name") or item.get("id"), "reason": str(e)})
         return {"ok": True, "added": added, "skipped": skipped}
@@ -1274,13 +1295,19 @@ class Api:
         query = q.get("q", "").strip()
         if not query and q.get("top") != "1":
             return {"results": []}
-        results = self._modrinth().search(query, loaders, limit=20, index="relevance" if query else "downloads",
-                                          side="client", minecraft=self.m.lock.minecraft or (
-                                              None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft))
+        minecraft = self.m.lock.minecraft or (
+            None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft)
+        provider = self._modrinth()
+        results = provider.search(query, loaders, limit=20, index="relevance" if query else "downloads",
+                                  side="client", minecraft=minecraft)
         listed = set(self.m.config.client.mods)
         for r in results:
             r["listed"] = r["id"] in listed or r["slug"] in listed
-        return {"results": results}
+        if not minecraft:
+            return {"results": results}
+        # Players' mods follow the server's release channel.
+        return keep_buildable(provider.best_channels([r["id"] for r in results], loaders, minecraft), results,
+                              early=self.m.config.updates.mod_channel != "release")
 
     # ------------------------------------------------------------- backups
     def backups(self, q, b) -> dict:

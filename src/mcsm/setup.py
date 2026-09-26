@@ -104,6 +104,7 @@ class SetupSpec:
     port_chosen: bool = False      # the port was picked by the person (not just the default)
     modpack_version: str = ""      # a Modrinth modpack version to build the server from
     local_mods: list[str] = field(default_factory=list)  # uploaded jars waiting in the hub's staging area
+    mod_channels: dict = field(default_factory=dict)  # slug -> "beta"/"alpha": mods picked with only early builds
     world: str = ""                # an existing world: an upload's staging id, or "save:<id>" (singleplayer)
     world_source: Path | None = None  # where that world is, found by the hub (never from the form)
 
@@ -151,6 +152,8 @@ class SetupSpec:
             modpack_version=str(d.get("modpack_version") or ""),
             local_mods=[str(x) for x in (d.get("local_mods") or []) if isinstance(x, str)],
             world=str(d.get("world") or ""),
+            mod_channels={str(k): v for k, v in (d.get("mod_channels") or {}).items()
+                          if v in ("beta", "alpha")} if isinstance(d.get("mod_channels"), dict) else {},
         )
         if spec.loader not in configmod.LOADERS:
             raise ConfigError(f"unknown server type {spec.loader!r}")
@@ -175,11 +178,11 @@ class SetupSpec:
         return spec
 
 
-def _mod_spec(item: str, required: bool) -> ModSpec:
+def _mod_spec(item: str, required: bool, channel: str | None = None) -> ModSpec:
     """A mod from the setup form: a Modrinth slug, or ``curseforge:<project id>``."""
     if item.startswith("curseforge:"):
-        return ModSpec("curseforge", item.split(":", 1)[1], required=required)
-    return ModSpec("modrinth", item, required=required)
+        return ModSpec("curseforge", item.split(":", 1)[1], required=required, channel=channel)
+    return ModSpec("modrinth", item, required=required, channel=channel)
 
 
 def configure(root: Path, spec: SetupSpec) -> configmod.Config:
@@ -201,9 +204,9 @@ def configure(root: Path, spec: SetupSpec) -> configmod.Config:
         configmod.set_value(path, "client", "enabled", "true")
         configmod.set_value(path, "client", "token", json.dumps(new_token()))
     for slug in spec.mods:
-        configmod.append_mod(path, _mod_spec(slug, required=True))
+        configmod.append_mod(path, _mod_spec(slug, required=True, channel=spec.mod_channels.get(slug)))
     for slug in spec.optional_mods:
-        configmod.append_mod(path, _mod_spec(slug, required=False))
+        configmod.append_mod(path, _mod_spec(slug, required=False, channel=spec.mod_channels.get(slug)))
     cfg = configmod.load(root)
     cfg.server.dir.mkdir(parents=True, exist_ok=True)
     write_properties(cfg.server.dir / "server.properties", {

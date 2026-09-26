@@ -852,25 +852,33 @@ views.mods = () => {
   const q = h("input", { placeholder: plugins ? "Search Modrinth for plugins…" : "Search Modrinth for server mods…", type: "search" });
   let searchTimer;
 
+  let early = false;
+  const earlyBox = h("input", { type: "checkbox", onchange: (e) => { early = e.target.checked; search(); } });
+  const earlyRow = h("label", { class: "row small early-opt", title: EARLY_WARNING }, earlyBox,
+    h("span", {}, `Also show ${plugins ? "plugins" : "mods"} with only alpha/beta builds (less stable)`));
   const search = async () => {
     const term = q.value.trim();
     if (!term) { fill(results, ); return; }
     fill(results, h("p", { class: "empty" }, "Searching…"));
-    const r = await api(`/api/mods/search?q=${encodeURIComponent(term)}`).catch((e) => { toast(e.message, true); return null; });
+    const r = await api(`/api/mods/search?q=${encodeURIComponent(term)}` + (early ? "&early=1" : "")).catch((e) => { toast(e.message, true); return null; });
     if (!r) return;
-    fill(results, ...(r.results.length ? r.results.map((m) => h("div", { class: "mod" },
+    const note = r.hidden || r.early_hidden ? h("p", { class: "muted small" },
+      r.hidden ? `${r.hidden} result(s) hidden: no build for this server's Minecraft ${info.minecraft || ""}. ` : "",
+      r.early_hidden ? [`${r.early_hidden} only ${r.early_hidden === 1 ? "has" : "have"} alpha/beta builds. `,
+        h("button", { class: "link-btn", onclick: () => { earlyBox.checked = early = true; search(); } }, "Show them")] : null) : null;
+    fill(results, note, ...(r.results.length ? r.results.map((m) => h("div", { class: "mod" },
       m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
       h("div", { class: "info" },
         h("div", { class: "name" }, m.name, h("span", { class: "tag" }, `${(m.downloads / 1e6).toFixed(1)}M downloads`),
-          m.server_side === "optional" ? h("span", { class: "tag" }, "server optional") : null),
+          m.server_side === "optional" ? h("span", { class: "tag" }, "server optional") : null, channelTag(m.channel)),
         h("div", { class: "desc" }, m.description)),
       m.listed ? h("span", { class: "tag ok" }, "added") : h("div", { class: "row" },
-        h("button", { class: "btn primary small", onclick: () => add(m.slug, true) }, "Add"),
-        h("button", { class: "btn small", title: "Won't hold back Minecraft upgrades", onclick: () => add(m.slug, false) }, "Add optional")),
+        h("button", { class: "btn primary small", onclick: () => confirmEarly([m]) && add(m.slug, true, "modrinth", m.channel) }, "Add"),
+        h("button", { class: "btn small", title: "Won't hold back Minecraft upgrades", onclick: () => confirmEarly([m]) && add(m.slug, false, "modrinth", m.channel) }, "Add optional")),
     )) : [h("p", { class: "empty" }, "No server mods found" + (info.minecraft ? ` that work on Minecraft ${info.minecraft}.` : "."))]));
   };
-  const add = async (id, required, source = "modrinth") => {
-    const r = await act(() => api("/api/mods/add", { method: "POST", body: { source, id, required } }));
+  const add = async (id, required, source = "modrinth", channel = null) => {
+    const r = await act(() => api("/api/mods/add", { method: "POST", body: { source, id, required, channel: channel !== "release" ? channel : null } }));
     if (r) {
       toast(`Added ${r.name}` + (r.deps && r.deps.length ? `, with the mods it needs: ${r.deps.join(", ")}` : "") + ". Run an update check to install it.");
       load(); search();
@@ -906,7 +914,7 @@ views.mods = () => {
     };
     const needersOf = (depKey) => r.configured.filter((c) => c.deps.some((d) => d.key === depKey));
     fill(configured, r.configured.length ? h("ul", { class: "list" }, r.configured.flatMap((s) => [h("li", {},
-      h("div", { class: "grow" }, h("strong", {}, s.name), h("span", { class: "tag" }, s.source)),
+      h("div", { class: "grow" }, h("strong", {}, s.name), h("span", { class: "tag" }, s.source), channelTag(s.channel)),
       h("label", { class: "row", title: "Every mod holds back Minecraft upgrades until it supports the new version. Required ones also decide the Minecraft version a new server starts on." },
         h("input", { type: "checkbox", checked: s.required, onchange: (e) => act(() => api("/api/mods/required", { method: "POST", body: { source: s.source, id: s.id, required: e.target.checked } })) }),
         "required"),
@@ -963,7 +971,7 @@ views.mods = () => {
 
   fill($("#main"), 
     h("h2", { class: "view-title" }, plugins ? "Plugins" : "Mods"),
-    card(plugins ? "Add plugins" : "Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, results,
+    card(plugins ? "Add plugins" : "Add mods", sources, h("h3", { class: "mt" }, "Quick add"), q, earlyRow, results,
       plugins ? h("p", { class: "muted small mt-s" }, "Paper runs Paper, Spigot and Bukkit plugins from its plugins folder. Players don't need them.")
         : h("div", { class: "row mt-s" }, cfId,
           h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
@@ -1366,7 +1374,7 @@ function openBrowser(params) {
   const b = browserPanel(new URLSearchParams(params), {
     close: () => closeBrowser(),
     addMods: (mods) => {
-      for (const m of mods) setupAddMod(setupModKey(m), m.name);
+      for (const m of mods) setupAddMod(setupModKey(m), m.name, m.channel);
       toast(`${mods.length} mod(s) added`);
       closeBrowser();
       refresh();
@@ -1415,7 +1423,10 @@ function browserPanel(params, host) {
   const noun = loader === "paper" ? "plugin" : kind;  // Paper runs plugins (from Modrinth)
   const base = target === "setup" ? "/api/hub/browse" : `/api/servers/${encodeURIComponent(target)}/browse`;
   const st = { q: "", source: "modrinth", sort: "relevance", category: "", version: params.get("version") || "",
-    offset: 0, total: 0, results: [], selected: new Map(), active: null };
+    offset: 0, total: 0, results: [], selected: new Map(), active: null, early: false, hidden: 0, earlyHidden: 0 };
+  const earlyBox = h("input", { type: "checkbox", onchange: (e) => { st.early = e.target.checked; search(); } });
+  const earlyRow = kind === "mod" ? h("label", { class: "row small early-opt", title: EARLY_WARNING }, earlyBox,
+    h("span", {}, "Also show mods with only alpha/beta builds (less stable)")) : null;
   const list = h("div", { class: "browse-results" });
   const details = h("div", { class: "browse-right" }, h("p", { class: "empty" }, `Pick a ${noun} on the left to read about it here.`));
   const count = h("span", { class: "grow muted small" });
@@ -1436,6 +1447,7 @@ function browserPanel(params, host) {
     if (m.source !== "modrinth" || m.deps) return;
     const reqBase = target === "setup" ? "/api/hub/mods/requires" : `/api/servers/${encodeURIComponent(target)}/mods/requires`;
     const p = new URLSearchParams({ id: m.id });
+    if (m.channel && m.channel !== "release") p.set("channel", m.channel);
     if (target === "setup" && loader) p.set("loader", loader);
     if (st.version || target === "setup") p.set("version", st.version);
     const r = await api(`${reqBase}?${p}`).catch(() => null);
@@ -1485,6 +1497,7 @@ function browserPanel(params, host) {
     if (!more) { st.offset = 0; list.scrollTop = 0; }
     const p = new URLSearchParams({ type: kind, q: st.q, source: st.source, sort: st.sort, offset: String(st.offset) });
     if (st.category) p.set("category", st.category);
+    if (st.early) p.set("early", "1");
     p.set("version", st.version);
     if (loader) p.set("loader", loader);
     if (!more) fill(list, h("p", { class: "empty" }, "Searching…"));
@@ -1492,10 +1505,18 @@ function browserPanel(params, host) {
     if (!r || mine !== seq) return;
     st.results = more ? st.results.concat(r.results) : r.results;
     st.total = r.total;
+    st.hidden = (more ? st.hidden : 0) + (r.hidden || 0);
+    st.earlyHidden = (more ? st.earlyHidden : 0) + (r.early_hidden || 0);
     renderList();
   };
   const renderList = () => {
-    fill(list, st.results.length ? st.results.map((m) => {
+    // Search results the chosen version can't run are left out; say so.
+    const where = `${loader ? loader + " " : ""}Minecraft ${st.version}`;
+    const note = st.version && (st.hidden || st.earlyHidden) ? h("p", { class: "muted small hidden-note" },
+      st.hidden ? `${st.hidden} result(s) hidden: no build for ${where}. ` : "",
+      st.earlyHidden ? [`${st.earlyHidden} only ${st.earlyHidden === 1 ? "has" : "have"} alpha/beta builds. `,
+        h("button", { class: "link-btn", onclick: () => { earlyBox.checked = st.early = true; search(); } }, "Show them")] : null) : null;
+    fill(list, note, st.results.length ? st.results.map((m) => {
       const key = `${m.source}:${m.id}`;
       const box = kind === "mod" ? h("input", { type: "checkbox", checked: st.selected.has(key), "aria-label": `Select ${m.name}`,
         onclick: (e) => e.stopPropagation(),
@@ -1505,7 +1526,7 @@ function browserPanel(params, host) {
         box || h("span"),
         m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
         h("div", { class: "info" },
-          h("div", { class: "name" }, m.name, m.author ? h("span", { class: "muted small" }, ` by ${m.author}`) : null),
+          h("div", { class: "name" }, m.name, m.author ? h("span", { class: "muted small" }, ` by ${m.author}`) : null, " ", channelTag(m.channel)),
           h("div", { class: "desc" }, m.summary),
           h("div", { class: "muted small" }, `⬇ ${fmtNum(m.downloads)}`, m.follows ? ` · ♥ ${fmtNum(m.follows)}` : "",
             m.updated ? ` · updated ${new Date(m.updated).toLocaleDateString()}` : "")));
@@ -1554,10 +1575,12 @@ function browserPanel(params, host) {
   };
 
   addBtn.addEventListener("click", async () => {
-    const mods = [...st.selected.values()].map((m) => ({ source: m.source, id: m.id, slug: m.slug, name: m.name }));
+    const mods = [...st.selected.values()].map((m) => ({ source: m.source, id: m.id, slug: m.slug, name: m.name,
+      channel: m.channel && m.channel !== "release" ? m.channel : null }));
+    if (!confirmEarly(mods)) return;
     if (target === "setup") {
       if (host) { host.addMods(mods); return; }
-      for (const m of mods) setupAddMod(setupModKey(m), m.name);
+      for (const m of mods) setupAddMod(setupModKey(m), m.name, m.channel);
       location.hash = "#new";
       return;
     }
@@ -1585,7 +1608,8 @@ function browserPanel(params, host) {
           host ? h("button", { class: "btn ghost small", onclick: () => host.close() }, "Close") : h("a", { class: "btn ghost small", href: target === "setup" ? "#new" : `#s/${target}/mods` }, "Back")),
         q,
         h("div", { class: "row" }, source, sort),
-        h("div", { class: "row" }, category, version)),
+        h("div", { class: "row" }, category, version),
+        earlyRow),
       list,
       h("div", { class: "browse-footer" }, count, addBtn)),
     details);
@@ -2198,15 +2222,25 @@ const setupState = { friends: false, loader: null, minecraft: "latest", mods: ne
 // the mods that need it (after asking).
 const setupModKey = (m) => (m.source === "curseforge" ? `curseforge:${m.id}` : m.slug || m.id);
 function setupChanged() { if (setupState.onChange) setupState.onChange(); }
+const earlyChannels = () => Object.fromEntries([...setupState.mods].filter(([, m]) => m.channel).map(([k, m]) => [k, m.channel]));
 function setupModVersion() {
   const st = setupState;
   return st.minecraft === "latest" ? (st.newest || "") : st.minecraft;
 }
-async function setupAddMod(key, name) {
+// Mods with only alpha/beta builds for this version: shown on request, added after a warning.
+const EARLY_WARNING = "Early builds (alpha and beta) are unfinished: they can crash the server, break other mods " +
+  "or damage your world. Back up before you rely on them.";
+const channelTag = (c) => (c && c !== "release" ? h("span", { class: "tag warn", title: EARLY_WARNING }, `${c} only`) : null);
+function confirmEarly(mods) {
+  const early = mods.filter((m) => m.channel && m.channel !== "release");
+  return !early.length || confirm(`${early.map((m) => m.name).join(", ")} ${early.length === 1 ? "only has" : "only have"} ` +
+    `alpha or beta builds for this Minecraft version.\n\n${EARLY_WARNING}\n\nAdd ${early.length === 1 ? "it" : "them"} anyway?`);
+}
+async function setupAddMod(key, name, channel = null) {
   const st = setupState;
   const e = st.mods.get(key);
-  if (e) e.explicit = true;
-  else st.mods.set(key, { name, required: true, explicit: true, by: new Set(), bad: "" });
+  if (e) { e.explicit = true; if (channel && channel !== "release") e.channel = channel; }
+  else st.mods.set(key, { name, required: true, explicit: true, by: new Set(), bad: "", channel: channel && channel !== "release" ? channel : null });
   setupChanged();
   await setupCheckMod(key);
 }
@@ -2216,14 +2250,14 @@ async function setupCheckMod(key, quiet = false) {
   if (!e || !st.loader || key.startsWith("curseforge:")) return;
   const v = setupModVersion();
   const r = await api(`/api/hub/mods/requires?id=${encodeURIComponent(key)}&loader=${encodeURIComponent(st.loader)}` +
-    (v ? `&version=${encodeURIComponent(v)}` : "")).catch(() => null);
+    (v ? `&version=${encodeURIComponent(v)}` : "") + (e.channel ? `&channel=${e.channel}` : "")).catch(() => null);
   if (!r || st.mods.get(key) !== e) return;
   e.name = r.project.name;
   e.bad = r.compatible ? "" : r.reason;
   const added = [];
   for (const d of r.deps) {
     const dk = d.slug || d.id;
-    if (!st.mods.has(dk)) { st.mods.set(dk, { name: d.name, required: e.required, explicit: false, by: new Set(), bad: "" }); added.push(d); }
+    if (!st.mods.has(dk)) { st.mods.set(dk, { name: d.name, required: e.required, explicit: false, by: new Set(), bad: "", channel: e.channel }); added.push(d); }
     st.mods.get(dk).by.add(key);
   }
   if (added.length && !quiet) {
@@ -2366,7 +2400,7 @@ views.setup = () => {
         shown.add(key);
         const needers = [...m.by].filter((k) => st.mods.has(k)).map((k) => st.mods.get(k).name);
         rows.push(h("li", { class: depth ? "dep" : null },
-          h("div", { class: "grow" }, depth ? "↳ " : null, h("strong", {}, m.name),
+          h("div", { class: "grow" }, depth ? "↳ " : null, h("strong", {}, m.name), depth ? null : channelTag(m.channel),
             key.startsWith("curseforge:") ? h("span", { class: "tag" }, "CurseForge") : null,
             !m.explicit || needers.length ? h("span", { class: "tag" }, `needed by ${needers.join(", ")}`) : null,
             m.bad ? h("div", { class: "small bad-text" }, m.bad) : null),
@@ -2396,23 +2430,32 @@ views.setup = () => {
       const term = q.value.trim();
       const mcv = setupModVersion();  // only mods with a build for the chosen Minecraft
       const url = `${isNew ? "/api/hub" : "/api"}/mods/search?loader=${encodeURIComponent(st.loader)}&version=${encodeURIComponent(mcv)}&` +
-        (term ? `q=${encodeURIComponent(term)}` : "top=1");
-      const key = st.loader + "|" + mcv + "|" + term;
+        (term ? `q=${encodeURIComponent(term)}` : "top=1") + (st.early ? "&early=1" : "");
+      const key = st.loader + "|" + mcv + "|" + term + "|" + !!st.early;
       const r = term || !topMods.has(key)
         ? await api(url).catch((e) => { toast(e.message, true); return null; }) : topMods.get(key);
       if (!r || q.value.trim() !== term) return;  // a newer search is on its way
       if (!term) topMods.set(key, r);
       fill(results, term ? null : h("h3", { class: "mt-s" }, `Most popular ${loaderLabel} ${noun}` + (mcv ? ` for Minecraft ${mcv}` : "")),
         mcv ? h("p", { class: "muted small" }, `Only ${noun} that work on Minecraft ${mcv} are shown` +
-          (st.minecraft === "latest" ? " (the newest release; pick a version above to see mods for another)." : ".")) : null,
+          (st.minecraft === "latest" ? " (the newest release; pick a version above to see mods for another)." : ".") +
+          (r.hidden ? ` ${r.hidden} hidden: no ${loaderLabel} build for it.` : ""),
+          r.early_hidden ? [` ${r.early_hidden} only ${r.early_hidden === 1 ? "has" : "have"} alpha/beta builds. `,
+            h("button", { type: "button", class: "link-btn", onclick: () => { st.early = true; earlyBox.checked = true; search(); } }, "Show them")] : null) : null,
         r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
         m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
-        h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
+        h("div", { class: "info" }, h("div", { class: "name" }, m.name, " ", channelTag(m.channel)), h("div", { class: "desc" }, m.description)),
         st.mods.has(m.slug) ? h("span", { class: "tag ok" }, "added")
-          : h("button", { type: "button", class: "btn small primary", onclick: () => { setupAddMod(m.slug, m.name); search(); } }, "Add"),
+          : h("button", { type: "button", class: "btn small primary", onclick: () => {
+            if (!confirmEarly([m])) return;
+            setupAddMod(m.slug, m.name, m.channel); search();
+          } }, "Add"),
       )) : [h("p", { class: "empty" }, `No ${loaderLabel} server ${noun} found` + (mcv ? ` for Minecraft ${mcv}.` : "."))]);
     };
     q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
+    const earlyBox = h("input", { type: "checkbox", checked: !!st.early, onchange: (e) => { st.early = e.target.checked; search(); } });
+    const earlyRow = h("label", { class: "row small early-opt", title: EARLY_WARNING }, earlyBox,
+      h("span", {}, `Also show ${noun} with only alpha/beta builds (less stable)`));
     renderSelected();
     if (st.loader && opts.loaders.find((l) => l.name === st.loader).mods) search();  // the popular list
     // Three ways to add mods: files on this computer, the mod browser window, or a whole modpack.
@@ -2440,11 +2483,11 @@ views.setup = () => {
         h("div", { class: "small muted" }, `Minecraft ${st.minecraft}, ${loaderLabel}. The pack decides the version and server type; its mods are installed and kept up to date.`)),
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.modpack = null; st.minecraft = "latest"; renderForm(); } }, "Remove modpack")) : null;
     const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card(plugins ? "3. Plugins" : "3. Mods",
-      sources, packCard, h("h3", { class: "mt" }, "Quick add"), q, results, h("h3", { class: "mt" }, "Your mods"), selected,
+      sources, packCard, h("h3", { class: "mt" }, "Quick add"), q, earlyRow, results, h("h3", { class: "mt" }, "Your mods"), selected,
       h("div", { class: "row mt-s" }, testButton({
         check: ["/api/hub/mods/check", { loader: st.loader, minecraft: setupModVersion(),
-          mods: [...st.mods].filter(([k, m]) => m.explicit && !k.startsWith("curseforge:")).map(([k]) => k) }],
-        trial: { loader: st.loader, minecraft: st.minecraft, mods: [...st.mods].filter(([, m]) => m.explicit).map(([k]) => k) },
+          mods: [...st.mods].filter(([k, m]) => m.explicit && !k.startsWith("curseforge:")).map(([k]) => k), channels: earlyChannels() }],
+        trial: { loader: st.loader, minecraft: st.minecraft, mods: [...st.mods].filter(([, m]) => m.explicit).map(([k]) => k), channels: earlyChannels() },
         keepWorking: (res) => { for (const o of res.outliers) setupRemoveMod(o.source === "curseforge" ? `curseforge:${o.id}` : o.id); },
       }), h("span", { class: "muted small" }, "Check that these mods work together before creating the server.")),
       st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null,
@@ -2525,7 +2568,8 @@ views.setup = () => {
       const body = { loader: st.loader, minecraft: st.minecraft, mods, optional_mods: optional, memory_gb: st.memory_gb,
         motd: st.motd, max_players: st.max_players, difficulty: st.difficulty, gamemode: st.gamemode, port: st.port,
         network_access: st.network_access, accept_eula: true, properties: changedProps(st.properties, propDefaults),
-        friends: !!st.friends, local_mods: st.localMods.map((m) => m.id), world: st.world ? st.world.world : "" };
+        friends: !!st.friends, local_mods: st.localMods.map((m) => m.id), world: st.world ? st.world.world : "",
+        mod_channels: Object.fromEntries([...st.mods].filter(([, m]) => m.explicit && m.channel).map(([k, m]) => [k, m.channel])) };
       if (st.modpack) body.modpack_version = st.modpack.version_id;
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));

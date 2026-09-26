@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from ..config import ModSpec
 from ..http import HttpClient, HttpError
@@ -43,6 +44,26 @@ class ModrinthProvider(ModProvider):
         if minecraft:
             params["game_versions"] = json.dumps([minecraft])
         return self.http.get_json(f"{API}/project/{project_id}/version", params=params)
+
+    def best_channels(self, project_ids: list[str], loaders: tuple[str, ...], minecraft: str,
+                      workers: int = 6) -> dict[str, str | None]:
+        """For each project, the most stable kind of build it has for these loaders and this
+        Minecraft: "release", "beta" or "alpha", or None when it has none. Search results can't
+        say (their version and loader lists cover all of a mod's builds together), so this looks
+        at each mod's builds, several at a time. A mod that can't be looked up counts as "release"
+        rather than being hidden."""
+        def one(pid: str) -> str | None:
+            try:
+                versions = self._versions(pid, loaders, minecraft)
+            except HttpError:
+                return "release"
+            kinds = {v.get("version_type", "release") for v in versions if minecraft in v.get("game_versions", [])}
+            return min(kinds, key=lambda k: CHANNEL_RANK.get(k, 9)) if kinds else None
+        ids = list(dict.fromkeys(project_ids))
+        if not ids:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(workers, len(ids))) as pool:
+            return dict(zip(ids, pool.map(one, ids)))
 
     @staticmethod
     def _acceptable(version: dict, channel: str) -> bool:
@@ -113,3 +134,19 @@ class ModrinthProvider(ModProvider):
             "client_side": h.get("client_side", "unknown"),
             "latest_version": h.get("latest_version", ""),
         } for h in data.get("hits", [])]
+
+
+def keep_buildable(channels: dict[str, str | None], hits: list[dict], early: bool, key: str = "id") -> dict:
+    """Search results that really have a build for the chosen Minecraft and loader, each
+    marked with its most stable ``channel``; ones with only alpha/beta builds only when
+    ``early``. Also says how many were left out, and why."""
+    out, hidden, early_hidden = [], 0, 0
+    for hit in hits:
+        channel = channels.get(hit[key], "release")
+        if channel is None:
+            hidden += 1
+        elif channel != "release" and not early:
+            early_hidden += 1
+        else:
+            out.append({**hit, "channel": channel})
+    return {"results": out, "hidden": hidden, "early_hidden": early_hidden}

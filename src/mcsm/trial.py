@@ -37,12 +37,14 @@ CHECK_WORKERS = 6
 
 
 def check(provider: ModrinthProvider, loaders: tuple[str, ...], minecraft: str | None, mod_ids: list[str],
-          channel: str = "release", progress=None) -> dict:
+          channel: str = "release", progress=None, channels: dict[str, str] | None = None) -> dict:
     """Problems that can be seen without starting anything.
 
     Mods are looked up several at a time; one that can't be looked up (Modrinth slow or
     down) is reported as a problem with that mod rather than failing the whole check.
-    ``progress(done, total, name)`` is called as each mod is checked."""
+    ``progress(done, total, name)`` is called as each mod is checked; ``channels`` gives mods
+    picked with only early (alpha/beta) builds their own channel."""
+    from .planner import lowest
     ids = list(dict.fromkeys(mod_ids))
 
     def one(mod_id: str) -> dict:
@@ -53,7 +55,7 @@ def check(provider: ModrinthProvider, loaders: tuple[str, ...], minecraft: str |
             return {"mod": mod_id, "reason": str(e)}
         except HttpError as e:
             return {"mod": mod_id, "reason": f"couldn't check it: {e.friendly}"}
-        ok = [v for v in versions if provider._acceptable(v, channel)
+        ok = [v for v in versions if provider._acceptable(v, lowest(channel, (channels or {}).get(mod_id)))
               and (not minecraft or minecraft in v.get("game_versions", []))]
         if not ok:
             return {"mod": project.name, "reason": f"no {'/'.join(loaders)} build for Minecraft {minecraft or '(any)'}"}
@@ -195,7 +197,7 @@ class Trial:
         for s in configmod.load(self.root).mods:
             configmod.remove_mod(path, s.source, s.id)
         for s in mods:
-            configmod.append_mod(path, ModSpec(s.source, s.id, required=True))
+            configmod.append_mod(path, ModSpec(s.source, s.id, required=True, channel=s.channel))
         self.m.reload_config()
         try:
             decision, _ = self.m.check(retry_failed=True)

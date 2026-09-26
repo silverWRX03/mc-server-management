@@ -542,3 +542,5 @@ main > * { animation: rise .25s ease-out; }
 #tester-toast { display: grid; gap: 6px; max-width: 380px; }
 @media (prefers-reduced-motion: reduce) { .bar.indeterminate .bar-fill { animation: none; width: 100%; opacity: .5; } }
 #tester-toast .bar, .tester-step .bar { background: var(--border); }
+.early-opt { margin: 6px 0 2px; color: var(--muted); }
+.hidden-note { margin: 4px 8px 8px; }

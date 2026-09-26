@@ -20,7 +20,7 @@ from .loaders import Loader
 from .lock import Lock
 from .minecraft import Mojang
 from .mods import ModError, ModFile, ModProvider, Unavailable
-from .mods.base import ClientOnly
+from .mods.base import CHANNEL_RANK, ClientOnly
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +112,11 @@ class Decision:
     latest: str | None = None
 
 
+def lowest(server: str, mod: str | None) -> str:
+    """The more permissive of the server's and a mod's own release channel."""
+    return max((server, mod or server), key=lambda c: CHANNEL_RANK.get(c, 0))
+
+
 class Planner:
     def __init__(self, config: Config, lock: Lock, mojang: Mojang, loader: Loader,
                  providers: dict[str, ModProvider]):
@@ -153,7 +158,7 @@ class Planner:
                         failed[key].required = True
                 continue
             try:
-                mod = provider.resolve(spec, minecraft, self.loader.mod_loaders, channel)
+                mod = provider.resolve(spec, minecraft, self.loader.mod_loaders, lowest(channel, spec.channel))
             except ClientOnly as e:
                 client_only.add(key)
                 if spec.dependency_of is None:
@@ -164,7 +169,7 @@ class Planner:
                 continue
             resolved[key] = mod
             for dep in mod.dependencies:
-                queue.append(ModSpec(spec.source, dep, required=spec.required, dependency_of=key))
+                queue.append(ModSpec(spec.source, dep, required=spec.required, dependency_of=key, channel=spec.channel))
 
         # A mod whose dependency is unavailable is unavailable too.
         changed = True

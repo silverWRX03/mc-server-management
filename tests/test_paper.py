@@ -94,7 +94,7 @@ def test_plugin_search_on_modrinth_only(http):
     http.get_json = lambda url, params=None, headers=None: seen.append(params) or orig(url, params, headers)
     b = Browser(http, "key")
     b.search("modrinth", "mod", "perms", loader="paper", version="1.21.1")
-    facets = json.loads(seen[-1]["facets"])
+    facets = json.loads([p for p in seen if p and "facets" in p][-1]["facets"])
     assert ["categories:paper", "categories:spigot", "categories:bukkit"] in facets
     assert ["project_type:mod"] not in facets
     with pytest.raises(BrowseError, match="Modrinth"):

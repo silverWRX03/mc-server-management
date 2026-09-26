@@ -27,6 +27,8 @@ class ModSpec:
     required: bool = True
     # Set on specs created automatically for a mod's dependencies.
     dependency_of: str | None = None
+    # This mod's own lowest release channel (a mod with only alpha/beta builds), else the server's.
+    channel: str | None = None
 
     @property
     def label(self) -> str:
@@ -208,6 +210,7 @@ def parse(root: Path, data: dict) -> Config:
             source=_choice(m.get("source", "modrinth"), MOD_SOURCES, f"mods[{i}].source"),
             id=str(m["id"]),
             required=bool(m.get("required", True)),
+            channel=_choice(m["channel"], CHANNELS, f"mods[{i}].channel") if "channel" in m else None,
         ))
     if mods and server.loader == "vanilla":
         raise ConfigError("the vanilla loader cannot run mods; set [server] loader or remove [[mods]]")
@@ -327,7 +330,8 @@ def render_template(loader: str, minecraft: str) -> str:
 
 def mod_block(spec: ModSpec) -> str:
     ident = spec.id if spec.id.isdigit() and spec.source == "curseforge" else f'"{spec.id}"'
-    return f'\n[[mods]]\nsource = "{spec.source}"\nid = {ident}\nrequired = {str(spec.required).lower()}\n'
+    channel = f'channel = "{spec.channel}"  # accepts early (unstable) builds\n' if spec.channel in CHANNELS else ""
+    return f'\n[[mods]]\nsource = "{spec.source}"\nid = {ident}\nrequired = {str(spec.required).lower()}\n{channel}'
 
 
 def append_mod(path: Path, spec: ModSpec) -> None:
