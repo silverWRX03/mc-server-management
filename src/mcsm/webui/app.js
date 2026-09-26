@@ -1192,14 +1192,24 @@ views.friends = () => {
             onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`) }, "✕")))) : null,
         h("label", { class: "mt" }, "Memory for friends' Minecraft",
           (() => { const sel = h("select", { onchange: (e) => save({ memory_gb: Number(e.target.value) }, "Saved") },
-            [2, 3, 4, 6, 8, 10, 12].map((g) => h("option", { value: String(g) }, `${g} GB`))); sel.value = String(d.memory_gb); return sel; })()))),
+            [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32].map((g) => h("option", { value: String(g) }, `${g} GB`))); sel.value = String(d.memory_gb); return sel; })()))),
       d.loader === "vanilla" ? null : h("div", { class: "mt" }, card("Add mods just for players",
         h("p", { class: "muted small" }, "Client-side mods like minimaps, recipe viewers or performance mods. The server's own mods that players need are included automatically."),
-        q, results)),
+        h("h3", { class: "mt-s" }, "Your players' mods"),
+        d.mods.length ? h("ul", { class: "list" }, d.mods.map((x) => h("li", {}, h("strong", { class: "grow" }, x),
+          h("button", { class: "btn small danger", onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`).then(search) }, "Remove"))))
+          : h("p", { class: "empty" }, "None yet. Add some below, or leave it: players get the server's mods either way."),
+        h("h3", { class: "mt" }, "Find mods"), q, results)),
     );
     if (!results.childElementCount) search();
   };
-  fill($("#main"), h("h2", { class: "view-title" }, "Friends"), body);
+  // Reached from a new server's setup: it's still installing (see the bar at the bottom).
+  const installing = dock && dock.sid === server && !dock.done;
+  fill($("#main"), h("h2", { class: "view-title" }, installing ? `Friends for ${dock.name}` : "Friends"),
+    installing ? h("div", { class: "notice mb" }, h("strong", {}, "Your server is still installing. "),
+      "Meanwhile, pick the mods your friends' Minecraft gets. The invite link works once it's ready.",
+      h("div", { class: "row mt-s" }, h("a", { class: "btn small", href: `#s/${server}/setup` }, "Back to the progress"))) : null,
+    body);
   api("/api/client").then((r) => { data = r; render(); }).catch((e) => { if (!(e instanceof Unauthorized)) toast(e.message, true); });
   return {};
 };
@@ -1949,6 +1959,45 @@ function setupRecheckMods() {
   for (const k of st.mods.keys()) setupCheckMod(k);
 }
 
+// ------------------------------------------------------ setup progress dock
+// While a new server installs you can go elsewhere (e.g. set up its friend download): its
+// progress keeps going in a bar docked at the bottom of the window.
+let dock = null;  // { sid, name, seq, el, timer }
+function dockSetup(sid, name) {
+  undock();
+  const msg = h("span", { class: "grow dock-msg" }, "Starting…");
+  const el = h("div", { class: "dock", id: "dock", role: "status" },
+    h("span", { class: "spinner" }), h("strong", {}, `Creating ${name}`), msg,
+    h("a", { class: "btn small", href: `#s/${sid}/setup` }, "Show"));
+  document.body.append(el);
+  requestAnimationFrame(() => el.classList.add("in"));
+  dock = { sid, name, seq: 0, el, msg };
+  const poll = async () => {
+    if (!dock || dock.sid !== sid) return;
+    el.classList.toggle("hidden", currentName === "setup" && server === sid);  // the full page shows it already
+    const ev = await api(`/api/servers/${sid}/events?since=${dock.seq}`).catch(() => null);
+    if (ev && ev.events.length) { dock.seq = ev.last; msg.textContent = ev.events[ev.events.length - 1].message; }
+    const st = await api(`/api/servers/${sid}/status`).catch(() => null);
+    if (!st || st.job || !st.last_job || st.last_job.name !== "set up server") return;
+    clearInterval(dock.timer);
+    dock.done = true;
+    if (currentName === "friends" && server === sid) route();  // drop the "still installing" note
+    el.classList.add(st.last_job.ok ? "done" : "failed");
+    fill(el, h("strong", {}, st.last_job.ok ? `✓ ${name} is ready` : `${name}: setup didn't finish`),
+      h("span", { class: "grow dock-msg" }, st.last_job.ok ? "Press Start when you want to play." : st.last_job.message),
+      h("a", { class: "btn small primary", href: `#s/${sid}/${st.last_job.ok ? "dashboard" : "setup"}`, onclick: undock }, st.last_job.ok ? "Open" : "See why"),
+      h("button", { class: "btn small ghost", "aria-label": "Close", onclick: undock }, "✕"));
+  };
+  dock.timer = setInterval(poll, 2000);
+  poll();
+}
+function undock() {
+  if (!dock) return;
+  clearInterval(dock.timer);
+  dock.el.remove();
+  dock = null;
+}
+
 views.setup = () => {
   const main = h("div", { class: "setup" });
   let opts = null;
@@ -2088,9 +2137,10 @@ views.setup = () => {
     // Settings
     const inp = (key, attrs = {}) => h("input", { value: st[key], ...attrs, oninput: (e) => { st[key] = attrs.type === "number" ? Number(e.target.value) : e.target.value; } });
     const sel = (key, choices) => { const el = h("select", { onchange: (e) => { st[key] = e.target.value; } }, choices.map((c) => h("option", { value: c }, c[0].toUpperCase() + c.slice(1)))); el.value = st[key]; return el; };
-    const maxMem = Math.max(2, Math.floor(opts.total_ram_gb || 16));
-    const mem = h("select", { onchange: (e) => { st.memory_gb = Number(e.target.value); } },
-      Array.from({ length: Math.min(maxMem, 32) }, (_, i) => i + 1).map((g) => h("option", { value: String(g) }, `${g} GB${g === opts.memory_gb ? " (suggested)" : ""}`)));
+    const ram = opts.total_ram_gb || 0;
+    const mem = h("select", { onchange: (e) => { st.memory_gb = Number(e.target.value); renderForm(); } },
+      Array.from({ length: 32 }, (_, i) => i + 1).map((g) => h("option", { value: String(g) },
+        `${g} GB${g === opts.memory_gb ? " (suggested)" : ""}${ram && g > ram ? " (more than this computer has)" : ""}`)));
     mem.value = String(st.memory_gb);
 
     // The Minecraft port, checked as you type: other servers here, mcsm itself, other programs.
@@ -2164,6 +2214,7 @@ views.setup = () => {
       if (isNew) {
         const r = await act(() => api("/api/hub/create", { method: "POST", body }));
         if (r) {
+          setupState.offerFriends = body.friends ? { sid: r.id, name: body.motd } : null;
           Object.assign(setupState, { friends: false, loader: null, mods: new Map(), motd: "A Minecraft server", accept_eula: false,
             prefilled: false, properties: null, advancedOpen: false, modpack: null, localMods: [], minecraft: "latest", world: null });
           location.hash = `#s/${r.id}/setup`;
@@ -2195,7 +2246,7 @@ views.setup = () => {
             field("Max players", inp("max_players", { type: "number", min: 1, max: 1000 })),
             field("Difficulty", sel("difficulty", opts.difficulties)),
             field("Game mode", sel("gamemode", opts.gamemodes)),
-            field("Memory", mem, opts.total_ram_gb ? `This computer has ${opts.total_ram_gb} GB.` : null),
+            field("Memory", mem, ram ? (st.memory_gb > ram - 2 ? `This computer has ${ram} GB. Leave some for Windows and other programs, or the server may crash.` : `This computer has ${ram} GB.`) : null),
             portField()),
           opts.network_option ? h("label", { class: "row mt" }, lan, h("span", {}, "Let other devices on my network (like my phone) open this control panel")) : null)),
         h("div", { class: "mt" }, advanced),
@@ -2215,11 +2266,32 @@ views.setup = () => {
   const renderProgress = () => {
     const events = h("div", { class: "events" });
     let seq = 0;
-    fill(main,
+    const panel = h("div", { class: "progress-panel" },
       h("h2", { class: "view-title" }, "Creating your server…"),
       h("div", { class: "notice" }, h("div", { class: "row" }, h("span", { class: "spinner" }),
         h("span", { class: "grow" }, "Downloading Java, the mod loader, Minecraft and your mods, then checking that the server starts. This usually takes a few minutes."))),
       card("What's happening", events));
+    fill(main, panel);
+    if (dock && dock.sid === server) undock();  // the full page is back
+    const offer = st.offerFriends && st.offerFriends.sid === server ? st.offerFriends : null;
+    if (offer) {
+      // Keep going at the bottom of the window, and meanwhile offer the friends' side.
+      st.offerFriends = null;
+      setTimeout(() => {
+        if (currentName !== "setup" || server !== offer.sid) return;
+        panel.classList.add("slide-away");
+        setTimeout(() => {
+          dockSetup(offer.sid, offer.name);
+          fill(main, h("div", { class: "empty mt-l" }, "Your server is installing: its progress is at the bottom of the window."));
+          stickyToast("friends-offer", [
+            h("strong", {}, "Set up your friends' download now?"),
+            h("span", { class: "small" }, "While the server installs, choose the mods your friends get (a minimap, JEI, …)."),
+            h("div", { class: "row mt-s" },
+              h("button", { class: "btn small primary", onclick: () => { closeToast("friends-offer"); location.hash = `#s/${offer.sid}/friends`; } }, "Yes"),
+              h("button", { class: "btn small ghost", onclick: () => { closeToast("friends-offer"); undock(); renderProgress(); } }, "Not now"))]);
+        }, 650);
+      }, 1800);
+    }
     every(1500, async () => {
       const r = await api(`/api/events?since=${seq}`).catch(() => null);
       if (!r) return;

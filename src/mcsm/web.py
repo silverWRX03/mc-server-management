@@ -1156,7 +1156,8 @@ class Api:
         if not query and q.get("top") != "1":
             return {"results": []}
         results = self._modrinth().search(query, loaders, limit=20, index="relevance" if query else "downloads",
-                                          side="client", minecraft=self.m.lock.minecraft)
+                                          side="client", minecraft=self.m.lock.minecraft or (
+                                              None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft))
         listed = set(self.m.config.client.mods)
         for r in results:
             r["listed"] = r["id"] in listed or r["slug"] in listed
