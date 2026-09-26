@@ -336,7 +336,30 @@ body.browse-mode main { padding: 0; overflow: hidden; }
 .rich img { max-width: 100%; height: auto; }
 .rich pre { overflow: auto; background: var(--panel-2); padding: 10px; border-radius: 6px; }
 .rich table { display: block; overflow-x: auto; }
+/* in the page: what was there slides left into a rail, the browser fills the rest */
+.stage { display: flex; flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.stage > main { flex: 1 1 auto; min-width: 0; transition: flex-basis .25s ease, opacity .25s ease, transform .25s ease; }
+.stage.browsing > main { flex: 0 0 0; padding: 0; opacity: 0; transform: translateX(-40px); overflow: hidden; pointer-events: none; }
+.browse-rail { flex: 0 0 52px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 0;
+  border: 0; border-right: 1px solid var(--border); background: var(--panel-2); color: var(--muted); cursor: pointer;
+  font: inherit; animation: rail-in .25s ease-out; }
+.browse-rail:hover, .browse-rail:focus-visible { color: var(--text); background: var(--panel); }
+.rail-arrow { font-size: 26px; line-height: 1; }
+.rail-label { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 13px; font-weight: 600; letter-spacing: .3px; }
+.inpage-browser { flex: 1 1 auto; min-width: 0; display: flex; animation: browser-in .3s ease-out; }
+.inpage-browser.leaving { animation: browser-out .25s ease-in forwards; position: absolute; inset: 0; }
+.inpage-browser > .browse { flex: 1; height: 100%; min-height: 0; }
+@keyframes rail-in { from { transform: translateX(-52px); } to { transform: none; } }
+@keyframes browser-in { from { opacity: 0; transform: translateX(60px); } to { opacity: 1; transform: none; } }
+@keyframes browser-out { from { opacity: 1; } to { opacity: 0; transform: translateX(60px); } }
+@media (prefers-reduced-motion: reduce) {
+  .stage > main, .browse-rail, .inpage-browser { transition: none; animation: none; }
+}
 @media (max-width: 760px) {
+  .stage.browsing { flex-direction: column; overflow: auto; }
+  .browse-rail { flex: 0 0 auto; flex-direction: row; justify-content: center; padding: 10px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .rail-label { writing-mode: horizontal-tb; transform: none; }
+  .inpage-browser > .browse { height: auto; }
   .browse { grid-template-columns: 1fr; grid-template-rows: 60vh auto; height: auto; }
   body.browse-mode main { overflow: auto; }
   .browse-right { padding: 16px; }

@@ -1347,32 +1347,65 @@ function richText(text, format) {
   return h("div", { class: "rich" }, richFromHtml(format === "html" ? text : mdToHtml(text || "")));
 }
 
-// ---------------------------------------------------------- mod browser window
-// Opened from setup and the Mods page: search, filters and sort at the top left, results
-// with checkboxes below, "Add selected" at the bottom, and the mod's page on the right.
+// ------------------------------------------------------------------ mod browser
+// Opened from setup, the Mods page and Friends: the page slides left into a narrow rail
+// (click it or press Escape to go back) and the browser takes the screen, with search,
+// filters and sort at the top left, results with checkboxes below, "Add selected" at the
+// bottom, and the mod's page on the right.
+let browserOpen = null;
 function openBrowser(params) {
-  const url = `${location.pathname}#browse?${new URLSearchParams(params)}`;
-  const win = window.open(url, "mcsm-browse", "width=1400,height=900");
-  if (!win) location.hash = `#browse?${new URLSearchParams(params)}`;  // popups blocked: open it here
-  else win.focus();
+  closeBrowser(true);
+  const stage = $("#stage");
+  const back = { setup: "setup", new: "setup", mods: "Mods", friends: "Friends" }[currentName] || "the page";
+  const rail = h("button", { type: "button", class: "browse-rail", title: `Back to ${back} (Esc)`, "aria-label": `Back to ${back}`,
+    onclick: () => closeBrowser() }, h("span", { class: "rail-arrow" }, "‹"), h("span", { class: "rail-label" }, `Back to ${back}`));
+  const refresh = () => { if (current && current.refresh) current.refresh(); };
+  const b = browserPanel(new URLSearchParams(params), {
+    close: () => closeBrowser(),
+    addMods: (mods) => {
+      for (const m of mods) setupAddMod(setupModKey(m), m.name);
+      toast(`${mods.length} mod(s) added`);
+      closeBrowser();
+      refresh();
+    },
+    pickPack: (pack) => {
+      Object.assign(setupState, { modpack: pack, loader: pack.loader, minecraft: pack.minecraft });
+      toast(`Modpack chosen: ${pack.name}`);
+      closeBrowser();
+      if (currentName === "new" || currentName === "setup") refresh(); else location.hash = "#new";
+    },
+    changed: () => { closeBrowser(); refresh(); },
+  });
+  const panel = h("section", { class: "inpage-browser", "aria-label": "Mod browser" }, b.el);
+  stage.append(rail, panel);
+  stage.classList.add("browsing");
+  browserOpen = { rail, panel };
+  b.start();
 }
-window.addEventListener("message", (e) => {
-  if (e.origin !== location.origin || !e.data || typeof e.data !== "object") return;
-  const d = e.data;
-  if (d.type === "mcsm-add-mods" && Array.isArray(d.mods)) {
-    for (const m of d.mods) setupAddMod(setupModKey(m), m.name);
-    toast(`${d.mods.length} mod(s) added`);
-    if (current && current.refresh) current.refresh();
-  } else if (d.type === "mcsm-modpack" && d.pack) {
-    Object.assign(setupState, { modpack: d.pack, loader: d.pack.loader, minecraft: d.pack.minecraft });
-    toast(`Modpack chosen: ${d.pack.name}`);
-    if ((currentName === "new" || currentName === "setup") && current && current.refresh) current.refresh();
-    else location.hash = "#new";
-  } else if (d.type === "mcsm-mods-changed" && current && current.refresh) current.refresh();
+function closeBrowser(instant = false) {
+  if (!browserOpen) return;
+  const { rail, panel } = browserOpen;
+  browserOpen = null;
+  const stage = $("#stage");
+  stage.classList.remove("browsing");
+  if (instant || matchMedia("(prefers-reduced-motion: reduce)").matches) { rail.remove(); panel.remove(); return; }
+  panel.classList.add("leaving");
+  rail.remove();
+  setTimeout(() => panel.remove(), 260);
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && browserOpen && !document.querySelector(".modal")) closeBrowser();
 });
 
-views.browse = (params) => {
+views.browse = (params) => {  // a direct #browse link: the browser on its own
   document.body.classList.add("browse-mode");
+  const b = browserPanel(params, null);
+  fill($("#main"), b.el);
+  b.start();
+  return {};
+};
+
+function browserPanel(params, host) {
   const kind = params.get("type") === "modpack" ? "modpack" : "mod";
   const target = params.get("target") || "setup";
   const loader = params.get("loader") || "";
@@ -1493,7 +1526,7 @@ views.browse = (params) => {
       const v = p.versions.find((x) => x.id === versionSel.value);
       const packLoader = (v.loaders.find((l) => ["fabric", "neoforge", "forge", "quilt"].includes(l)) || "vanilla");
       const pack = { project: p.id, version_id: v.id, name: p.name, version: v.name, minecraft: v.minecraft[0], loader: packLoader, icon: p.icon };
-      if (window.opener) { window.opener.postMessage({ type: "mcsm-modpack", pack }, location.origin); window.close(); }
+      if (host) host.pickPack(pack);
       else { Object.assign(setupState, { modpack: pack, loader: pack.loader, minecraft: pack.minecraft }); location.hash = "#new"; }
     } }, "Use this modpack") : null;
     fill(details,
@@ -1519,7 +1552,7 @@ views.browse = (params) => {
   addBtn.addEventListener("click", async () => {
     const mods = [...st.selected.values()].map((m) => ({ source: m.source, id: m.id, slug: m.slug, name: m.name }));
     if (target === "setup") {
-      if (window.opener) { window.opener.postMessage({ type: "mcsm-add-mods", mods }, location.origin); window.close(); return; }
+      if (host) { host.addMods(mods); return; }
       for (const m of mods) setupAddMod(setupModKey(m), m.name);
       location.hash = "#new";
       return;
@@ -1528,7 +1561,7 @@ views.browse = (params) => {
     if (!r) return;
     toast(`Added ${r.added.length} mod(s)` + (r.skipped.length ? `; skipped ${r.skipped.map((x) => `${x.name} (${x.reason})`).join(", ")}` : ""), r.skipped.length > 0);
     st.selected.clear(); renderList();
-    if (window.opener) window.opener.postMessage({ type: "mcsm-mods-changed" }, location.origin);
+    if (host) host.changed();
   });
   q.addEventListener("input", () => { st.q = q.value.trim(); clearTimeout(timer); timer = setTimeout(() => search(), 350); });
   sort.addEventListener("change", () => { st.sort = sort.value; search(); });
@@ -1540,23 +1573,20 @@ views.browse = (params) => {
     fill(category, h("option", { value: "" }, "All categories"), r ? r.categories.map((c) => h("option", { value: c.id }, c.name)) : []);
   };
 
-  fill($("#main"), h("div", { class: "browse" },
+  const el = h("div", { class: "browse" },
     h("div", { class: "browse-left" },
       h("div", { class: "browse-filters" },
         h("div", { class: "row" }, h("strong", { class: "grow" }, kind === "modpack" ? "Modpacks" : "Mods"),
           loader ? h("span", { class: "tag" }, loader) : null,
-          window.opener ? h("button", { class: "btn ghost small", onclick: () => window.close() }, "Close") : h("a", { class: "btn ghost small", href: target === "setup" ? "#new" : `#s/${target}/mods` }, "Back")),
+          host ? h("button", { class: "btn ghost small", onclick: () => host.close() }, "Close") : h("a", { class: "btn ghost small", href: target === "setup" ? "#new" : `#s/${target}/mods` }, "Back")),
         q,
         h("div", { class: "row" }, source, sort),
         h("div", { class: "row" }, category, version)),
       list,
       h("div", { class: "browse-footer" }, count, addBtn)),
-    details));
-  q.focus();
-  loadCategories();
-  search();
-  return {};
-};
+    details);
+  return { el, start: () => { q.focus(); loadCategories(); search(); } };
+}
 
 // ------------------------------------------------------------ advanced settings
 // Every other server.properties setting, grouped; edits `values` (key -> string) in place.
@@ -2582,6 +2612,7 @@ function renderNav() {
 }
 
 function route() {
+  closeBrowser(true);
   const hash = (location.hash || "#servers").slice(1);
   document.body.classList.remove("browse-mode");
   if (hash.startsWith("browse")) {  // the mod browser window: no navigation around it

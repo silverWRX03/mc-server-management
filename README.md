@@ -78,7 +78,7 @@ ready to update to Minecraft 1.21.4 with fabric 0.16.14:
 - **Try beta Minecraft versions** (snapshots and pre-releases) on a new server, or on a
   copy of an existing one so your real world is never touched.
 - **Mods three ways:** `.jar` files from your computer (ones Modrinth recognises are
-  kept up to date), a **mod browser window** (search Modrinth and CurseForge with
+  kept up to date), an in-page **mod browser** (search Modrinth and CurseForge with
   filters and sorting, read each mod's page, tick as many as you like), or a whole
   **Modrinth modpack**.
 - **Worlds:** pick the seed, world type, structures and hardcore when you create a
