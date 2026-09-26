@@ -839,7 +839,7 @@ views.mods = () => {
       m.listed ? h("span", { class: "tag ok" }, "added") : h("div", { class: "row" },
         h("button", { class: "btn primary small", onclick: () => add(m.slug, true) }, "Add"),
         h("button", { class: "btn small", title: "Won't hold back Minecraft upgrades", onclick: () => add(m.slug, false) }, "Add optional")),
-    )) : [h("p", { class: "empty" }, "No server-compatible mods found.")]));
+    )) : [h("p", { class: "empty" }, "No server mods found" + (info.minecraft ? ` that work on Minecraft ${info.minecraft}.` : "."))]));
   };
   const add = async (id, required, source = "modrinth") => {
     const r = await act(() => api("/api/mods/add", { method: "POST", body: { source, id, required } }));
@@ -1855,20 +1855,23 @@ views.setup = () => {
     const loaderLabel = (opts.loaders.find((l) => l.name === st.loader) || {}).label || st.loader;
     const search = async () => {
       const term = q.value.trim();
-      const url = `${isNew ? "/api/hub" : "/api"}/mods/search?loader=${encodeURIComponent(st.loader)}&` +
+      const mcv = setupModVersion();  // only mods with a build for the chosen Minecraft
+      const url = `${isNew ? "/api/hub" : "/api"}/mods/search?loader=${encodeURIComponent(st.loader)}&version=${encodeURIComponent(mcv)}&` +
         (term ? `q=${encodeURIComponent(term)}` : "top=1");
-      const key = st.loader + "|" + term;
+      const key = st.loader + "|" + mcv + "|" + term;
       const r = term || !topMods.has(key)
         ? await api(url).catch((e) => { toast(e.message, true); return null; }) : topMods.get(key);
       if (!r || q.value.trim() !== term) return;  // a newer search is on its way
       if (!term) topMods.set(key, r);
-      fill(results, term ? null : h("h3", { class: "mt-s" }, `Most popular ${loaderLabel} mods`),
+      fill(results, term ? null : h("h3", { class: "mt-s" }, `Most popular ${loaderLabel} mods` + (mcv ? ` for Minecraft ${mcv}` : "")),
+        mcv ? h("p", { class: "muted small" }, `Only mods that work on Minecraft ${mcv} are shown` +
+          (st.minecraft === "latest" ? " (the newest release; pick a version above to see mods for another)." : ".")) : null,
         r.results.length ? r.results.slice(0, term ? 10 : 20).map((m) => h("div", { class: "mod" },
         m.icon ? h("img", { src: m.icon, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("div", { class: "noicon" }),
         h("div", { class: "info" }, h("div", { class: "name" }, m.name), h("div", { class: "desc" }, m.description)),
         st.mods.has(m.slug) ? h("span", { class: "tag ok" }, "added")
           : h("button", { type: "button", class: "btn small primary", onclick: () => { setupAddMod(m.slug, m.name); search(); } }, "Add"),
-      )) : [h("p", { class: "empty" }, `No ${loaderLabel} server mods found.`)]);
+      )) : [h("p", { class: "empty" }, `No ${loaderLabel} server mods found` + (mcv ? ` for Minecraft ${mcv}.` : "."))]);
     };
     q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 350); });
     renderSelected();
@@ -1887,7 +1890,7 @@ views.setup = () => {
     const sources = h("div", { class: "source-buttons" },
       h("button", { type: "button", class: "btn", onclick: () => picker.click() }, "📁 Local files",
         h("span", { class: "small muted" }, ".jar files on this computer")),
-      h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: "setup", loader: st.loader, version: st.minecraft === "latest" ? "" : st.minecraft }) },
+      h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "mod", target: "setup", loader: st.loader, version: setupModVersion() }) },
         "🔎 Download mods", h("span", { class: "small muted" }, "Browse Modrinth and CurseForge")),
       h("button", { type: "button", class: "btn", onclick: () => openBrowser({ type: "modpack", target: "setup", loader: st.modpack ? "" : st.loader }) },
         "📦 Modpacks", h("span", { class: "small muted" }, "A ready-made pack of mods")),

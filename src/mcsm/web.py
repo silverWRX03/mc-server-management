@@ -413,7 +413,8 @@ def setup_options(mojang: Mojang) -> dict:
     }
 
 
-def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_loader: str) -> dict:
+def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_loader: str,
+                default_version: str | None = None) -> dict:
     """Modrinth search for the setup and Mods pages; with ``top=1`` and no query, the 20 most popular."""
     query = q.get("q", "").strip()
     top = q.get("top") == "1"
@@ -425,8 +426,11 @@ def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_l
         raise ApiError(400, "unknown loader")
     if not LOADERS[loader_name].mod_loaders:
         return {"results": []}  # vanilla: no mods
+    version = q.get("version", default_version) or None  # only mods with a build for it
+    if version and not re.fullmatch(r"[A-Za-z0-9.+-]{1,32}", version):
+        raise ApiError(400, "bad Minecraft version")
     results = provider.search(query, LOADERS[loader_name].mod_loaders, limit=20,
-                              index="relevance" if query else "downloads")
+                              index="relevance" if query else "downloads", minecraft=version)
     for r in results:
         r["listed"] = r["id"] in listed or r["slug"] in listed
     return {"results": results}
@@ -897,7 +901,7 @@ class Api:
 
     def search(self, q, b) -> dict:
         listed = {s.id for s in self.m.config.mods if s.source == "modrinth"}
-        return search_mods(self._modrinth(), q, listed, self.m.config.server.loader)
+        return search_mods(self._modrinth(), q, listed, self.m.config.server.loader, self.m.lock.minecraft)
 
     def add_mod(self, q, b) -> dict:
         source = b.get("source", "modrinth")
@@ -1132,7 +1136,7 @@ class Api:
         if not query and q.get("top") != "1":
             return {"results": []}
         results = self._modrinth().search(query, loaders, limit=20, index="relevance" if query else "downloads",
-                                          side="client")
+                                          side="client", minecraft=self.m.lock.minecraft)
         listed = set(self.m.config.client.mods)
         for r in results:
             r["listed"] = r["id"] in listed or r["slug"] in listed

@@ -54,3 +54,22 @@ def test_mods_page_groups_and_checks(hub_env, modrinth):
     assert c.post("/api/servers/alpha/mods/remove", {"source": "modrinth", "id": "topmod"})[0] == 200
     assert update(alpha.m).ok
     assert not {"Top Mod", "Mid Lib", "Dep Lib"} & {m.name for m in alpha.m.lock.mods}
+
+
+def test_mod_lists_only_show_mods_for_the_chosen_version(hub_env):
+    import json
+    from mcsm.mods.modrinth import API
+    hub, c = hub_env
+    login(c)
+    hub.http.json[f"{API}/search"] = {"hits": []}
+    seen, orig = [], hub.http.get_json
+    hub.http.get_json = lambda url, params=None, headers=None: seen.append(params) or orig(url, params, headers)
+    facets = lambda: json.loads(seen[-1]["facets"])  # noqa: E731
+    assert c.get("/api/hub/mods/search?loader=fabric&version=1.20.1&top=1")[0] == 200
+    assert ["versions:1.20.1"] in facets()
+    assert c.get("/api/servers/alpha/mods/search?q=x")[0] == 200
+    assert ["versions:1.21.1"] in facets()  # the server's own version
+    assert c.get("/api/servers/alpha/client/search?top=1")[0] == 200
+    assert ["versions:1.21.1"] in facets()
+    assert c.get("/api/hub/mods/search?loader=fabric&version=$(x)&top=1")[0] == 400
+    hub.http.get_json = orig

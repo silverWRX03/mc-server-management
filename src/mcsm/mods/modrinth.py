@@ -90,11 +90,14 @@ class ModrinthProvider(ModProvider):
         return self.http.post_json(f"{API}/version_files", {"hashes": sha1_hashes, "algorithm": "sha1"})
 
     def search(self, query: str, loaders: tuple[str, ...], limit: int = 20, index: str = "relevance",
-               side: str = "server") -> list[dict]:
+               side: str = "server", minecraft: str | None = None) -> list[dict]:
         """Mods for the server (or, with ``side="client"``, for players' computers) matching
-        ``query``, most relevant first (or most downloaded)."""
+        ``query``, most relevant first (or most downloaded). With ``minecraft``, only mods
+        that have a build for that version."""
         facets = [[f"categories:{l}" for l in loaders], [f"{side}_side:required", f"{side}_side:optional"],
                   ["project_type:mod"]]
+        if minecraft:
+            facets.append([f"versions:{minecraft}"])
         data = self.http.get_json(f"{API}/search", params={
             "query": query, "limit": limit, "index": index, "facets": json.dumps([f for f in facets if f])})
         return [{
