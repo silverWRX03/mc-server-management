@@ -79,12 +79,12 @@ class ModrinthProvider(ModProvider):
             return {}
         return self.http.post_json(f"{API}/version_files", {"hashes": sha1_hashes, "algorithm": "sha1"})
 
-    def search(self, query: str, loaders: tuple[str, ...], limit: int = 20) -> list[dict]:
-        """Server-compatible mods matching ``query``, most relevant first."""
+    def search(self, query: str, loaders: tuple[str, ...], limit: int = 20, index: str = "relevance") -> list[dict]:
+        """Server-compatible mods matching ``query``, most relevant first (or most downloaded)."""
         facets = [[f"categories:{l}" for l in loaders], ["server_side:required", "server_side:optional"],
                   ["project_type:mod"]]
         data = self.http.get_json(f"{API}/search", params={
-            "query": query, "limit": limit, "facets": json.dumps([f for f in facets if f])})
+            "query": query, "limit": limit, "index": index, "facets": json.dumps([f for f in facets if f])})
         return [{
             "id": h["project_id"], "slug": h.get("slug", ""), "name": h.get("title", ""),
             "description": h.get("description", ""), "icon": h.get("icon_url") or "",

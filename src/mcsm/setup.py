@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import config as configmod
 from .config import ConfigError, ModSpec
+from . import serverprops
 from .properties import write_properties
 
 PENDING = "setup-pending"
@@ -97,6 +98,7 @@ class SetupSpec:
     port: int = 25565
     network_access: bool = False   # let other devices on the network open the control panel
     accept_eula: bool = False
+    properties: dict[str, str] = field(default_factory=dict)  # advanced server.properties settings
 
     @classmethod
     def from_dict(cls, d: dict) -> SetupSpec:
@@ -136,6 +138,7 @@ class SetupSpec:
             port=number("port", 1024, 65535, 25565),
             network_access=bool(d.get("network_access", False)),
             accept_eula=d.get("accept_eula") is True,
+            properties=serverprops.validate(d.get("properties")),
         )
         if spec.loader not in configmod.LOADERS:
             raise ConfigError(f"unknown server type {spec.loader!r}")
@@ -175,6 +178,7 @@ def configure(root: Path, spec: SetupSpec) -> configmod.Config:
     cfg = configmod.load(root)
     cfg.server.dir.mkdir(parents=True, exist_ok=True)
     write_properties(cfg.server.dir / "server.properties", {
+        **spec.properties,
         "motd": spec.motd, "max-players": str(spec.max_players), "difficulty": spec.difficulty,
         "gamemode": spec.gamemode, "server-port": str(spec.port),
     })

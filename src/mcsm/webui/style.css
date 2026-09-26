@@ -242,3 +242,20 @@ body.setup-mode .actions { display: none; }
 a.server-card.new { text-decoration: none; color: var(--text); border-style: dashed; place-content: center; text-align: center; min-height: 150px; }
 a.server-card.new:hover { border-color: var(--accent); }
 .pill.unavailable, .pill.pending { color: #ffe8a8; background: #3a3215; border-color: #5c4d17; }
+
+/* advanced server settings */
+details.advanced > summary { cursor: pointer; font-weight: 600; list-style: revert; padding: 2px 0; }
+details.advanced[open] > summary { margin-bottom: 8px; }
+.props fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px 14px; margin: 12px 0 0; }
+.props legend { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; padding: 0 6px; }
+.props label { display: grid; gap: 6px; }
+.props label.prop-bool { display: flex; align-items: flex-start; gap: 10px; }
+.props label.prop-bool input { margin-top: 3px; }
+
+/* delete a server */
+.danger-zone { border-color: #5a2a27; }
+.danger-zone h3 { color: #ff9b94; }
+.props label.prop-bool { flex-wrap: nowrap; }
+.props label.prop-bool span { min-width: 0; }
+.choice span { overflow-wrap: anywhere; }
+.choice.selected.danger { border-color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); background: #2a1716; }

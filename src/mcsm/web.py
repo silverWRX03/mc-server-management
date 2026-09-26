@@ -31,7 +31,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, backup, config as configmod, licenses, notice, setup as setupmod, stats, webauth
+from . import __version__, backup, config as configmod, licenses, notice, serverprops, setup as setupmod, stats, webauth
 from .config import ConfigError, ModSpec
 from .daemon import Daemon, set_current_server
 from .hub import Hub
@@ -374,18 +374,24 @@ def setup_options(mojang: Mojang) -> dict:
         "memory_gb": setupmod.suggested_memory_gb(total),
         "difficulties": setupmod.DIFFICULTIES,
         "gamemodes": setupmod.GAMEMODES,
+        "properties_schema": serverprops.schema(),
     }
 
 
 def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_loader: str) -> dict:
+    """Modrinth search for the setup and Mods pages; with ``top=1`` and no query, the 20 most popular."""
     query = q.get("q", "").strip()
-    if not query:
+    top = q.get("top") == "1"
+    if not query and not top:
         return {"results": []}
     loader_name = q.get("loader") or default_loader
     from .loaders import LOADERS
     if loader_name not in LOADERS:
         raise ApiError(400, "unknown loader")
-    results = provider.search(query, LOADERS[loader_name].mod_loaders)
+    if not LOADERS[loader_name].mod_loaders:
+        return {"results": []}  # vanilla: no mods
+    results = provider.search(query, LOADERS[loader_name].mod_loaders, limit=20,
+                              index="relevance" if query else "downloads")
     for r in results:
         r["listed"] = r["id"] in listed or r["slug"] in listed
     return {"results": results}
@@ -405,7 +411,8 @@ class HubApi:
         r[("GET", "/api/hub/mods/search")] = lambda q, b: search_mods(ModrinthProvider(self.hub.http), q, set(), "fabric")
         r[("POST", "/api/hub/create")] = self.create
         r[("POST", "/api/hub/network")] = self.network
-        r[("POST", "/api/hub/remove")] = lambda q, b: {"ok": True, "moved_to": self.hub.discard(str(b.get("id", "")))}
+        r[("POST", "/api/hub/delete")] = lambda q, b: {
+            "ok": True, "message": self.hub.delete(str(b.get("id", "")), b.get("delete_files") is True)}
         r[("GET", "/api/notice")] = lambda q, b: {"accepted": notice.accepted(self.hub.root), "version": notice.NOTICE_VERSION,
                                                   "title": notice.TITLE, "points": notice.POINTS}
         r[("POST", "/api/notice/accept")] = self.accept_notice
@@ -830,11 +837,14 @@ class Api:
             "verify_boot": c.updates.verify_boot, "backups_keep": c.backups.keep,
             "discord_webhook": c.discord_webhook,
             "port": int(read_properties(self.m.server_dir / "server.properties").get("server-port", "25565") or 25565),
+            "properties": serverprops.current(read_properties(self.m.server_dir / "server.properties")),
+            "properties_schema": serverprops.schema(),
             "choices": {"strategy": configmod.STRATEGIES, "mod_channel": configmod.CHANNELS},
         }
 
     def save_settings(self, q, b) -> dict:
         b = dict(b)
+        advanced = serverprops.validate(b.pop("properties", None))
         port = b.pop("port", None)
         if port is not None:
             try:
@@ -869,10 +879,13 @@ class Api:
         except Exception:
             path.write_text(original)
             raise
-        if port is not None:
-            props = self.m.server_dir / "server.properties"
-            if str(port) != read_properties(props).get("server-port"):
-                self.m.server_dir.mkdir(parents=True, exist_ok=True)
-                write_properties(props, {"server-port": str(port)})
+        props = self.m.server_dir / "server.properties"
+        existing = read_properties(props)
+        changed = {k: v for k, v in advanced.items() if existing.get(k, serverprops.BY_KEY[k].default) != v}
+        if port is not None and str(port) != existing.get("server-port"):
+            changed["server-port"] = str(port)
+        if changed:
+            self.m.server_dir.mkdir(parents=True, exist_ok=True)
+            write_properties(props, changed)
         log.info("settings saved")
         return {"ok": True}

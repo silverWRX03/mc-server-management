@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -47,6 +48,20 @@ def running_hub(home: Path) -> int | None:
     except (FileNotFoundError, ValueError):
         return None
     return pid if pid != os.getpid() and pid_alive(pid) else None
+
+
+def _rmtree(path: Path) -> None:
+    """Delete a folder, including read-only files (Windows marks some that way)."""
+    import shutil
+    import stat
+
+    def retry(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
 
 
 def slugify(name: str) -> str:
@@ -159,15 +174,16 @@ class Hub:
 
     def discover(self) -> dict[str, Path]:
         found: dict[str, Path] = {}
-        if (self.home / configmod.CONFIG_NAME).exists():
+        hidden = {Path(p) for p in self._hub_file().get("hidden", []) if isinstance(p, str)}
+        if (self.home / configmod.CONFIG_NAME).exists() and self.home not in hidden:
             found[HOME_ID] = self.home
         servers = self.home / SERVERS_DIR
         if servers.is_dir():
             for d in sorted(servers.iterdir()):
-                if (d / configmod.CONFIG_NAME).exists() and d.name not in found:
+                if (d / configmod.CONFIG_NAME).exists() and d.name not in found and d.resolve() not in hidden:
                     found[d.name] = d
         for root in self._extra_roots():
-            if (root / configmod.CONFIG_NAME).exists() and root not in found.values():
+            if (root / configmod.CONFIG_NAME).exists() and root not in found.values() and root not in hidden:
                 sid, n = slugify(root.name), 2
                 while sid in found:
                     sid, n = f"{slugify(root.name)}-{n}", n + 1
@@ -270,37 +286,52 @@ class Hub:
             raise RuntimeError("the new server is busy; try again")
         return sid
 
-    def discard(self, sid: str) -> str:
-        """Take a server that was never installed off the list. Its files move to .mcsm/trash."""
-        import shutil
+    def delete(self, sid: str, delete_files: bool) -> str:
+        """Take a server off the list; with ``delete_files``, also erase its world, mods,
+        backups and settings. Only files mcsm made inside the server's folder are touched."""
         with self._lock:
             d = self.daemons.get(sid)
             if d is None:
                 raise RuntimeError("there's no server with that id")
-            if d.m.lock.installed or (d.proc and d.proc.running) or d.job:
-                raise RuntimeError("only a server that was never installed can be removed here")
-            root = d.m.config.root
+            if (d.proc and d.proc.running) or d.job:
+                raise RuntimeError("stop the server (and wait for anything it's doing to finish) first")
+            cfg = d.m.config
+            root = cfg.root
             d.stop_requested.set()
             t = self._threads.pop(sid, None)
             if t:
-                t.join(timeout=10)
+                t.join(timeout=30)
             self.daemons.pop(sid, None)
-            trash = self.home / configmod.STATE_DIR / "trash" / f"{sid}-{time.strftime('%Y%m%d-%H%M%S')}"
-            trash.mkdir(parents=True, exist_ok=True)
-            if root == self.home:
-                # The home folder is also mcsm's own: move just that server's files.
-                for name in (configmod.CONFIG_NAME, "mcsm.lock.json", d.m.config.server.dir.name):
-                    if (root / name).exists():
-                        shutil.move(str(root / name), str(trash / name))
-                setupmod.clear_pending(root)
+            data = self._hub_file()
+            data["extra"] = [p for p in data.get("extra", []) if p != str(root)]
+            if not delete_files:
+                data["hidden"] = sorted(set(data.get("hidden", [])) | {str(root)})
+                self._save_hub_file(data)
+                log.info("removed server %s from the list; its files are still in %s", sid, root)
+                return f"removed from the list; its files are still in {root}"
+            self._save_hub_file(data)
+            if root.parent == self.home / SERVERS_DIR:
+                _rmtree(root)  # mcsm's own folder for this server
             else:
-                shutil.move(str(root), str(trash / root.name))
-                data = self._hub_file()
-                if str(root) in data.get("extra", []):
-                    data["extra"] = [p for p in data["extra"] if p != str(root)]
-                    self._save_hub_file(data)
-        log.info("removed server %s (its files are in %s)", sid, trash)
-        return str(trash)
+                # A folder mcsm doesn't own (the home folder, or one you pointed it at): delete
+                # only what belongs to the server, and leave anything else there alone.
+                inside = [cfg.server.dir, cfg.backups.dir, cfg.manual_dir, root / configmod.CONFIG_NAME,
+                          root / "mcsm.lock.json"]
+                if root != self.home:
+                    inside.append(cfg.state_dir)
+                for p in inside:
+                    if p is None or not p.exists() or root not in p.parents:
+                        continue  # never anything outside the server's folder
+                    if p.is_dir():
+                        _rmtree(p)
+                    else:
+                        p.unlink()
+                if root == self.home:
+                    setupmod.clear_pending(root)
+                elif root.exists() and not any(root.iterdir()):
+                    root.rmdir()
+        log.info("deleted server %s and all of its files (%s)", sid, root)
+        return "deleted, with its world, mods and backups"
 
     def summary(self) -> list[dict]:
         out = []

@@ -83,14 +83,47 @@ def test_servers_are_listed_and_never_start_by_themselves(hub_env):
     assert c.post("/api/servers/alpha/server/stop")[0] == 200
     wait_for(lambda: hub.get("alpha").state == "stopped" and not hub.get("alpha").job, timeout=30)
 
-    # A server that was never installed can be taken off the list (installed ones can't).
-    assert c.post("/api/hub/remove", {"id": "alpha"})[0] == 400
-    assert c.post("/api/hub/remove", {"id": "main"})[0] == 200
-    assert not (hub.home / "mcsm.toml").exists() and any((hub.home / ".mcsm" / "trash").iterdir())
-    import time as _t
-    _t.sleep(0.5)
+
+
+def test_delete_servers(hub_env):
+    hub, c = hub_env
+    login(c)
+    alpha = hub.get("alpha").m.config.root
+    world = hub.get("alpha").m.server_dir / "world"
+    world.mkdir(parents=True, exist_ok=True)
+    (world / "level.dat").write_text("level")
+
+    # A running server can't be deleted.
+    assert c.post("/api/servers/alpha/server/start")[0] == 200
+    wait_for(lambda: hub.get("alpha").state == "running", timeout=30)
+    assert c.post("/api/hub/delete", {"id": "alpha", "delete_files": True})[0] == 400
+    assert c.post("/api/servers/alpha/server/stop")[0] == 200
+    wait_for(lambda: hub.get("alpha").state == "stopped" and not hub.get("alpha").job, timeout=30)
+
+    # "Keep the files": off the list (and it stays off), but the world is untouched.
+    status, body, _ = c.post("/api/hub/delete", {"id": "alpha", "delete_files": False})
+    assert status == 200 and "still in" in body["message"]
+    assert (world / "level.dat").read_text() == "level"
     hub.scan()
-    assert [s["id"] for s in c.get("/api/hub")[1]["servers"]] == ["alpha"]
+    assert "alpha" not in {s["id"] for s in c.get("/api/hub")[1]["servers"]}
+
+    # "Delete everything" in the home folder removes only that server's files, not mcsm's own.
+    (hub.home / "notes.txt").write_text("mine")
+    status, body, _ = c.post("/api/hub/delete", {"id": "main", "delete_files": True})
+    assert status == 200, body
+    assert not (hub.home / "mcsm.toml").exists() and not (hub.home / "server").exists()
+    assert (hub.home / "notes.txt").exists() and (hub.home / ".mcsm" / "web-auth.json").exists()
+    assert alpha.exists()  # the kept one is still there
+
+    # A server in mcsm's servers folder is erased completely.
+    sid = c.post("/api/hub/create", {"loader": "vanilla", "motd": "Temp", "accept_eula": True})[1]["id"]
+    d = hub.get(sid)
+    wait_for(lambda: d.last_job and d.last_job["name"] == "set up server", timeout=30)
+    root = d.m.config.root
+    assert root.exists()
+    assert c.post("/api/hub/delete", {"id": sid, "delete_files": True})[0] == 200
+    assert not root.exists()
+    assert c.get("/api/hub")[1]["servers"] == []
 
 
 def test_create_a_server_from_the_web(hub_env):
@@ -101,9 +134,18 @@ def test_create_a_server_from_the_web(hub_env):
     from mcsm.mods.modrinth import API
     hub.http.json[f"{API}/search"] = {"hits": [{"project_id": "AAA", "slug": "goodmod", "title": "Good Mod"}]}
     assert c.get("/api/hub/mods/search?loader=fabric&q=good")[1]["results"][0]["slug"] == "goodmod"
+    # With nothing typed, the setup page lists the 20 most downloaded mods for the loader.
+    seen, orig = [], hub.http.get_json
+    hub.http.get_json = lambda url, params=None, headers=None: seen.append(params) or orig(url, params, headers)
+    assert c.get("/api/hub/mods/search?loader=fabric&top=1")[1]["results"]
+    assert seen[-1]["index"] == "downloads" and seen[-1]["limit"] == 20 and seen[-1]["query"] == ""
+    assert c.get("/api/hub/mods/search?loader=vanilla&top=1")[1]["results"] == []
+    assert c.get("/api/hub/mods/search?loader=fabric")[1]["results"] == []
+    hub.http.get_json = orig
 
     status, body, _ = c.post("/api/hub/create", {"loader": "fabric", "minecraft": "1.21.1", "mods": ["goodmod"],
-                                                  "motd": "My World!", "accept_eula": True})
+                                                  "motd": "My World!", "accept_eula": True,
+                                                  "properties": {"pvp": False, "view-distance": "12"}})
     assert status == 200, body
     sid = body["id"]
     assert sid == "my-world" and (hub.home / "servers" / "my-world" / "mcsm.toml").exists()
@@ -112,6 +154,8 @@ def test_create_a_server_from_the_web(hub_env):
     assert d.last_job["ok"], d.last_job
     assert "press Start" in d.last_job["message"]
     assert d.state == "stopped" and not d.setup_pending  # installed and test-booted, but not left running
+    from mcsm.properties import read_properties
+    assert read_properties(d.m.server_dir / "server.properties")["pvp"] == "false"  # advanced setting
     lk = lockmod.load(d.m.config.root)
     assert lk.minecraft == "1.21.1" and {m.name for m in lk.mods} == {"Fabric API", "Good Mod"}
     # A second server with the same name gets its own folder, and each gets its own port.
@@ -122,7 +166,13 @@ def test_create_a_server_from_the_web(hub_env):
     status, body, _ = c.post("/api/servers/my-world/settings", {"port": 25565})
     assert status == 400 and "alpha" in body["error"]
     assert c.post("/api/servers/my-world/settings", {"port": 25600})[0] == 200
-    assert c.get("/api/servers/my-world/settings")[1]["port"] == 25600
+    settings = c.get("/api/servers/my-world/settings")[1]
+    assert settings["port"] == 25600 and settings["properties"]["view-distance"] == "12"
+    assert c.post("/api/servers/my-world/settings", {"properties": {"spawn-protection": 0, "level-seed": "abc"}})[0] == 200
+    props = read_properties(d.m.server_dir / "server.properties")
+    assert props["spawn-protection"] == "0" and props["level-seed"] == "abc" and props["pvp"] == "false"
+    assert c.post("/api/servers/my-world/settings", {"properties": {"rcon.password": "x"}})[0] == 400
+    assert c.post("/api/servers/my-world/settings", {"properties": {"view-distance": 99}})[0] == 400
     # ...and one can't start while another running server is on its port.
     from mcsm.properties import write_properties
     write_properties(d.m.server_dir / "server.properties", {"server-port": "25565"})
