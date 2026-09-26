@@ -51,6 +51,7 @@ SESSION_COOKIE = "mcsm_session"
 SESSION_TTL = 7 * 86400
 MAX_JSON = 1 << 20
 MAX_UPLOAD = 512 << 20
+MAX_ARCHIVE = 64 << 30  # a whole server (worlds and all), for importing
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8")}
@@ -241,6 +242,20 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, path: Path):
+        """Stream a file from disk as a download."""
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(size))
+        quoted = urllib.parse.quote(path.name)
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quoted}")
+        for k, v in {"Cache-Control": "no-store", **SECURITY_HEADERS}.items():
+            self.send_header(k, v)
+        self.end_headers()
+        with open(path, "rb") as f:
+            shutil.copyfileobj(f, self.wfile, 1 << 20)
+
     def _json(self, status: int, obj: Any, headers: dict[str, str] | None = None):
         self._send(status, json.dumps(obj).encode(), "application/json", headers)
 
@@ -347,6 +362,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, api.upload(self, q))
             if path in RAW_UPLOADS:
                 return self._json(200, handler(q, self))
+            if path == "/api/export/download":
+                return self._send_file(api.export_file(q.get("name", "")))
             if path == "/api/players/skin":
                 try:
                     png = api.skins.png(q.get("name", ""))
@@ -458,6 +475,7 @@ class HubApi:
         r[("POST", "/api/hub/share")] = self.save_share
         r[("GET", "/api/hub/port")] = self.port_check
         r[("POST", "/api/hub/stage")] = self.stage
+        r[("POST", "/api/hub/import")] = lambda q, b: {"ok": True, "id": self.hub.import_server(str(b.get("id", "")))}
         r[("GET", "/api/hub/browse/search")] = lambda q, b: browse_search(self.browser(), q)
         r[("GET", "/api/hub/browse/project")] = lambda q, b: browse_project(self.browser(), q)
         r[("GET", "/api/hub/browse/categories")] = lambda q, b: browse_categories(self.browser(), q)
@@ -495,7 +513,7 @@ class HubApi:
         name = q.get("filename", "")
         if not re.fullmatch(r"[A-Za-z0-9 ()\[\]+_.,'-]{1,120}\.(jar|zip)", name):
             raise ApiError(400, "only .jar and .zip files can be added here")
-        return self.hub.stage_upload(handler, name, MAX_UPLOAD * 8 if name.endswith(".zip") else MAX_UPLOAD)
+        return self.hub.stage_upload(handler, name, MAX_ARCHIVE if name.endswith(".zip") else MAX_UPLOAD)
 
     def port_check(self, q, b) -> dict:
         try:
@@ -593,6 +611,10 @@ class Api:
         get("/api/backups", self.backups)
         post("/api/backups/create", self.create_backup)
         post("/api/backups/restore", self.restore_backup)
+        get("/api/export", self.exports)
+        post("/api/export", self.export)
+        post("/api/export/delete", self.delete_export)
+        get("/api/export/download", self.exports)  # streamed by the request handler
         get("/api/players", self.players)
         post("/api/players/action", self.player_action)
         get("/api/java", self.java)
@@ -993,6 +1015,48 @@ class Api:
             backup.prune(self.m.config.backups.dir, self.m.config.backups.keep)
             return f"created {path.name}"
         return self._job("backup", run)
+
+    # --------------------------------------------------------------- export
+    @property
+    def exports_dir(self) -> Path:
+        hub = self.web.hub
+        return (hub.exports_dir if not hub.is_single else self.m.config.root / "exports") / self.sid
+
+    def exports(self, q, b) -> dict:
+        d = self.exports_dir
+        files = sorted(d.glob("*.mcsm.zip"), key=lambda p: p.stat().st_mtime, reverse=True) if d.is_dir() else []
+        return {"folder": str(d), "exports": [{"name": p.name, "size": p.stat().st_size, "created": p.stat().st_mtime}
+                                               for p in files]}
+
+    def export_file(self, name: str) -> Path:
+        path = self.exports_dir / name
+        if Path(name).name != name or not name.endswith(".mcsm.zip") or not path.is_file():
+            raise ApiError(404, "no such export")
+        return path
+
+    def export(self, q, b) -> dict:
+        from . import transfer
+        include_backups = bool(b.get("backups"))
+
+        def run():
+            running = self.d.proc and self.d.proc.running
+            if running:  # write everything to disk and hold it there while copying
+                self.d.proc.send("save-off")
+                self.d.proc.send("save-all flush")
+                time.sleep(5)
+            try:
+                from .properties import read_properties
+                name = read_properties(self.m.server_dir / "server.properties").get("motd") or self.sid
+                path = transfer.export(self.m, self.exports_dir / transfer.export_name(name), include_backups)
+            finally:
+                if running and self.d.proc and self.d.proc.running:
+                    self.d.proc.send("save-on")
+            return f"exported to {path.name}"
+        return self._job("export", run)
+
+    def delete_export(self, q, b) -> dict:
+        self.export_file(str(b.get("name", ""))).unlink()
+        return {"ok": True}
 
     def restore_backup(self, q, b) -> dict:
         name = str(b.get("name", ""))

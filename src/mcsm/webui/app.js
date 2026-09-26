@@ -46,6 +46,24 @@ async function api(path, { method = "GET", body, raw } = {}) {
   return data;
 }
 
+// Uploads a big file with progress (fetch can't report upload progress).
+function upload(path, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", scoped(path));
+    xhr.setRequestHeader("X-MCSM", "1");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (_) { /* empty */ }
+      if (xhr.status === 401) { showLogin(); reject(new Unauthorized()); return; }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data); else reject(new Error(data.error || xhr.statusText));
+    };
+    xhr.onerror = () => reject(new Error("the upload failed; check the connection and try again"));
+    xhr.send(file);
+  });
+}
+
 // A toast that stays until the user picks an action.
 function stickyToast(id, children) {
   if (document.getElementById(id)) return;
@@ -929,10 +947,34 @@ views.settings = () => {
         h("span", { class: "grow muted" }, "Take it off your list, and choose whether to also erase its world, mods and backups."),
         h("button", { class: "btn danger", onclick: () => deleteServer(me, () => { location.hash = "#servers"; }) }, "Delete server…")));
   };
-  fill($("#main"), h("h2", { class: "view-title" }, "Server settings"), form, danger);
+  // Move to another computer: export everything to one file, import it there.
+  const exportCard = h("div", { class: "card mt" });
+  const withBackups = h("input", { type: "checkbox" });
+  const loadExports = async () => {
+    const r = await api("/api/export").catch(() => null);
+    if (!r) return;
+    fill(exportCard, h("h3", {}, "Move to another computer"),
+      h("p", { class: "muted small" }, "Export saves this server (worlds, mods, configs, settings, player lists) in one .zip. " +
+        "On the other computer, install mcsm, then choose Import a server on the server list. The world is saved first, " +
+        "so this works while the server runs."),
+      h("div", { class: "row" },
+        h("button", { class: "btn primary", disabled: !!(status && status.job), onclick: () => act(() => api("/api/export", { method: "POST", body: { backups: withBackups.checked } }), "Exporting…") }, "Export server"),
+        h("label", { class: "row" }, withBackups, h("span", {}, "Include backups (bigger file)"))),
+      r.exports.length ? h("table", { class: "mt-s" },
+        h("thead", {}, h("tr", {}, h("th", {}, "Export"), h("th", {}, "Made"), h("th", {}, "Size"), h("th", {}))),
+        h("tbody", {}, r.exports.map((x) => h("tr", {},
+          h("td", {}, h("code", {}, x.name)), h("td", {}, fmtTime(x.created)), h("td", {}, fmtBytes(x.size)),
+          h("td", { class: "row" },
+            h("a", { class: "btn small", href: scoped(`/api/export/download?name=${encodeURIComponent(x.name)}`), download: x.name }, "Download"),
+            h("button", { class: "btn small danger", onclick: () => confirm(`Delete ${x.name}?`) && act(() => api("/api/export/delete", { method: "POST", body: { name: x.name } }), "Deleted").then(loadExports) }, "Delete"))))))
+        : null,
+      h("p", { class: "muted small mt-s" }, "Exports are kept in ", h("code", {}, r.folder)));
+  };
+  fill($("#main"), h("h2", { class: "view-title" }, "Server settings"), form, exportCard, danger);
   load();
+  loadExports();
   renderDanger();
-  return { onStatus: renderDanger };
+  return { onStatus: renderDanger, onJobDone: loadExports };
 };
 
 // ------------------------------------------------------------------ friends
@@ -1383,8 +1425,34 @@ views.servers = () => {
       hb.single ? null : h("a", { class: "card server-card new", href: "#new" },
         h("strong", {}, "+ New server"), h("span", { class: "muted small" }, "Pick a server type, Minecraft version and mods")));
   };
+  // Import a server exported on another computer (Settings → Export).
+  const picker = h("input", { type: "file", accept: ".zip", class: "hidden" });
+  const importNote = h("span", { class: "muted small" });
+  const importBtn = h("button", { class: "btn", onclick: () => picker.click() }, "Import a server…");
+  picker.addEventListener("change", async () => {
+    const f = picker.files[0];
+    picker.value = "";
+    if (!f) return;
+    importBtn.disabled = true;
+    try {
+      const staged = await upload(`/api/hub/stage?filename=${encodeURIComponent(f.name.replace(/[^A-Za-z0-9 ()\[\]+_.,'-]/g, "_"))}`, f,
+        (done) => { importNote.textContent = `Uploading ${f.name}: ${Math.round(done * 100)}%`; });
+      importNote.textContent = "Unpacking…";
+      const r = await api("/api/hub/import", { method: "POST", body: { id: staged.id } });
+      toast("Imported. Press Start when you're ready.");
+      await refreshStatus();
+      location.hash = `#s/${r.id}/dashboard`;
+    } catch (e) {
+      if (!(e instanceof Unauthorized)) toast(e.message, true);
+    } finally {
+      importBtn.disabled = false;
+      importNote.textContent = "";
+    }
+  });
   fill($("#main"),
-    h("p", { class: "muted" }, "Servers only run when you start them here, and stop when you press Stop or close mcsm."),
+    h("div", { class: "row mb" },
+      h("p", { class: "muted grow" }, "Servers only run when you start them here, and stop when you press Stop or close mcsm."),
+      hubInfo && hubInfo.single ? null : h("div", { class: "row" }, importNote, importBtn, picker)),
     list);
   render(hubInfo);
   return { onHub: render };
