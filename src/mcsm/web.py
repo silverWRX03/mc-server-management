@@ -974,13 +974,9 @@ class Api:
         return trial.check(self._modrinth(), loaders, minecraft, mods)
 
     def _configured_with_deps(self) -> list[dict]:
-        """The mods in mcsm.toml, each with the dependencies installed for it (they go when it goes)."""
+        """The mods in mcsm.toml, each with the dependencies installed for it (several mods can share one)."""
         lk = self.m.lock
         installed = {x.key: x for x in lk.mods}
-        children: dict[str, list] = {}
-        for x in lk.mods:
-            if x.dependency_of:
-                children.setdefault(x.dependency_of, []).append(x)
         out = []
         for spec in self.m.config.mods:
             key = f"{spec.source}:{spec.id}"
@@ -993,14 +989,15 @@ class Api:
                         key = self._modrinth().project(spec.id).key  # a slug in mcsm.toml
                     except Exception:
                         pass
-            deps, todo, seen = [], list(children.get(key, [])), {key}
-            while todo:
-                d = todo.pop(0)
-                if d.key in seen:
-                    continue
-                seen.add(d.key)
-                deps.append({"key": d.key, "name": d.name})
-                todo += children.get(d.key, [])
+            deps, todo, seen = [], [key], {key}
+            while todo:  # follow each installed mod's own list of what it needs
+                mod = installed.get(todo.pop(0))
+                for pid in (mod.dependencies if mod else []):
+                    dk = f"{mod.source}:{pid}"
+                    if dk in installed and dk not in seen:
+                        seen.add(dk)
+                        deps.append({"key": dk, "name": installed[dk].name})
+                        todo.append(dk)
             out.append({"source": spec.source, "id": spec.id, "required": spec.required, "key": key,
                         "name": installed[key].name if key in installed else spec.id, "deps": deps})
         return out

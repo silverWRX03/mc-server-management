@@ -909,9 +909,17 @@ views.mods = () => {
         h("input", { type: "checkbox", checked: s.required, onchange: (e) => act(() => api("/api/mods/required", { method: "POST", body: { source: s.source, id: s.id, required: e.target.checked } })) }),
         "required"),
       cfgBtn(groupFor(s.key)),
-      h("button", { class: "btn danger small", onclick: () => confirm(`Remove ${s.name}?` +
-        (s.deps.length ? ` The mods it needs (${s.deps.map((d) => d.name).join(", ")}) go too, unless another mod needs them.` : "") +
-        " It's uninstalled at the next update.") && removeMods([s], s.name) }, "Remove")),
+      h("button", { class: "btn danger small", onclick: () => {
+        // Dependencies another mod also needs stay; say so before and after.
+        const shared = s.deps.map((d) => [d, needersOf(d.key).filter((c) => c.key !== s.key)]).filter(([, others]) => others.length);
+        const going = s.deps.filter((d) => !shared.some(([x]) => x.key === d.key));
+        if (!confirm(`Remove ${s.name}?` +
+          (going.length ? ` The mods it needs (${going.map((d) => d.name).join(", ")}) go too.` : "") +
+          (shared.length ? ` ${shared.map(([d]) => d.name).join(", ")} ${shared.length === 1 ? "stays" : "stay"}, because other mods need ${shared.length === 1 ? "it" : "them"}.` : "") +
+          " It's uninstalled at the next update.")) return;
+        removeMods([s], s.name);
+        for (const [d, others] of shared) toast(`${d.name} wasn't removed: ${others.map((c) => c.name).join(" and ")} ${others.length === 1 ? "needs" : "need"} it too.`);
+      } }, "Remove")),
       ...s.deps.map((d) => h("li", { class: "dep" },
         h("div", { class: "grow" }, "↳ ", h("strong", {}, d.name), h("span", { class: "tag" }, `needed by ${needersOf(d.key).map((c) => c.name).join(", ")}`)),
         h("button", { class: "btn ghost small", onclick: () => {
@@ -2105,7 +2113,7 @@ async function setupAddMod(key, name) {
   setupChanged();
   await setupCheckMod(key);
 }
-async function setupCheckMod(key) {
+async function setupCheckMod(key, quiet = false) {
   const st = setupState;
   const e = st.mods.get(key);
   if (!e || !st.loader || key.startsWith("curseforge:")) return;
@@ -2115,10 +2123,15 @@ async function setupCheckMod(key) {
   if (!r || st.mods.get(key) !== e) return;
   e.name = r.project.name;
   e.bad = r.compatible ? "" : r.reason;
+  const added = [];
   for (const d of r.deps) {
     const dk = d.slug || d.id;
-    if (!st.mods.has(dk)) st.mods.set(dk, { name: d.name, required: e.required, explicit: false, by: new Set(), bad: "" });
+    if (!st.mods.has(dk)) { st.mods.set(dk, { name: d.name, required: e.required, explicit: false, by: new Set(), bad: "" }); added.push(d); }
     st.mods.get(dk).by.add(key);
+  }
+  if (added.length && !quiet) {
+    toast(`Added ${added.map((d) => d.name).join(", ")} because ${added.length === 1 ? "it's" : "they're"} needed by ` +
+      [...new Set(added.map((d) => d.needed_by))].join(" and ") + ".");
   }
   setupChanged();
 }
@@ -2129,21 +2142,30 @@ function setupRemoveMod(key) {
   const needers = [...e.by].filter((k) => st.mods.has(k));
   if (needers.length && !confirm(`${e.name} is needed by ${needers.map((k) => st.mods.get(k).name).join(", ")}. ` +
     `Remove ${needers.length === 1 ? "that" : "those"} too?`)) return;
+  const stays = new Map();  // dependency name -> the mods that still need it
   const drop = (k) => {
     const x = st.mods.get(k);
     if (!x) return;
     st.mods.delete(k);
+    stays.delete(x.name);
     for (const n of x.by) drop(n);  // what needs it goes with it
-    for (const [ok, o] of [...st.mods]) if (o.by.delete(k) && !o.explicit && o.by.size === 0) drop(ok);  // unneeded deps
+    for (const [ok, o] of [...st.mods]) {
+      if (!o.by.delete(k)) continue;
+      if (!o.explicit && o.by.size === 0) drop(ok);  // nothing needs it any more
+      else if (!o.explicit) stays.set(o.name, [...o.by].map((b) => (st.mods.get(b) || {}).name).filter(Boolean));
+    }
   };
   drop(key);
+  for (const [name, needers] of stays) {
+    if (needers.length) toast(`${name} stays: ${needers.join(" and ")} ${needers.length === 1 ? "needs" : "need"} it too.`);
+  }
   setupChanged();
 }
 function setupRecheckMods() {
   // The Minecraft version or server type changed: dependencies and compatibility may differ.
   const st = setupState;
   for (const [k, e] of [...st.mods]) { if (!e.explicit) st.mods.delete(k); else e.by.clear(); }
-  for (const k of st.mods.keys()) setupCheckMod(k);
+  for (const k of st.mods.keys()) setupCheckMod(k, true);
 }
 
 // ------------------------------------------------------ setup progress dock
@@ -2243,7 +2265,7 @@ views.setup = () => {
       const shown = new Set();
       const row = (key, depth) => {
         const m = st.mods.get(key);
-        if (!m || shown.has(key)) return;
+        if (!m || (depth === 0 && shown.has(key)) || depth > 6) return;  // (mods that need each other)
         shown.add(key);
         const needers = [...m.by].filter((k) => st.mods.has(k)).map((k) => st.mods.get(k).name);
         rows.push(h("li", { class: depth ? "dep" : null },
