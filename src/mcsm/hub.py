@@ -108,6 +108,7 @@ class Hub:
         self.home = home.resolve()
         self.http = http or HttpClient()
         self.make_manager = make_manager or (lambda cfg: Manager(cfg, http=self.http, echo=False))
+        self.trials: dict = {}  # test boots (trial.Trial) by id
         self.tick = tick
         self._single: Daemon | None = None
         self.daemons: dict[str, Daemon] = {}
@@ -137,6 +138,8 @@ class Hub:
         hub.ui = None
         hub.share = None
         hub.share_error = None
+        hub.trials = {}
+        hub.make_manager = lambda cfg: Manager(cfg, http=hub.http, echo=False)
         return hub
 
     # --------------------------------------------------------- settings

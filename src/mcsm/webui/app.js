@@ -956,7 +956,16 @@ views.mods = () => {
       h("div", { class: "row mt-s" }, cfId,
         h("button", { class: "btn", onclick: () => cfId.value.trim() && add(cfId.value.trim(), true, "curseforge") }, "Add from CurseForge"))),
     h("div", { class: "mt" }, configsCard),
-    h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured),
+    h("div", { class: "grid mt" }, card("Configured (mcsm.toml)", configured,
+      h("div", { class: "row mt-s" }, testButton({
+        quick: () => api("/api/mods/check", { method: "POST", body: {} }),
+        trial: { server },
+        keepWorking: async (res) => {
+          for (const o of res.outliers) await api("/api/mods/remove", { method: "POST", body: { source: o.source, id: o.id } }).catch((e) => toast(e.message, true));
+          toast(`Removed ${res.outliers.map((o) => o.id).join(", ")}. They're uninstalled at the next update.`);
+          load();
+        },
+      }))),
       card("Installed", hubInfo && hubInfo.local ? h("div", { class: "row mb" }, folderBtn("mods", "Mods folder"), folderBtn("config", "Config folder")) : null, installed)),
   );
   load();
@@ -1224,6 +1233,8 @@ views.friends = () => {
         d.mods.length ? h("ul", { class: "list" }, d.mods.map((x) => h("li", {}, h("strong", { class: "grow" }, x),
           h("button", { class: "btn small danger", onclick: () => save({ mods: d.mods.filter((y) => y !== x) }, `${x} removed`).then(search) }, "Remove"))))
           : h("p", { class: "empty" }, "None yet. Add some below, or leave it: players get the server's mods either way."),
+        h("div", { class: "row mt-s" }, testButton({ quick: () => api("/api/client/check", { method: "POST", body: {} }), trial: null }),
+          h("span", { class: "muted small" }, "Checks the server's mods and these together.")),
         h("h3", { class: "mt" }, "Find mods"), q, results)),
     );
     if (!results.childElementCount) search();
@@ -1539,6 +1550,113 @@ function propsEditor(schema, values) {
 // Only the settings that differ from `base`, so untouched ones keep Minecraft's own defaults.
 function changedProps(values, base) {
   return Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== base[k]));
+}
+
+// ------------------------------------------------------------ try before you buy
+// "Test these mods": an instant check (builds for this version, declared conflicts), then,
+// where a server can be started, a test boot in a throwaway server; if that fails, an
+// offer to find the culprits by adding the mods back a group at a time.
+//   opts.quick()      -> Promise of /check's result
+//   opts.trial        -> body for POST /api/hub/trial (without bisect), or null (friends: no boot)
+//   opts.keepWorking  -> called with the report, to drop the mods that don't work
+function testButton(opts) {
+  return h("button", { type: "button", class: "btn", onclick: () => openTester(opts) }, "🧪 Test these mods");
+}
+function openTester(opts) {
+  if ($("#tester")) return;
+  const body = h("div", {}, h("p", { class: "muted" }, "Checking…"));
+  let poll = null, running = null, quickResult = null;
+  const close = () => {
+    if (running && !confirm("Stop the test?")) return;
+    if (running) api("/api/hub/trial/cancel", { method: "POST", body: { id: running } }).catch(() => {});
+    clearInterval(poll);
+    $("#tester").remove();
+  };
+  const box = h("div", { class: "modal tester" },
+    h("div", { class: "row" }, h("h2", { id: "tester-title", class: "grow" }, "Test these mods"), h("button", { class: "btn ghost small", onclick: close }, "Close")),
+    body);
+  document.body.append(h("div", { class: "modal-backdrop", id: "tester", role: "dialog", "aria-modal": "true", "aria-labelledby": "tester-title" }, box));
+
+  const issues = (r) => [
+    ...r.conflicts.map((c) => h("li", {}, h("strong", {}, c.mods.join(" + ")), h("div", { class: "small muted" }, c.reason))),
+    ...r.problems.map((p) => h("li", {}, h("strong", {}, p.mod), h("div", { class: "small muted" }, p.reason)))];
+
+  const runTrial = async (bisect) => {
+    const log = h("pre", { class: "log" });
+    const head = h("div", { class: "row" }, h("span", { class: "spinner" }),
+      h("span", { class: "grow" }, bisect ? "Finding which mods don't work together…" : "Test boot: installing the mods in a throwaway server and starting it…"),
+      h("span", { class: "muted small tester-time" }));
+    fill(body, head, log, h("p", { class: "muted small" }, "Your servers aren't touched. The test server is deleted afterwards."));
+    let r;
+    try { r = await api("/api/hub/trial", { method: "POST", body: { ...opts.trial, bisect } }); }
+    catch (e) { fill(body, h("div", { class: "notice bad" }, e.message)); return; }
+    running = r.id;
+    let seen = 0;
+    poll = setInterval(async () => {
+      const t = await api(`/api/hub/trial?id=${running}&since=${seen}`).catch(() => null);
+      if (!t) return;
+      seen = t.next;
+      log.textContent += t.log.map((x) => x + "\n").join("");
+      log.scrollTop = log.scrollHeight;
+      head.querySelector(".tester-time").textContent = `${Math.floor(t.elapsed / 60)}:${String(t.elapsed % 60).padStart(2, "0")}`;
+      if (t.state === "running") return;
+      clearInterval(poll);
+      running = null;
+      report(t, log.textContent);
+    }, 1500);
+  };
+
+  const report = (t, logText) => {
+    const res = t.result || {};
+    const details = h("details", { class: "mt-s" }, h("summary", {}, "What was tested"), h("pre", { class: "log" }, logText));
+    if (t.state === "cancelled") { fill(body, h("div", { class: "notice" }, "The test was stopped."), details); return; }
+    if (res.ok) {
+      fill(body, h("div", { class: "notice ok" }, h("strong", {}, "✓ It works. "),
+        `The server started with ${res.working.length ? "all these mods" : "these settings"}` + (res.minecraft ? ` on Minecraft ${res.minecraft}.` : ".")), details);
+      return;
+    }
+    const diag = res.diagnosis && res.diagnosis.summary;
+    if (!res.bisected) {
+      fill(body,
+        h("div", { class: "notice bad" }, h("strong", {}, "✗ The server didn't start. "), diag || res.reason),
+        h("p", {}, "mcsm can find which mods are the problem: it starts test servers with the mods added back a group at a time, splitting any group that fails, until it knows which mods work together."),
+        h("div", { class: "notice warn" }, "This can take a while: each test starts a server (usually 1 to 3 minutes each), and a long mod list can need a dozen tests or more."),
+        h("div", { class: "row mt-s" },
+          h("button", { class: "btn primary", onclick: () => runTrial(true) }, "Find the culprits"),
+          h("button", { class: "btn ghost", onclick: close }, "Not now")),
+        details);
+      return;
+    }
+    fill(body,
+      res.outliers.length ? h("div", { class: "notice warn" }, h("strong", {}, `${res.working.length} of ${res.working.length + res.outliers.length} mods work together. `),
+        "These don't:") : h("div", { class: "notice bad" }, res.reason),
+      res.outliers.length ? h("ul", { class: "list" }, res.outliers.map((o) => h("li", {},
+        h("div", { class: "grow" }, h("strong", {}, o.id), h("div", { class: "small muted" }, o.reason))))) : null,
+      res.working.length ? h("div", { class: "mt-s" }, h("strong", {}, "Working together: "), res.working.join(", ")) : null,
+      quickResult && (quickResult.conflicts.length || quickResult.problems.length) ? h("div", { class: "mt-s" },
+        h("strong", {}, "Known problems (from the mods' own information):"), h("ul", { class: "list" }, issues(quickResult))) : null,
+      opts.keepWorking && res.outliers.length ? h("div", { class: "row mt" },
+        h("button", { class: "btn primary", onclick: async () => { await opts.keepWorking(res); clearInterval(poll); $("#tester").remove(); } },
+          `Remove the ${res.outliers.length === 1 ? "mod that doesn't work" : `${res.outliers.length} mods that don't work`}`),
+        h("button", { class: "btn ghost", onclick: close }, "Keep them for now")) : null,
+      details);
+  };
+
+  (async () => {
+    let r;
+    try { r = await opts.quick(); } catch (e) { fill(body, h("div", { class: "notice bad" }, e.message)); return; }
+    quickResult = r;
+    const found = issues(r);
+    fill(body,
+      found.length ? [h("div", { class: "notice warn" }, h("strong", {}, "Found problems before starting anything:")), h("ul", { class: "list" }, found)]
+        : h("div", { class: "notice ok" }, h("strong", {}, "✓ No known problems. "),
+          `${r.mods.length} mod(s) have builds for ${r.minecraft ? `Minecraft ${r.minecraft}` : "this Minecraft"}, and none say they conflict with another.`),
+      opts.trial ? [
+        h("p", { class: "mt" }, "To be sure, mcsm can start a throwaway server with these mods and see if Minecraft loads. It takes a few minutes; your servers aren't touched."),
+        h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => runTrial(false) }, "Start a test boot"))]
+        : h("p", { class: "muted small mt" }, "These mods run on players' computers, and a game can't be started here to try them, so this checks versions and known conflicts. " +
+          "The server's own mods can be test-booted on its Mods page."));
+  })();
 }
 
 // ------------------------------------------------------------- code editor
@@ -2157,6 +2275,12 @@ views.setup = () => {
       h("button", { type: "button", class: "btn small danger", onclick: () => { st.modpack = null; st.minecraft = "latest"; renderForm(); } }, "Remove modpack")) : null;
     const modsCard = st.loader && opts.loaders.find((l) => l.name === st.loader).mods ? card("3. Mods",
       sources, packCard, h("h3", { class: "mt" }, "Quick add"), q, results, h("h3", { class: "mt" }, "Your mods"), selected,
+      h("div", { class: "row mt-s" }, testButton({
+        quick: () => api("/api/hub/mods/check", { method: "POST", body: { loader: st.loader, minecraft: setupModVersion(),
+          mods: [...st.mods].filter(([k, m]) => m.explicit && !k.startsWith("curseforge:")).map(([k]) => k) } }),
+        trial: { loader: st.loader, minecraft: st.minecraft, mods: [...st.mods].filter(([, m]) => m.explicit).map(([k]) => k) },
+        keepWorking: (res) => { for (const o of res.outliers) setupRemoveMod(o.source === "curseforge" ? `curseforge:${o.id}` : o.id); },
+      }), h("span", { class: "muted small" }, "Check that these mods work together before creating the server.")),
       st.loader === "fabric" || st.loader === "quilt" ? h("p", { class: "muted small" }, "Fabric API is added automatically, since almost every Fabric mod needs it.") : null) : null;
 
     // Settings

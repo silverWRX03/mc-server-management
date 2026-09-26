@@ -20,8 +20,10 @@ from mcsm.mods.modrinth import API as MODRINTH
 FAKE_SERVER = textwrap.dedent("""\
     import sys, pathlib
     mods = pathlib.Path("mods")
-    if mods.is_dir() and any(p.name.startswith("crash") for p in mods.iterdir()):
+    bad = [p.name for p in mods.iterdir() if p.name.startswith("crash")] if mods.is_dir() else []
+    if bad:
         print("[Server thread/ERROR]: mod failed to load", flush=True)
+        print(f"\tat com.example.Mod.init(Mod.java:1) [{bad[0]}:?]", flush=True)
         sys.exit(1)
     print("[12:00:00] [Server thread/INFO]: Done (0.1s)! For help, type \\"help\\"", flush=True)
     for line in sys.stdin:

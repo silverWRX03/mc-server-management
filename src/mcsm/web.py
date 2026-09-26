@@ -550,6 +550,10 @@ class HubApi:
         r[("POST", "/api/hub/open")] = self.open_folder
         r[("POST", "/api/hub/quit")] = self.quit
         r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
+        r[("POST", "/api/hub/mods/check")] = self.check_mods
+        r[("POST", "/api/hub/trial")] = self.start_trial
+        r[("GET", "/api/hub/trial")] = self.trial_status
+        r[("POST", "/api/hub/trial/cancel")] = self.cancel_trial
         r[("GET", "/api/hub/saves")] = self.saves
         r[("POST", "/api/hub/import")] = lambda q, b: {"ok": True, "id": self.hub.import_server(str(b.get("id", "")))}
         r[("GET", "/api/hub/browse/search")] = lambda q, b: browse_search(self.browser(), q)
@@ -582,6 +586,68 @@ class HubApi:
     def browser(self):
         from .browse import Browser
         return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+
+    # ------------------------------------------------ try before you buy
+    def check_mods(self, q, b) -> dict:
+        """The instant check: builds for this version, required mods, declared conflicts."""
+        from . import trial
+        from .loaders import LOADERS
+        loader = str(b.get("loader", ""))
+        if loader not in LOADERS or not LOADERS[loader].mod_loaders:
+            raise ApiError(400, "that server type doesn't run mods")
+        mods = [str(x) for x in (b.get("mods") or []) if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", str(x))]
+        minecraft = str(b.get("minecraft") or "") or None
+        return trial.check(ModrinthProvider(self.hub.http), LOADERS[loader].mod_loaders, minecraft, mods)
+
+    def start_trial(self, q, b) -> dict:
+        """A test boot of a set of mods, in a throwaway server; ``bisect`` finds culprits."""
+        from . import trial
+        if any(t.state == "running" for t in self.hub.trials.values()):
+            raise ApiError(409, "a test is already running; wait for it or stop it")
+        sid = b.get("server")
+        java_from = None
+        if sid:  # the mods of an existing server
+            d = self.hub.get(str(sid))
+            if d is None:
+                raise ApiError(404, "no such server")
+            cfg = d.m.config
+            loader = cfg.server.loader
+            minecraft = d.m.lock.minecraft or cfg.server.minecraft
+            mods = [ModSpec(s.source, s.id) for s in cfg.mods]
+            java_from = cfg.state_dir / "java"
+        else:
+            loader = str(b.get("loader", ""))
+            minecraft = str(b.get("minecraft") or "latest")
+            items = b.get("mods") or []
+            if not isinstance(items, list) or len(items) > 200:
+                raise ApiError(400, "pick up to 200 mods")
+            mods = []
+            for item in items:
+                source, _, mod_id = str(item).partition(":") if ":" in str(item) else ("modrinth", "", str(item))
+                if source not in configmod.MOD_SOURCES or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", mod_id):
+                    raise ApiError(400, f"{item!r} isn't a mod id")
+                mods.append(ModSpec(source, mod_id))
+            java_from = next((dd.m.config.state_dir / "java" for dd in self.hub.daemons.values()
+                              if (dd.m.config.state_dir / "java").is_dir()), None)
+        if loader not in configmod.LOADERS or loader == "vanilla" and mods:
+            raise ApiError(400, "pick a server type that runs mods")
+        t = trial.Trial(self.hub, loader, minecraft, mods, bisect=bool(b.get("bisect")), java_from=java_from)
+        self.hub.trials = {k: v for k, v in self.hub.trials.items() if v.state == "running"}  # forget old ones
+        self.hub.trials[t.id] = t.start()
+        return {"ok": True, "id": t.id}
+
+    def trial_status(self, q, b) -> dict:
+        t = self.hub.trials.get(q.get("id", ""))
+        if t is None:
+            raise ApiError(404, "that test isn't running any more")
+        return t.to_dict(int(q.get("since", 0) or 0))
+
+    def cancel_trial(self, q, b) -> dict:
+        t = self.hub.trials.get(str(b.get("id", "")))
+        if t is None:
+            raise ApiError(404, "that test isn't running any more")
+        t.cancel.set()
+        return {"ok": True}
 
     def use_public_ip(self, q, b) -> dict:
         """Find this network's public address and use it for friends' invite links."""
@@ -723,6 +789,8 @@ class Api:
         post("/api/open", self.open_folder)
         post("/api/world/replace", self.replace_world)
         post("/api/updates/remove-and-upgrade", self.remove_and_upgrade)
+        post("/api/mods/check", lambda q, b: self._check(b, client=False))
+        post("/api/client/check", lambda q, b: self._check(b, client=True))
         post("/api/beta/test", self.test_beta)
         get("/api/configs", lambda q, b: configs.grouped(self.m.server_dir, self.m.lock.mods))
         get("/api/configs/file", lambda q, b: configs.read(self.m.server_dir, q.get("path", "")))
@@ -879,6 +947,18 @@ class Api:
 
     def _modrinth(self) -> ModrinthProvider:
         return self.m.providers.get("modrinth") or ModrinthProvider(self.m.http)
+
+    def _check(self, b, client: bool) -> dict:
+        """The instant check for this server's mods (with the players' mods too, for the Friends page)."""
+        from . import trial
+        loaders = self.m.loader.mod_loaders
+        if not loaders:
+            return {"ok": True, "mods": [], "conflicts": [], "problems": [], "minecraft": self.m.lock.minecraft}
+        mods = [s.id for s in self.m.config.mods if s.source == "modrinth"]
+        if client:
+            mods += list(self.m.config.client.mods)
+        minecraft = self.m.lock.minecraft or (None if self.m.config.server.minecraft == "latest" else self.m.config.server.minecraft)
+        return trial.check(self._modrinth(), loaders, minecraft, mods)
 
     def _configured_with_deps(self) -> list[dict]:
         """The mods in mcsm.toml, each with the dependencies installed for it (they go when it goes)."""

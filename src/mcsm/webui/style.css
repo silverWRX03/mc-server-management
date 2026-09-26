@@ -503,3 +503,8 @@ main > * { animation: rise .25s ease-out; }
 }
 .topbar .theme-toggle { margin-left: auto; }
 .topbar .actions:not(.hidden) ~ .theme-toggle { margin-left: 4px; }
+
+/* the mod tester */
+.modal.tester { max-width: 720px; }
+.modal.tester .log { max-height: 240px; }
+.tester-time { font-variant-numeric: tabular-nums; }

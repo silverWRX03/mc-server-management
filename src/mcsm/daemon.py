@@ -390,6 +390,11 @@ class Daemon:
         while self.crashes and now - self.crashes[0] > CRASH_WINDOW:
             self.crashes.popleft()
         tail = "\n".join(self.proc.tail(15))
+        from .diagnose import diagnose
+        blame = diagnose(self.proc.tail(400), self.m.server_dir, self.m.lock.mods).summary
+        if blame:  # say which mod it was, where people look
+            log.error("%s", blame)
+            tail = f"{blame}\n{tail}"
         self.proc.stopping = True  # handled; don't count this exit twice
         if not self.m.config.restart_on_crash or len(self.crashes) > MAX_CRASHES:
             self.m.notifier.send(f"Server stopped unexpectedly (exit {self.proc.returncode}); not restarting.\n{tail}")

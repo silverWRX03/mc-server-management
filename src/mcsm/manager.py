@@ -70,6 +70,7 @@ class Manager:
                  java_probe: Callable[[str], int | None] = javamod.probe, notifier: Notifier | None = None,
                  echo: bool = True, sleep: Callable[[float], None] = time.sleep):
         self.config = config
+        self.last_diagnosis = None  # why the last boot failed (diagnose.Diagnosis), if it did
         self.http = http or HttpClient()
         self.mojang = mojang or Mojang(self.http)
         self.loader = loader or get_loader(config.server.loader, self.http, self.mojang)
@@ -152,13 +153,21 @@ class Manager:
             raise UpgradeError(f"the Minecraft EULA has not been accepted ({self.server_dir / 'eula.txt'}); "
                                "run `mcsm init --accept-eula` or set eula=true yourself")
         proc = self.new_process(lock)
+        started = time.time()
         proc.start()
         if self.on_process:
             self.on_process(proc)
         if not proc.wait_ready(self.config.server.startup_timeout):
-            tail = "\n".join(proc.tail(20))
+            lines = proc.tail(400)
             proc.stop(self.config.server.stop_timeout)
-            raise UpgradeError(f"server did not finish starting:\n{tail}")
+            from .diagnose import diagnose
+            self.last_diagnosis = diagnose(lines, self.server_dir, (lock or self.lock).mods, since=started)
+            blame = self.last_diagnosis.summary
+            if blame:
+                log.error("%s", blame)
+            tail = "\n".join(lines[-20:])
+            raise UpgradeError(f"server did not finish starting{('. ' + blame) if blame else ''}:\n{tail}")
+        self.last_diagnosis = None
         return proc
 
     def countdown(self, proc: ServerProcess, reason: str) -> None:
