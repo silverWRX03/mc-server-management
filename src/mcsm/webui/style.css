@@ -329,3 +329,7 @@ body.join-page { overflow: auto; }
 .list.worlds { max-height: 50vh; overflow: auto; }
 .list.worlds img, .list.worlds .noicon { width: 40px; height: 40px; border-radius: 6px; image-rendering: pixelated; flex: none; }
 .list.worlds .noicon { background: var(--panel-2); border: 1px solid var(--border); }
+
+/* a mod's dependencies, listed under it */
+.list li.dep { padding-left: 18px; color: var(--muted); }
+.list li.dep strong { font-weight: 500; }

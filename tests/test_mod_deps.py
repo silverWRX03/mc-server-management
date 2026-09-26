@@ -1,0 +1,56 @@
+"""Picking a mod brings the mods it needs; they're shown and removed together."""
+
+from mcsm.mods.modrinth import ModrinthProvider
+from mcsm.web import mod_requirements
+
+from test_hub import login
+from test_manager import update
+
+
+def publish(modrinth):
+    modrinth.project("LIB", "deplib", "Dep Lib")
+    modrinth.version("LIB", "1.0", ["1.21.1"])
+    modrinth.project("MAP", "minimap", "Mini Map", server_side="unsupported")
+    modrinth.version("MAP", "1.0", ["1.21.1"])
+    modrinth.project("MID", "midlib", "Mid Lib")
+    modrinth.version("MID", "1.0", ["1.21.1"], deps=["LIB"])
+    modrinth.project("TOP", "topmod", "Top Mod")
+    modrinth.version("TOP", "1.0", ["1.21.1"], deps=["MID", "MAP"])
+    modrinth.project("OLD", "oldmod", "Old Mod")
+    modrinth.version("OLD", "1.0", ["1.20.1"])
+
+
+def test_requirements(http, modrinth):
+    publish(modrinth)
+    p = ModrinthProvider(http)
+    r = mod_requirements(p, "topmod", ("fabric",), "1.21.1")
+    assert r["compatible"] and r["project"]["name"] == "Top Mod"
+    # dependencies of dependencies too; client-only ones aren't server mods
+    assert [(d["name"], d["needed_by"]) for d in r["deps"]] == [("Mid Lib", "Top Mod"), ("Dep Lib", "Mid Lib")]
+    old = mod_requirements(p, "oldmod", ("fabric",), "1.21.1")
+    assert not old["compatible"] and "no build for Minecraft 1.21.1" in old["reason"]
+    assert mod_requirements(p, "oldmod", ("fabric",), None)["compatible"]  # any version
+
+
+def test_mods_page_groups_and_checks(hub_env, modrinth):
+    hub, c = hub_env
+    login(c)
+    publish(modrinth)
+    r = c.get("/api/hub/mods/requires?id=topmod&loader=fabric&version=1.21.1")[1]
+    assert [d["slug"] for d in r["deps"]] == ["midlib", "deplib"]
+    assert c.get("/api/hub/mods/requires?id=topmod&loader=vanilla")[0] == 400
+
+    status, body, _ = c.post("/api/servers/alpha/mods/add", {"source": "modrinth", "id": "topmod"})
+    assert status == 200 and body["deps"] == ["Mid Lib", "Dep Lib"]
+    status, body, _ = c.post("/api/servers/alpha/mods/add", {"source": "modrinth", "id": "oldmod"})
+    assert status == 400 and "no build for Minecraft 1.21.1" in body["error"]  # not for this server's version
+
+    alpha = hub.get("alpha")
+    assert update(alpha.m).ok
+    configured = {m["id"]: m for m in c.get("/api/servers/alpha/mods")[1]["configured"]}
+    assert configured["topmod"]["name"] == "Top Mod"
+    assert [d["name"] for d in configured["topmod"]["deps"]] == ["Mid Lib", "Dep Lib"]
+    # Removing the mod takes its dependencies with it at the next update.
+    assert c.post("/api/servers/alpha/mods/remove", {"source": "modrinth", "id": "topmod"})[0] == 200
+    assert update(alpha.m).ok
+    assert not {"Top Mod", "Mid Lib", "Dep Lib"} & {m.name for m in alpha.m.lock.mods}

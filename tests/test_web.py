@@ -164,7 +164,7 @@ def test_update_check_and_mod_management(running, modrinth):
     assert c.post("/api/mods/add", {"source": "modrinth", "id": "othermod"})[0] == 409
     assert c.post("/api/mods/add", {"source": "modrinth", "id": "../../etc"})[0] == 400
     configured = c.get("/api/mods")[1]["configured"]
-    assert {"source": "modrinth", "id": "othermod", "required": False} in configured
+    assert {"source": "modrinth", "id": "othermod", "required": False} in [{k: m[k] for k in ("source", "id", "required")} for m in configured]
 
     wait_for(lambda: not c.get("/api/status")[1]["job"])
     assert c.post("/api/updates/apply", {})[0] == 200

@@ -37,7 +37,7 @@ from .config import ConfigError, ModSpec
 from .daemon import Daemon, set_current_server
 from .hub import Hub
 from .minecraft import Mojang
-from .http import sha1_file
+from .http import HttpError, sha1_file
 from .java import JavaError
 from .mods import ModError
 from .mods.modrinth import ModrinthProvider
@@ -432,6 +432,62 @@ def search_mods(provider: ModrinthProvider, q: dict, listed: set[str], default_l
     return {"results": results}
 
 
+def mod_requirements(provider: ModrinthProvider, mod_id: str, loaders: tuple[str, ...], minecraft: str | None,
+                     channel: str = "release", limit: int = 30) -> dict:
+    """Whether a Modrinth mod has a build for ``minecraft`` (any version when None), and the
+    mods it needs (their dependencies too), so pickers can select them along with it."""
+    def newest(project_id: str):
+        ok = [v for v in provider._versions(project_id, loaders) if provider._acceptable(v, channel)
+              and (minecraft is None or minecraft in v.get("game_versions", []))]
+        return max(ok, key=lambda v: v.get("date_published", "")) if ok else None
+
+    def required(version) -> list[str]:
+        return [d["project_id"] for d in version.get("dependencies", [])
+                if d.get("dependency_type") == "required" and d.get("project_id")]
+
+    project = provider.project(mod_id)
+    info = {"id": project.id, "slug": project.slug, "name": project.name}
+    version = newest(project.id)
+    if version is None:
+        where = f"Minecraft {minecraft}" if minecraft else "this server type"
+        return {"project": info, "compatible": False, "reason": f"{project.name} has no build for {where}", "deps": []}
+    deps, seen = [], {project.id}
+    queue = [(pid, project.name) for pid in required(version)]
+    while queue and len(seen) < limit:
+        pid, needed_by = queue.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            dep = provider.project(pid)
+        except ModError:
+            continue
+        if dep.server_side == "unsupported":
+            continue  # only players need it
+        dep_version = newest(dep.id)
+        deps.append({"id": dep.id, "slug": dep.slug, "name": dep.name, "needed_by": needed_by,
+                     "compatible": dep_version is not None})
+        if dep_version is not None:
+            queue += [(x, dep.name) for x in required(dep_version)]
+    return {"project": info, "compatible": all(d["compatible"] for d in deps), "deps": deps,
+            "reason": next((f"it needs {d['name']}, which has no build for Minecraft {minecraft}"
+                            for d in deps if not d["compatible"]), "")}
+
+
+def requirements_query(provider: ModrinthProvider, q: dict, manager=None) -> dict:
+    from .loaders import LOADERS
+    mod_id = q.get("id", "")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", mod_id):
+        raise ApiError(400, "bad mod id")
+    loader = q.get("loader") or (manager.config.server.loader if manager else "")
+    if loader not in LOADERS or not LOADERS[loader].mod_loaders:
+        raise ApiError(400, "that server type doesn't run mods")
+    version = q.get("version")
+    if version is None and manager is not None:
+        version = manager.lock.minecraft
+    return mod_requirements(provider, mod_id, LOADERS[loader].mod_loaders, version or None)
+
+
 def browse_search(browser, q: dict, manager=None) -> dict:
     from .browse import BrowseError
     kind = q.get("type", "mod")
@@ -480,6 +536,7 @@ class HubApi:
         r: dict[tuple[str, str], Callable[[dict, dict], Any]] = {}
         r[("GET", "/api/hub")] = self.overview
         r[("GET", "/api/hub/setup")] = self.new_server_options
+        r[("GET", "/api/hub/mods/requires")] = lambda q, b: requirements_query(ModrinthProvider(self.hub.http), q)
         r[("GET", "/api/hub/mods/search")] = lambda q, b: search_mods(ModrinthProvider(self.hub.http), q, set(), "fabric")
         r[("POST", "/api/hub/create")] = self.create
         r[("POST", "/api/hub/network")] = self.network
@@ -668,6 +725,7 @@ class Api:
         get("/api/browse/project", lambda q, b: browse_project(self._browser(), q))
         get("/api/browse/categories", lambda q, b: browse_categories(self._browser(), q))
         post("/api/mods/add-many", self.add_many)
+        get("/api/mods/requires", lambda q, b: requirements_query(self._modrinth(), q, self.m))
         post("/api/mods/local", self.upload_local)
         get("/api/client", self.client)
         post("/api/client", self.save_client)
@@ -797,13 +855,45 @@ class Api:
             "installed": [{"key": x.key, "name": x.name, "version": x.version_number, "filename": x.filename,
                            "source": x.source, "dependency_of": x.dependency_of, "manual": x.manual}
                           for x in lk.mods],
-            "configured": [{"source": s.source, "id": s.id, "required": s.required} for s in self.m.config.mods],
+            "configured": self._configured_with_deps(),
             "skipped": [{"key": k, "reason": v} for k, v in lk.skipped.items()],
             "unmanaged": self.m.unmanaged_jars(),
         }
 
     def _modrinth(self) -> ModrinthProvider:
         return self.m.providers.get("modrinth") or ModrinthProvider(self.m.http)
+
+    def _configured_with_deps(self) -> list[dict]:
+        """The mods in mcsm.toml, each with the dependencies installed for it (they go when it goes)."""
+        lk = self.m.lock
+        installed = {x.key: x for x in lk.mods}
+        children: dict[str, list] = {}
+        for x in lk.mods:
+            if x.dependency_of:
+                children.setdefault(x.dependency_of, []).append(x)
+        out = []
+        for spec in self.m.config.mods:
+            key = f"{spec.source}:{spec.id}"
+            if key not in installed:
+                match = next((x for x in lk.mods if x.source == spec.source and x.project_id == spec.id), None)
+                if match:
+                    key = match.key
+                elif spec.source == "modrinth":
+                    try:
+                        key = self._modrinth().project(spec.id).key  # a slug in mcsm.toml
+                    except Exception:
+                        pass
+            deps, todo, seen = [], list(children.get(key, [])), {key}
+            while todo:
+                d = todo.pop(0)
+                if d.key in seen:
+                    continue
+                seen.add(d.key)
+                deps.append({"key": d.key, "name": d.name})
+                todo += children.get(d.key, [])
+            out.append({"source": spec.source, "id": spec.id, "required": spec.required, "key": key,
+                        "name": installed[key].name if key in installed else spec.id, "deps": deps})
+        return out
 
     def search(self, q, b) -> dict:
         listed = {s.id for s in self.m.config.mods if s.source == "modrinth"}
@@ -821,11 +911,23 @@ class Api:
             raise ApiError(400, f"{project.name} is client-side only")
         if any(s.source == source and s.id in (mod_id, project.id, project.slug) for s in self.m.config.mods):
             raise ApiError(409, f"{project.name} is already listed")
+        deps = []
+        if source == "modrinth" and self.m.loader.mod_loaders:
+            # Only mods that work on this server's Minecraft, and say what comes along with them.
+            try:
+                req = mod_requirements(self._modrinth(), project.id, self.m.loader.mod_loaders, self.m.lock.minecraft)
+            except (ModError, HttpError) as e:
+                log.debug("couldn't check %s's requirements: %s", project.name, e)
+                req = None
+            if req is not None:
+                if not req["compatible"] and self.m.lock.minecraft:
+                    raise ApiError(400, f"can't add {project.name}: " + (req["reason"] or "no compatible build"))
+                deps = [d["name"] for d in req["deps"]]
         configmod.append_mod(self.m.config.path, ModSpec(source, project.slug or project.id,
                                                          required=bool(b.get("required", True))))
         self.m.reload_config()
-        log.info("added %s", project.name)
-        return {"ok": True, "name": project.name}
+        log.info("added %s%s", project.name, f" (with {', '.join(deps)})" if deps else "")
+        return {"ok": True, "name": project.name, "deps": deps}
 
     def _browser(self):
         from .browse import Browser
