@@ -24,6 +24,31 @@ function h(tag, attrs = {}, ...children) {
 
 class Unauthorized extends Error {}
 
+// ------------------------------------------------------------------ day / night
+// Remembered per browser; the first time, it follows the computer's own light/dark setting.
+const THEME_KEY = "mcsm-theme";
+function currentTheme() {
+  try { const t = localStorage.getItem(THEME_KEY); if (t === "day" || t === "night") return t; } catch (_) { /* private mode */ }
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "day" : "night";
+}
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  for (const b of document.querySelectorAll("[data-theme-toggle]")) {
+    b.setAttribute("aria-pressed", String(theme === "day"));
+    b.title = theme === "day" ? "Switch to night" : "Switch to day";
+  }
+}
+applyTheme(currentTheme());
+document.addEventListener("click", (e) => {
+  const b = e.target.closest && e.target.closest("[data-theme-toggle]");
+  if (!b) return;
+  const next = document.documentElement.dataset.theme === "day" ? "night" : "day";
+  try { localStorage.setItem(THEME_KEY, next); } catch (_) { /* private mode */ }
+  document.documentElement.classList.add("theme-switching");
+  applyTheme(next);
+  setTimeout(() => document.documentElement.classList.remove("theme-switching"), 700);
+});
+
 // With several servers, a server's calls go to /api/servers/<id>/...; these are about mcsm itself.
 const GLOBAL_API = /^\/api\/(login|logout|auth|notice|licenses|self-update|hub|servers)(\/|\?|$)/;
 let server = null;            // the server being looked at (null on the server list)

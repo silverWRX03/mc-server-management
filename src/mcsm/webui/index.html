@@ -9,6 +9,8 @@
 </head>
 <body>
   <div id="login" class="login hidden">
+    <button type="button" class="theme-toggle corner" data-theme-toggle aria-label="Switch between day and night" title="Day / night">
+          <span class="sun" aria-hidden="true"></span><span class="moon" aria-hidden="true"></span></button>
     <form id="login-form" class="login-card">
       <div class="brand big"><span class="logo"></span>mcsm</div>
       <p class="muted">Forever server control panel</p>
@@ -52,6 +54,8 @@
           <button id="btn-restart" class="btn">Restart</button>
           <button id="btn-stop" class="btn danger">Stop</button>
         </div>
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch between day and night" title="Day / night">
+          <span class="sun" aria-hidden="true"></span><span class="moon" aria-hidden="true"></span></button>
       </header>
       <main id="main"></main>
     </div>
