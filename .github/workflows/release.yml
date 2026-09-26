@@ -114,10 +114,13 @@ jobs:
           # From "Run workflow" this also creates the tag, on the commit that was built.
           tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
-          name: mcsm ${{ env.TAG }}
+          name: mcsm ${{ env.TAG }} (beta)
           files: release/*
           generate_release_notes: true
           body: |
+            > **mcsm is in beta.** It's used and tested, but it's still young: expect rough edges, keep backups
+            > (mcsm makes one before every update), and please report problems in the Issues tab.
+
             ## Download
 
             | Your computer | File |

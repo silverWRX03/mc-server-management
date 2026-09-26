@@ -2,6 +2,12 @@
 
 <img src="docs/icon.png" alt="mcsm" width="128" align="right">
 
+![Status: beta](https://img.shields.io/badge/status-beta-orange)
+
+> **mcsm is in beta.** It's used and tested, but it's still young: expect some rough edges,
+> keep backups (mcsm makes one before every update), and please report problems in
+> [Issues](https://github.com/silverWRX03/mc-server-management/issues).
+
 `mcsm` runs your modded Minecraft server and **keeps it on the newest Minecraft
 release once your mods support it**. It watches for new releases and checks
 whether your loader and every mod you depend on (plus their dependencies) have

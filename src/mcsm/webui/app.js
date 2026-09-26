@@ -360,7 +360,8 @@ async function refreshStatus() {
     return;
   }
   const hb = hubInfo;
-  $("#version").textContent = "v" + hb.version;
+  $("#version").textContent = "v" + hb.version + " beta";
+  $("#version").title = "mcsm is in beta: expect some rough edges, and keep backups.";
   $("#logout").classList.toggle("hidden", hb.auth.mode === "none");
   $("#quit").classList.toggle("hidden", !!hb.single);
   if (!hb.notice_accepted) { showNotice(); return; }
