@@ -1,0 +1,19 @@
+# docker compose up -d   (then open http://<this computer>:8765 and sign in with the password below)
+services:
+  mcsm:
+    image: ghcr.io/silverwrx03/mc-server-management:latest
+    # build: .            # or build it from this folder
+    container_name: mcsm
+    restart: unless-stopped
+    ports:
+      - "8765:8765"         # control panel (don't forward this one on your router)
+      - "25565-25570:25565-25570"  # Minecraft: one port per server
+      - "8798:8798"         # friends' downloads
+    environment:
+      MCSM_LAN_IP: "192.168.1.20"                # this computer's address on your network
+      # MCSM_INITIAL_PASSWORD: "Choose-A-Strong-1"  # optional; otherwise see `docker logs mcsm`
+    volumes:
+      - mcsm-data:/data
+    stop_grace_period: 2m   # time for the servers to save and stop
+volumes:
+  mcsm-data:

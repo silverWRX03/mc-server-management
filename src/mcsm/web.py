@@ -83,6 +83,8 @@ SECURITY_HEADERS = {
 
 
 # Reachable before the first-run notice has been accepted.
+# A sign-in with mcsm's one-time password (headless first run) can only replace it.
+FIRST_SIGN_IN_OK = {"/api/auth/change", "/api/logout", "/api/hub", "/api/notice", "/api/notice/accept", "/api/licenses"}
 NOTICE_EXEMPT = {"/api/notice", "/api/notice/accept", "/api/status", "/api/licenses", "/api/auth/change", "/api/hub"}
 # Routes whose request body is a file, streamed to disk rather than parsed as JSON.
 RAW_UPLOADS = {"/api/hub/stage", "/api/mods/local", "/api/client/local"}
@@ -131,6 +133,7 @@ class WebUI:
         self.port = cfg.port if port is None else port
         self.store = webauth.AuthStore(hub)   # the hub has the state_dir and [web] settings
         self.sessions: dict[str, float] = {}
+        self.first_sign_in: set[str] = set()   # sessions that may only choose a password
         self.failures: dict[str, list[float]] = {}
         self.devices = webauth.Devices(hub.state_dir)
         self.lock = threading.Lock()
@@ -199,7 +202,7 @@ class WebUI:
     def login(self, password: str, client: str, local: bool = True) -> str:
         now = time.time()
         auth = self.auth
-        if not local and not auth.remote_ready:
+        if not local and not auth.remote_ready and not auth.temporary:
             raise ApiError(403, "signing in from another device needs a strong password "
                                 f"({webauth.STRONG_RULES}); set one in mcsm settings on the server's own computer")
         with self.lock:
@@ -212,7 +215,10 @@ class WebUI:
             raise ApiError(401, "wrong PIN" if auth.mode == "pin" else "wrong password")
         with self.lock:
             self.failures.pop(client, None)
-            return self._new_session(now)
+            token = self._new_session(now)
+            if auth.temporary:
+                self.first_sign_in.add(token)
+            return token
 
     def _new_session(self, now: float) -> str:
         token = secrets.token_urlsafe(32)
@@ -229,6 +235,8 @@ class WebUI:
         if self.remote_on() and not (mode == "password" and webauth.strong_password(secret)):
             raise ApiError(400, "remote access is on, so the password must be strong: " + webauth.STRONG_RULES
                            + ". PINs can't be used then")
+        if self.auth.temporary and not local and not (mode == "password" and webauth.strong_password(secret)):
+            raise ApiError(400, "choose a strong password: " + webauth.STRONG_RULES)
         self.store.set(mode, secret)
         removed = self.devices.remove(None)
         if removed:
@@ -236,6 +244,7 @@ class WebUI:
         log.info("web UI sign-in changed to %s", {"none": "no password"}.get(mode, mode))
         with self.lock:
             self.sessions.clear()
+            self.first_sign_in.clear()
             return self._new_session(time.time())
 
     def remote_on(self) -> bool:
@@ -419,6 +428,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     return self._json(200, {"ok": True}, {"Set-Cookie": f"{DEVICE_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict"})
                 if path == "/api/auth/change":
                     raise ApiError(403, "a paired phone can't change the password; use the server's computer")
+            elif self._token() in self.web.first_sign_in and path not in FIRST_SIGN_IN_OK:
+                raise ApiError(403, "choose your own password first (mcsm settings → Sign-in)")
             if path == "/api/auth/change" and method == "POST":
                 b = self._body()
                 token = self.web.change(str(b.get("mode", "")), str(b.get("secret", "")), local)

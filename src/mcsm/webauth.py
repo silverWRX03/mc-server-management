@@ -62,10 +62,11 @@ class Auth:
     default: bool = False      # still the built-in PASSWORD
     managed: bool = False      # set by [web] password in mcsm.toml; can't be changed from the UI
     strong: bool = False       # meets STRONG_RULES (required for sign-ins from other devices)
+    temporary: bool = False    # a one-time password mcsm made (headless first run); must be replaced
 
     @property
     def remote_ready(self) -> bool:
-        return self.mode == "password" and self.strong and not self.default
+        return self.mode == "password" and self.strong and not self.default and not self.temporary
 
     def check(self, secret: str) -> bool:
         if self.mode == "none":
@@ -77,7 +78,8 @@ class Auth:
         return hmac.compare_digest(_hash(secret, bytes.fromhex(self.salt), self.iterations), self.hash)
 
     def info(self) -> dict:
-        return {"mode": self.mode, "default": self.default, "managed": self.managed, "strong": self.remote_ready}
+        return {"mode": self.mode, "default": self.default or self.temporary, "managed": self.managed,
+                "strong": self.remote_ready, "temporary": self.temporary}
 
 
 def _hashed(mode: str, secret: str, default: bool = False) -> Auth:
@@ -128,7 +130,7 @@ class AuthStore:
                 if d.get("mode") in MODES:
                     return Auth(mode=d["mode"], salt=d.get("salt", ""), hash=d.get("hash", ""),
                                 iterations=int(d.get("iterations", ITERATIONS)), default=bool(d.get("default")),
-                                strong=bool(d.get("strong")))
+                                strong=bool(d.get("strong")), temporary=bool(d.get("temporary")))
             except (ValueError, TypeError):
                 pass
         # mcsm 0.1 generated a random password into a plain-text file; nobody chose it, so
@@ -142,7 +144,8 @@ class AuthStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"format": FORMAT, "mode": auth.mode, "salt": auth.salt, "hash": auth.hash,
-                                   "iterations": auth.iterations, "default": auth.default, "strong": auth.strong},
+                                   "iterations": auth.iterations, "default": auth.default, "strong": auth.strong,
+                                   "temporary": auth.temporary},
                                   indent=2) + "\n")
         try:
             tmp.chmod(0o600)
@@ -155,10 +158,44 @@ class AuthStore:
             raise ConfigError("the password is set in mcsm.toml ([web] password); change it there")
         validate(mode, secret)
         auth = _hashed(mode, secret)
+        (self.path.parent / "first-password.txt").unlink(missing_ok=True)
         with self._lock:
             self._save(auth)
             self._auth, self._mtime = auth, self.path.stat().st_mtime
         return auth
+
+    def exists(self) -> bool:
+        return self.path.exists()
+
+    def first_run_password(self) -> str | None:
+        """For a computer without a screen (a headless PC, Docker): it's only reachable from other
+        devices, which need more than the built-in PASSWORD. Use MCSM_INITIAL_PASSWORD if it's
+        strong; otherwise make a random one-time password (printed on the console) that must be
+        replaced at the first sign-in. Returns the one-time password, if one was made."""
+        if self.config.web.password or self.path.exists():
+            return None
+        initial = os.environ.get("MCSM_INITIAL_PASSWORD", "")
+        if initial and strong_password(initial):
+            auth = _hashed("password", initial)
+            with self._lock:
+                self._save(auth)
+                self._auth, self._mtime = auth, self.path.stat().st_mtime
+            return None
+        words = "-".join(secrets.token_hex(3) for _ in range(3))
+        password = f"Mcsm-{words}!"  # e.g. Mcsm-1a2b3c-4d5e6f-7a8b9c!
+        auth = _hashed("password", password)
+        auth.temporary = True
+        with self._lock:
+            self._save(auth)
+            self._auth, self._mtime = auth, self.path.stat().st_mtime
+        note = self.path.parent / "first-password.txt"
+        note.write_text(f"mcsm's one-time password for the first sign-in: {password}\n"
+                        "You'll be asked to choose your own; this file is deleted then.\n")
+        try:
+            note.chmod(0o600)
+        except OSError:
+            pass
+        return password
 
     def reset(self) -> Auth:
         """Back to the default PASSWORD (for a forgotten password)."""
@@ -175,6 +212,8 @@ def describe(auth: Auth) -> str:
         return "the password from [web] in mcsm.toml"
     if auth.default:
         return f"{DEFAULT_PASSWORD}  (you'll be asked to choose your own)"
+    if auth.temporary:
+        return "the one-time password shown when mcsm first started (you'll be asked to choose your own)"
     if auth.mode == "none":
         return "none needed on this computer"
     return ("the PIN you chose" if auth.mode == "pin" else "the password you chose") + \

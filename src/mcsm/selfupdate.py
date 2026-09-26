@@ -124,6 +124,8 @@ def asset_name() -> str:
 
 def install_method(release: Release | None = None) -> tuple[bool, str]:
     """(can mcsm update itself, why not)."""
+    if os.environ.get("MCSM_CONTAINER"):
+        return False, "mcsm runs in a container here; update it by pulling the new image (docker pull ...)"
     if frozen():
         if release is not None and asset_name() not in release.assets:
             return False, f"this release has no download for your system ({asset_name()}); get it from the release page"

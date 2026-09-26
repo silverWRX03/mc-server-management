@@ -331,7 +331,10 @@ def has_display() -> bool:
 
 
 def lan_ip() -> str | None:
-    """This machine's address on the local network (no traffic is sent)."""
+    """This machine's address on the local network (no traffic is sent). In a container, set
+    MCSM_LAN_IP to the host computer's address so links and QR codes point there."""
+    if os.environ.get("MCSM_LAN_IP"):
+        return os.environ["MCSM_LAN_IP"].strip()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("192.0.2.1", 9))  # a documentation-only address; nothing is sent
@@ -374,6 +377,10 @@ def cmd_start(args) -> int:
     if not has_display() and "web" not in hub._hub_file() and not (home / configmod.CONFIG_NAME).exists():
         hub.save_web(host="0.0.0.0")  # headless: the panel must be reachable from another device
         hub._web = hub._load_web()
+    first_password = None
+    if not has_display() and hub.web.host not in ("127.0.0.1", "localhost", "::1"):
+        from .webauth import AuthStore
+        first_password = AuthStore(hub).first_run_password()
     if args.web_host:
         hub.web.host = args.web_host
     if args.web_port:
@@ -400,7 +407,8 @@ def cmd_start(args) -> int:
     elif not has_display():
         lines.append(f"  From your own PC, tunnel over SSH:  ssh -L {port}:localhost:{port} "
                      f"{getpass.getuser()}@<this server>  then open http://localhost:{port}/")
-    lines += [f"  Password:       {webauth.describe(webauth.AuthStore(hub).get())}", "",
+    lines += [f"  Password:       {first_password or webauth.describe(webauth.AuthStore(hub).get())}"
+              + ("   <- one-time; you'll choose your own at the first sign-in" if first_password else ""), "",
               "  Servers only start when you press Start in the control panel.",
               "  Keep this window open while they run, and press Ctrl+C to stop everything."]
     print("\n" + "\n".join(lines) + "\n", flush=True)

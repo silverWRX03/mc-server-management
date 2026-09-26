@@ -93,3 +93,29 @@ def test_help_images_and_app_manifest_are_served(hub_env):
                         ("/manifest.webmanifest", "application/manifest+json")):
         status, _, headers = c.get(path)
         assert status == 200 and headers["Content-Type"] == ctype, path
+
+
+def test_headless_first_sign_in_from_another_device(hub_env, monkeypatch):
+    """No screen: a random one-time password (shown on the console) that can only be replaced."""
+    hub, c = hub_env
+    store = hub.ui.store
+    store.path.unlink(missing_ok=True)
+    store._auth = None
+    first = store.first_run_password()
+    assert first and first.startswith("Mcsm-") and store.get().temporary
+    assert (store.path.parent / "first-password.txt").read_text().count(first) == 1
+    hub.web.host = "0.0.0.0"
+    away = as_other_device(Client(c.base))
+    assert away.post("/api/login", {"password": "PASSWORD"})[0] == 401
+    assert away.post("/api/login", {"password": first})[0] == 200
+    assert away.get("/api/hub")[0] == 200
+    assert away.get("/api/servers/alpha/status")[0] == 403  # only choosing a password until then
+    assert away.post("/api/auth/change", {"mode": "pin", "secret": "1234"})[0] == 400
+    assert away.post("/api/auth/change", {"mode": "password", "secret": STRONG})[0] == 200
+    assert away.get("/api/servers/alpha/status")[0] == 200
+    assert not (store.path.parent / "first-password.txt").exists()
+    # A strong MCSM_INITIAL_PASSWORD (e.g. for Docker) is used as the real password instead.
+    store.path.unlink()
+    store._auth = None
+    monkeypatch.setenv("MCSM_INITIAL_PASSWORD", "Another-Strong-7")
+    assert store.first_run_password() is None and store.get().remote_ready
