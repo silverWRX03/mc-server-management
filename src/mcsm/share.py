@@ -43,6 +43,15 @@ HEADERS = {
 }
 
 
+def _is_local(host: str) -> bool:
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return host.endswith(".local") or host == "localhost"
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
 class ShareServer:
     def __init__(self, hub, port: int = DEFAULT_PORT, host: str = "0.0.0.0"):
         self.hub = hub
@@ -68,7 +77,10 @@ class ShareServer:
 
     def address(self, d, request_host: str) -> str:
         """host:port players connect Minecraft to."""
-        public = (self.hub.share_settings().get("address") or "").strip() or request_host
+        # A friend who opened the invite through this computer's local address is on the same
+        # network, so they join through it too; everyone else uses the public address.
+        public = request_host if _is_local(request_host) else \
+            (self.hub.share_settings().get("address") or "").strip() or request_host
         port = read_properties(d.m.server_dir / "server.properties").get("server-port", "25565")
         return public if port == "25565" else f"{public}:{port}"
 

@@ -549,6 +549,7 @@ class HubApi:
         r[("POST", "/api/hub/stage")] = self.stage
         r[("POST", "/api/hub/open")] = self.open_folder
         r[("POST", "/api/hub/quit")] = self.quit
+        r[("POST", "/api/hub/share/public-ip")] = self.use_public_ip
         r[("GET", "/api/hub/saves")] = self.saves
         r[("POST", "/api/hub/import")] = lambda q, b: {"ok": True, "id": self.hub.import_server(str(b.get("id", "")))}
         r[("GET", "/api/hub/browse/search")] = lambda q, b: browse_search(self.browser(), q)
@@ -581,6 +582,15 @@ class HubApi:
     def browser(self):
         from .browse import Browser
         return Browser(self.hub.http, os.environ.get("MCSM_CURSEFORGE_API_KEY", ""))
+
+    def use_public_ip(self, q, b) -> dict:
+        """Find this network's public address and use it for friends' invite links."""
+        if self.hub.is_single:
+            raise ApiError(400, "friend downloads need `mcsm start` (the server list)")
+        ip = self.hub.public_ip()
+        self.hub.save_share(self.hub.share_settings()["port"], ip)
+        log.info("friends outside your network now use %s", ip)
+        return {"ok": True, "ip": ip, "share": self.hub.share_status()}
 
     def quit(self, q, b) -> dict:
         """Close mcsm (stopping every server), for when there's no window to close."""
@@ -1060,17 +1070,23 @@ class Api:
         return {"ok": True, "message": message}
 
     # ------------------------------------------------------------- friends
-    def _invite_link(self) -> str | None:
+    def _invite_links(self) -> dict:
+        """The invite for friends on this network (local) and for everyone else (internet)."""
         c = self.m.config.client
         if not c.token:
-            return None
-        share = self.web.hub.share_settings()
-        host = share["address"]
-        if not host:
-            from .cli import lan_ip
-            host = lan_ip() or "localhost"
+            return {}
+        from .cli import lan_ip
         from .join import Invite
-        return Invite(host.strip("[]"), share["port"], c.token).url
+        share = self.web.hub.share_settings()
+        lan = lan_ip()
+        out = {"local": Invite(lan, share["port"], c.token).url if lan else None, "internet": None}
+        if share["address"]:
+            out["internet"] = Invite(share["address"].strip("[]"), share["port"], c.token).url
+        return out
+
+    def _invite_link(self) -> str | None:
+        links = self._invite_links()
+        return links.get("internet") or links.get("local")
 
     def client(self, q, b) -> dict:
         c = self.m.config.client
@@ -1089,6 +1105,7 @@ class Api:
             "available": not hub.is_single,
             "enabled": c.enabled, "mods": c.mods, "memory_gb": c.memory_gb,
             "link": self._invite_link() if c.enabled else None,
+            "links": self._invite_links() if c.enabled else {},
             "share": hub.share_status() if not hub.is_single else None,
             "pack": preview, "pack_error": error,
             "loader": self.m.config.server.loader,

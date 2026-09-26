@@ -363,3 +363,7 @@ body.join-page { overflow: auto; }
 .tk-p { color: #808080; }          /* punctuation */
 .tk-t { color: #c586c0; }          /* Forge .cfg type letters */
 @media (max-width: 760px) { .cfg-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .cfg-files { max-height: 120px; } }
+
+/* friends' invite links */
+.invite { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.invite:last-of-type { border-bottom: 0; }

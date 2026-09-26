@@ -228,6 +228,25 @@ class Hub:
                 self.share_error = f"port {port} is busy ({e.strerror or e}); pick another in mcsm settings"
                 log.warning("couldn't start sharing: %s", self.share_error)
 
+    PUBLIC_IP_SERVICES = ("https://api.ipify.org?format=json", "https://api64.ipify.org?format=json",
+                          "https://ifconfig.co/json")
+
+    def public_ip(self) -> str:
+        """This network's address on the internet, as other sites see it."""
+        import ipaddress
+        errors = []
+        for url in self.PUBLIC_IP_SERVICES:
+            try:
+                ip = str(self.http.get_json(url, headers={"Accept": "application/json"}).get("ip", "")).strip()
+                addr = ipaddress.ip_address(ip)
+            except Exception as e:
+                errors.append(str(e))
+                continue
+            if addr.is_global:
+                return str(addr)
+        raise RuntimeError("couldn't find your public address (" + (errors[-1] if errors else "no answer") + "); "
+                           "check the internet connection, or type it in under mcsm settings → Sharing")
+
     def share_status(self) -> dict:
         from .cli import lan_ip
         return {**self.share_settings(), "running": bool(self.share), "error": self.share_error, "lan_ip": lan_ip()}

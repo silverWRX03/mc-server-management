@@ -1142,17 +1142,31 @@ views.friends = () => {
       h("label", { class: "row mt-s" }, toggle, h("span", {}, "Make a download for friends")));
     if (!d.enabled) { fill(body, intro); return; }
     const s = d.share || {};
-    const link = h("input", { readonly: true, value: d.link || "", class: "grow mono", "aria-label": "Invite link" });
-    const copy = h("button", { class: "btn primary", onclick: async () => {
-      try { await navigator.clipboard.writeText(link.value); toast("Invite link copied"); }
-      catch (_) { link.select(); document.execCommand("copy"); toast("Invite link copied"); }
-    } }, "Copy");
+    const links = d.links || {};
+    const linkRow = (label, hint, url) => {
+      const input = h("input", { readonly: true, value: url, class: "grow mono", "aria-label": label });
+      return h("div", { class: "invite" }, h("strong", {}, label), h("div", { class: "muted small" }, hint),
+        h("div", { class: "row" }, input, h("button", { class: "btn primary", onclick: async () => {
+          try { await navigator.clipboard.writeText(input.value); toast(`${label} copied`); }
+          catch (_) { input.select(); document.execCommand("copy"); toast(`${label} copied`); }
+        } }, "Copy")));
+    };
+    const findIp = h("button", { class: "btn", onclick: async () => {
+      findIp.disabled = true;
+      const r = await act(() => api("/api/hub/share/public-ip", { method: "POST", body: {} }));
+      findIp.disabled = false;
+      if (r) { toast(`Your public address is ${r.ip}`); data = await api("/api/client"); render(); }
+    } }, links.internet ? "Check my public IP again" : "🌐 Use my public IP");
     const pack = d.pack;
     const sideTag = (m) => h("span", { class: "tag" }, m.side === "client" ? "players only" : "server + players");
     fill(body,
       intro,
-      h("div", { class: "mt" }, card("Invite link",
-        h("div", { class: "row" }, link, copy,
+      h("div", { class: "mt" }, card("Invite links",
+        links.local ? linkRow("Local link", `For friends on the same Wi-Fi or network as this computer (${s.lan_ip}).`, links.local) : null,
+        links.internet ? linkRow("Internet link", `For friends anywhere else, through your public address (${s.address}).`, links.internet)
+          : h("div", { class: "invite" }, h("strong", {}, "Internet link"),
+            h("div", { class: "muted small" }, "For friends elsewhere, mcsm needs your public address. It can find it for you.")),
+        h("div", { class: "row mt-s" }, findIp,
           h("button", { class: "btn ghost", onclick: () => {
             if (confirm("Make a new link? The old one stops working (friends who already set up keep playing, but can't update until they get the new link).")) {
               act(() => api("/api/client/new-link", { method: "POST", body: {} }), "New link made").then((r) => { if (r) { data = r; render(); } });
@@ -1161,8 +1175,9 @@ views.friends = () => {
         s.error ? h("div", { class: "notice bad mt-s" }, s.error)
           : h("p", { class: "muted small" }, s.running ? `Sharing on port ${s.port}.` : "Sharing starts in a few seconds."),
         h("p", { class: "muted small" },
-          s.address ? `Friends connect to ${s.address}. ` : `The link uses this computer's address on your network (${s.lan_ip || "unknown"}), which works for friends on the same Wi-Fi. `,
-          "For friends elsewhere, forward TCP ports ", h("strong", {}, String(s.port)), " (the download) and your Minecraft port on your router, and set your public address under ",
+          "For the internet link to work, forward two TCP ports on your router to this computer: ", h("strong", {}, String(s.port)),
+          " (the download) and ", h("strong", {}, String((status && status.port) || 25565)), " (Minecraft). Your public address can change; ",
+          "press the button again if friends can't connect. You can also type an address (e.g. a domain) under ",
           h("a", { href: "#mcsm" }, "mcsm settings → Sharing"), "."))),
       h("div", { class: "mt" }, card("What friends get",
         d.pack_error ? h("div", { class: "notice warn" }, d.pack_error)
