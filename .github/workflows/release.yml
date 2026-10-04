@@ -28,8 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Check the tag matches the version
@@ -60,8 +60,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Built-in CurseForge key (only if the CURSEFORGE_API_KEY secret is set)
@@ -86,7 +86,7 @@ jobs:
           if [ -f dist/craft-conductor.exe ]; then mv dist/craft-conductor.exe "dist/${{ matrix.asset }}"; else mv dist/craft-conductor "dist/${{ matrix.asset }}"; fi
       - name: Smoke test
         run: python packaging/smoke_test.py "dist/${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: upload
         with:
           name: ${{ matrix.asset }}
@@ -99,7 +99,7 @@ jobs:
       - name: Code-sign (Windows, SignPath)
         id: sign
         if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -114,7 +114,7 @@ jobs:
         run: |
           mv "signed/${{ matrix.asset }}" "dist/${{ matrix.asset }}"
           python packaging/smoke_test.py "dist/${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.sign.outcome == 'success'
         with:
           name: ${{ matrix.asset }}
@@ -128,15 +128,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build the Python package (for pip/pipx)
         run: |
           pip install build
           python -m build --outdir release
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
@@ -160,7 +160,7 @@ jobs:
         run: |
           if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "prerelease=false" >> "$GITHUB_OUTPUT"
           else echo "prerelease=true" >> "$GITHUB_OUTPUT"; fi
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           # From "Run workflow" this also creates the tag, on the commit that was built.
           tag_name: ${{ env.TAG }}
@@ -211,16 +211,16 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
       - name: Built-in CurseForge key (only if the CURSEFORGE_API_KEY secret is set)
         env:
           CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
         run: python3 packaging/write_build_keys.py
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -232,7 +232,7 @@ jobs:
           # :latest is the newest stable release; a beta moves :beta instead.
           if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "MOVING_TAG=$image:latest" >> "$GITHUB_ENV"
           else echo "MOVING_TAG=$image:beta" >> "$GITHUB_ENV"; fi
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64

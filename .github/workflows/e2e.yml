@@ -53,8 +53,8 @@ jobs:
             minecraft: "1.21.1"
             args: --mod fabric-api --mod lithium
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build (Linux, portable)
@@ -73,7 +73,7 @@ jobs:
           python packaging/e2e_test.py "$exe" --loader ${{ matrix.loader }} --minecraft ${{ matrix.minecraft }} ${{ matrix.args }}
       - name: Upload logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-logs-${{ matrix.os }}-${{ matrix.loader }}
           path: e2e-logs/
